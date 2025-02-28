@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/SVGScriptElementPrototype.h>
 #include <LibWeb/HTML/Scripting/ClassicScript.h>
 #include <LibWeb/Namespace.h>
 #include <LibWeb/SVG/AttributeNames.h>
@@ -27,6 +28,7 @@ void SVGScriptElement::initialize(JS::Realm& realm)
 void SVGScriptElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
+    SVGURIReferenceMixin::visit_edges(visitor);
     visitor.visit(m_script);
 }
 

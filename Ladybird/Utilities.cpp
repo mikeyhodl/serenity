@@ -25,6 +25,20 @@ constexpr auto libexec_path = "libexec"sv;
 
 ByteString s_serenity_resource_root;
 
+Optional<ByteString> s_mach_server_name;
+
+Optional<ByteString const&> mach_server_name()
+{
+    if (s_mach_server_name.has_value())
+        return *s_mach_server_name;
+    return {};
+}
+
+void set_mach_server_name(ByteString name)
+{
+    s_mach_server_name = move(name);
+}
+
 ErrorOr<ByteString> application_directory()
 {
     auto current_executable_path = TRY(Core::System::current_executable_path());

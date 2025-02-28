@@ -25,10 +25,12 @@ fi
 
 if rsync --chown 2>&1 | grep "missing argument" >/dev/null; then
     rsync -aH --chown=0:0 --inplace --update "$SERENITY_SOURCE_DIR"/Base/ mnt/
-    rsync -aH --chown=0:0 --inplace --update Root/ mnt/
+    rsync -aH --chown=0:0 --exclude="/usr/include" --inplace --update Root/ mnt/
+    rsync -aHL --chown=0:0 --inplace --update Root/usr/include/ mnt/usr/include/
 else
     rsync -aH --inplace --update "$SERENITY_SOURCE_DIR"/Base/ mnt/
-    rsync -aH --inplace --update Root/ mnt/
+    rsync -aH --inplace --exclude="/usr/include" --update Root/ mnt/
+    rsync -aHL --inplace --update Root/usr/include/ mnt/usr/include/
     chown -R 0:0 mnt/
 fi
 
@@ -137,11 +139,10 @@ chmod 755 mnt/res/devel/templates/*.postcreate
 echo "done"
 
 printf "creating initial filesystem structure... "
-for dir in bin etc proc mnt tmp boot mod var/run usr/local usr/bin; do
+for dir in bin etc proc mnt tmp boot www var/run usr/local usr/Ports usr/bin; do
     mkdir -p mnt/$dir
 done
 chmod 700 mnt/boot
-chmod 700 mnt/mod
 chmod 1777 mnt/tmp
 echo "done"
 
@@ -194,7 +195,7 @@ chown -R 200:100 mnt/home/nona
 echo "done"
 
 printf "adding some desktop icons... "
-ln -sf /bin/Browser mnt/home/anon/Desktop/Ladybird
+ln -sf /bin/Browser mnt/home/anon/Desktop/
 ln -sf /bin/TextEditor mnt/home/anon/Desktop/Text\ Editor
 ln -sf /bin/Help mnt/home/anon/Desktop/
 ln -sf /home/anon mnt/home/anon/Desktop/Home
@@ -203,11 +204,12 @@ echo "done"
 
 printf "installing shortcuts... "
 ln -sf /bin/PackageManager mnt/bin/pkg
+ln -sf /bin/RunContainer mnt/bin/runc
 ln -sf Shell mnt/bin/sh
 ln -sf test mnt/bin/[
 ln -sf less mnt/bin/more
 ln -sf /bin/env mnt/usr/bin/env
-ln -sf /bin/SystemServer mnt/init
+ln -sf /bin/init mnt/init
 echo "done"
 
 printf "installing 'checksum' variants... "

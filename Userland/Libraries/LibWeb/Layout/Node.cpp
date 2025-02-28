@@ -10,8 +10,8 @@
 #include <LibWeb/CSS/StyleValues/BackgroundRepeatStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BackgroundSizeStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BorderRadiusStyleValue.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
 #include <LibWeb/CSS/StyleValues/EdgeStyleValue.h>
-#include <LibWeb/CSS/StyleValues/IdentifierStyleValue.h>
 #include <LibWeb/CSS/StyleValues/IntegerStyleValue.h>
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/MathDepthStyleValue.h>
@@ -126,6 +126,11 @@ Box const* Node::containing_block() const
     return nearest_ancestor_capable_of_forming_a_containing_block(*this);
 }
 
+Box const* Node::static_position_containing_block() const
+{
+    return nearest_ancestor_capable_of_forming_a_containing_block(*this);
+}
+
 Box const* Node::non_anonymous_containing_block() const
 {
     auto nearest_ancestor_box = containing_block();
@@ -193,7 +198,7 @@ bool Node::establishes_stacking_context() const
     // - perspective
     // - clip-path
     // - mask / mask-image / mask-border
-    if (computed_values().mask().has_value())
+    if (computed_values().mask().has_value() || computed_values().clip_path().has_value())
         return true;
 
     return computed_values().opacity() < 1.0f;
@@ -339,7 +344,7 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
                 return 1;
         };
 
-        auto value_for_layer = [](auto& style_value, size_t layer_index) -> RefPtr<CSS::StyleValue const> {
+        auto value_for_layer = [](auto& style_value, size_t layer_index) -> RefPtr<CSS::CSSStyleValue const> {
             if (style_value->is_value_list())
                 return style_value->as_value_list().value_at(layer_index, true);
             return style_value;
@@ -368,15 +373,15 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
                 }
             }
 
-            if (auto attachment_value = value_for_layer(attachments, layer_index); attachment_value && attachment_value->is_identifier()) {
-                switch (attachment_value->to_identifier()) {
-                case CSS::ValueID::Fixed:
+            if (auto attachment_value = value_for_layer(attachments, layer_index); attachment_value && attachment_value->is_keyword()) {
+                switch (attachment_value->to_keyword()) {
+                case CSS::Keyword::Fixed:
                     layer.attachment = CSS::BackgroundAttachment::Fixed;
                     break;
-                case CSS::ValueID::Local:
+                case CSS::Keyword::Local:
                     layer.attachment = CSS::BackgroundAttachment::Local;
                     break;
-                case CSS::ValueID::Scroll:
+                case CSS::Keyword::Scroll:
                     layer.attachment = CSS::BackgroundAttachment::Scroll;
                     break;
                 default:
@@ -384,27 +389,27 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
                 }
             }
 
-            auto as_box = [](auto value_id) {
-                switch (value_id) {
-                case CSS::ValueID::BorderBox:
+            auto as_box = [](auto keyword) {
+                switch (keyword) {
+                case CSS::Keyword::BorderBox:
                     return CSS::BackgroundBox::BorderBox;
-                case CSS::ValueID::ContentBox:
+                case CSS::Keyword::ContentBox:
                     return CSS::BackgroundBox::ContentBox;
-                case CSS::ValueID::PaddingBox:
+                case CSS::Keyword::PaddingBox:
                     return CSS::BackgroundBox::PaddingBox;
-                case CSS::ValueID::Text:
+                case CSS::Keyword::Text:
                     return CSS::BackgroundBox::Text;
                 default:
                     VERIFY_NOT_REACHED();
                 }
             };
 
-            if (auto origin_value = value_for_layer(origins, layer_index); origin_value && origin_value->is_identifier()) {
-                layer.origin = as_box(origin_value->to_identifier());
+            if (auto origin_value = value_for_layer(origins, layer_index); origin_value && origin_value->is_keyword()) {
+                layer.origin = as_box(origin_value->to_keyword());
             }
 
-            if (auto clip_value = value_for_layer(clips, layer_index); clip_value && clip_value->is_identifier()) {
-                layer.clip = as_box(clip_value->to_identifier());
+            if (auto clip_value = value_for_layer(clips, layer_index); clip_value && clip_value->is_keyword()) {
+                layer.clip = as_box(clip_value->to_keyword());
             }
 
             if (auto position_value = value_for_layer(x_positions, layer_index); position_value && position_value->is_edge()) {
@@ -425,12 +430,12 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
                     layer.size_type = CSS::BackgroundSize::LengthPercentage;
                     layer.size_x = size.size_x();
                     layer.size_y = size.size_y();
-                } else if (size_value->is_identifier()) {
-                    switch (size_value->to_identifier()) {
-                    case CSS::ValueID::Contain:
+                } else if (size_value->is_keyword()) {
+                    switch (size_value->to_keyword()) {
+                    case CSS::Keyword::Contain:
                         layer.size_type = CSS::BackgroundSize::Contain;
                         break;
-                    case CSS::ValueID::Cover:
+                    case CSS::Keyword::Cover:
                         layer.size_type = CSS::BackgroundSize::Cover;
                         break;
                     default:
@@ -456,8 +461,13 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
 
     if (auto maybe_font_variant = computed_style.font_variant(); maybe_font_variant.has_value())
         computed_values.set_font_variant(maybe_font_variant.release_value());
+    if (auto maybe_font_language_override = computed_style.font_language_override(); maybe_font_language_override.has_value())
+        computed_values.set_font_language_override(maybe_font_language_override.release_value());
+    if (auto maybe_font_feature_settings = computed_style.font_feature_settings(); maybe_font_feature_settings.has_value())
+        computed_values.set_font_feature_settings(maybe_font_feature_settings.release_value());
+    if (auto maybe_font_variation_settings = computed_style.font_variation_settings(); maybe_font_variation_settings.has_value())
+        computed_values.set_font_variation_settings(maybe_font_variation_settings.release_value());
 
-    // FIXME: BorderXRadius properties are now BorderRadiusStyleValues, so make use of that.
     auto border_bottom_left_radius = computed_style.property(CSS::PropertyID::BorderBottomLeftRadius);
     if (border_bottom_left_radius->is_border_radius()) {
         computed_values.set_border_bottom_left_radius(
@@ -505,34 +515,38 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     computed_values.set_order(computed_style.order());
     computed_values.set_clip(computed_style.clip());
 
-    if (computed_style.backdrop_filter().has_filters()) {
-        CSS::ResolvedBackdropFilter resolved_backdrop_filter;
-        for (auto& filter : computed_style.backdrop_filter().filters()) {
+    auto resolve_filter = [this](CSS::Filter const& computed_filter) -> CSS::ResolvedFilter {
+        CSS::ResolvedFilter resolved_filter;
+        for (auto const& filter : computed_filter.filters()) {
             filter.visit(
-                [&](CSS::Filter::Blur const& blur) {
-                    resolved_backdrop_filter.filters.append(CSS::ResolvedBackdropFilter::Blur {
+                [&](CSS::FilterOperation::Blur const& blur) {
+                    resolved_filter.filters.append(CSS::ResolvedFilter::Blur {
                         .radius = blur.resolved_radius(*this) });
                 },
-                [&](CSS::Filter::DropShadow const& drop_shadow) {
+                [&](CSS::FilterOperation::DropShadow const& drop_shadow) {
                     // The default value for omitted values is missing length values set to 0
                     // and the missing used color is taken from the color property.
-                    resolved_backdrop_filter.filters.append(CSS::ResolvedBackdropFilter::DropShadow {
+                    resolved_filter.filters.append(CSS::ResolvedFilter::DropShadow {
                         .offset_x = drop_shadow.offset_x.to_px(*this).to_double(),
                         .offset_y = drop_shadow.offset_y.to_px(*this).to_double(),
                         .radius = drop_shadow.radius.has_value() ? drop_shadow.radius->to_px(*this).to_double() : 0.0,
                         .color = drop_shadow.color.has_value() ? *drop_shadow.color : this->computed_values().color() });
                 },
-                [&](CSS::Filter::Color const& color_operation) {
-                    resolved_backdrop_filter.filters.append(CSS::ResolvedBackdropFilter::ColorOperation {
-                        .operation = color_operation.operation,
+                [&](CSS::FilterOperation::Color const& color_operation) {
+                    resolved_filter.filters.append(CSS::ResolvedFilter::Color {
+                        .type = color_operation.operation,
                         .amount = color_operation.resolved_amount() });
                 },
-                [&](CSS::Filter::HueRotate const& hue_rotate) {
-                    resolved_backdrop_filter.filters.append(CSS::ResolvedBackdropFilter::HueRotate { .angle_degrees = hue_rotate.angle_degrees() });
+                [&](CSS::FilterOperation::HueRotate const& hue_rotate) {
+                    resolved_filter.filters.append(CSS::ResolvedFilter::HueRotate { .angle_degrees = hue_rotate.angle_degrees() });
                 });
         }
-        computed_values.set_backdrop_filter(resolved_backdrop_filter);
-    }
+        return resolved_filter;
+    };
+    if (computed_style.backdrop_filter().has_filters())
+        computed_values.set_backdrop_filter(resolve_filter(computed_style.backdrop_filter()));
+    if (computed_style.filter().has_filters())
+        computed_values.set_filter(resolve_filter(computed_style.filter()));
 
     auto justify_content = computed_style.justify_content();
     if (justify_content.has_value())
@@ -581,16 +595,34 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     if (auto text_indent = computed_style.length_percentage(CSS::PropertyID::TextIndent); text_indent.has_value())
         computed_values.set_text_indent(text_indent.release_value());
 
+    if (auto text_overflow = computed_style.text_overflow(); text_overflow.has_value())
+        computed_values.set_text_overflow(text_overflow.release_value());
+
+    auto tab_size = computed_style.tab_size();
+    computed_values.set_tab_size(tab_size);
+
     auto white_space = computed_style.white_space();
     if (white_space.has_value())
         computed_values.set_white_space(white_space.value());
+
+    auto word_break = computed_style.word_break();
+    if (word_break.has_value())
+        computed_values.set_word_break(word_break.value());
+
+    auto word_spacing = computed_style.word_spacing();
+    if (word_spacing.has_value())
+        computed_values.set_word_spacing(word_spacing.value());
+
+    auto letter_spacing = computed_style.letter_spacing();
+    if (letter_spacing.has_value())
+        computed_values.set_letter_spacing(letter_spacing.value());
 
     auto float_ = computed_style.float_();
     if (float_.has_value())
         computed_values.set_float(float_.value());
 
-    computed_values.set_border_spacing_horizontal(computed_style.border_spacing_horizontal());
-    computed_values.set_border_spacing_vertical(computed_style.border_spacing_vertical());
+    computed_values.set_border_spacing_horizontal(computed_style.border_spacing_horizontal(*this));
+    computed_values.set_border_spacing_vertical(computed_style.border_spacing_vertical(*this));
 
     auto caption_side = computed_style.caption_side();
     if (caption_side.has_value())
@@ -607,6 +639,10 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     auto overflow_y = computed_style.overflow_y();
     if (overflow_y.has_value())
         computed_values.set_overflow_y(overflow_y.value());
+
+    auto content_visibility = computed_style.content_visibility();
+    if (content_visibility.has_value())
+        computed_values.set_content_visibility(content_visibility.value());
 
     auto cursor = computed_style.cursor();
     if (cursor.has_value())
@@ -649,6 +685,8 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     if (auto maybe_text_decoration_thickness = computed_style.length_percentage(CSS::PropertyID::TextDecorationThickness); maybe_text_decoration_thickness.has_value())
         computed_values.set_text_decoration_thickness(maybe_text_decoration_thickness.release_value());
 
+    computed_values.set_webkit_text_fill_color(computed_style.color_or_fallback(CSS::PropertyID::WebkitTextFillColor, *this, computed_values.color()));
+
     computed_values.set_text_shadow(computed_style.text_shadow(*this));
 
     computed_values.set_z_index(computed_style.z_index());
@@ -671,6 +709,9 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
 
     computed_values.set_box_shadow(computed_style.box_shadow(*this));
 
+    if (auto rotate_value = computed_style.rotate(*this); rotate_value.has_value())
+        computed_values.set_rotate(rotate_value.value());
+
     computed_values.set_transformations(computed_style.transformations());
     if (auto transform_box = computed_style.transform_box(); transform_box.has_value())
         computed_values.set_transform_box(transform_box.value());
@@ -680,8 +721,8 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     if (transition_delay_property->is_time()) {
         auto& transition_delay = transition_delay_property->as_time();
         computed_values.set_transition_delay(transition_delay.time());
-    } else if (transition_delay_property->is_calculated()) {
-        auto& transition_delay = transition_delay_property->as_calculated();
+    } else if (transition_delay_property->is_math()) {
+        auto& transition_delay = transition_delay_property->as_math();
         computed_values.set_transition_delay(transition_delay.resolve_time().value());
     }
 
@@ -702,18 +743,18 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
         } else {
             auto resolve_border_width = [&]() -> CSSPixels {
                 auto value = computed_style.property(width_property);
-                if (value->is_calculated())
-                    return max(CSSPixels { 0 }, value->as_calculated().resolve_length(*this)->to_px(*this));
+                if (value->is_math())
+                    return max(CSSPixels { 0 }, value->as_math().resolve_length(*this)->to_px(*this));
                 if (value->is_length())
                     return value->as_length().length().to_px(*this);
-                if (value->is_identifier()) {
+                if (value->is_keyword()) {
                     // https://www.w3.org/TR/css-backgrounds-3/#valdef-line-width-thin
-                    switch (value->to_identifier()) {
-                    case CSS::ValueID::Thin:
+                    switch (value->to_keyword()) {
+                    case CSS::Keyword::Thin:
                         return 1;
-                    case CSS::ValueID::Medium:
+                    case CSS::Keyword::Medium:
                         return 3;
-                    case CSS::ValueID::Thick:
+                    case CSS::Keyword::Thick:
                         return 5;
                     default:
                         VERIFY_NOT_REACHED();
@@ -740,8 +781,6 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     if (auto outline_width = computed_style.property(CSS::PropertyID::OutlineWidth); outline_width->is_length())
         computed_values.set_outline_width(outline_width->as_length().length());
 
-    // FIXME: Stop generating the content twice. (First time is in TreeBuilder.)
-    computed_values.set_content(computed_style.content(initial_quote_nesting_level()).content_data);
     computed_values.set_grid_auto_columns(computed_style.grid_auto_columns());
     computed_values.set_grid_auto_rows(computed_style.grid_auto_rows());
     computed_values.set_grid_template_columns(computed_style.grid_template_columns());
@@ -796,10 +835,26 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     if (auto mask = computed_style.property(CSS::PropertyID::Mask); mask->is_url())
         computed_values.set_mask(mask->as_url().url());
 
+    auto clip_path = computed_style.property(CSS::PropertyID::ClipPath);
+    if (clip_path->is_url())
+        computed_values.set_clip_path(clip_path->as_url().url());
+    else if (clip_path->is_basic_shape())
+        computed_values.set_clip_path(clip_path->as_basic_shape());
+
+    if (auto clip_rule = computed_style.clip_rule(); clip_rule.has_value())
+        computed_values.set_clip_rule(*clip_rule);
+
     if (auto fill_rule = computed_style.fill_rule(); fill_rule.has_value())
         computed_values.set_fill_rule(*fill_rule);
 
     computed_values.set_fill_opacity(computed_style.fill_opacity());
+    if (auto stroke_linecap = computed_style.stroke_linecap(); stroke_linecap.has_value())
+        computed_values.set_stroke_linecap(stroke_linecap.value());
+    if (auto stroke_linejoin = computed_style.stroke_linejoin(); stroke_linejoin.has_value())
+        computed_values.set_stroke_linejoin(stroke_linejoin.value());
+
+    computed_values.set_stroke_miterlimit(computed_style.stroke_miterlimit());
+
     computed_values.set_stroke_opacity(computed_style.stroke_opacity());
     computed_values.set_stop_opacity(computed_style.stop_opacity());
 
@@ -808,6 +863,11 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
 
     if (auto column_count = computed_style.property(CSS::PropertyID::ColumnCount); column_count->is_integer())
         computed_values.set_column_count(CSS::ColumnCount::make_integer(column_count->as_integer().integer()));
+
+    if (auto column_span = computed_style.column_span(); column_span.has_value())
+        computed_values.set_column_span(column_span.value());
+
+    computed_values.set_column_width(computed_style.size_value(CSS::PropertyID::ColumnWidth));
 
     computed_values.set_column_gap(computed_style.size_value(CSS::PropertyID::ColumnGap));
     computed_values.set_row_gap(computed_style.size_value(CSS::PropertyID::RowGap));
@@ -822,34 +882,51 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     if (aspect_ratio->is_value_list()) {
         auto& values_list = aspect_ratio->as_value_list().values();
         if (values_list.size() == 2
-            && values_list[0]->is_identifier() && values_list[0]->as_identifier().id() == CSS::ValueID::Auto
+            && values_list[0]->is_keyword() && values_list[0]->as_keyword().keyword() == CSS::Keyword::Auto
             && values_list[1]->is_ratio()) {
             computed_values.set_aspect_ratio({ true, values_list[1]->as_ratio().ratio() });
         }
-    } else if (aspect_ratio->is_identifier() && aspect_ratio->as_identifier().id() == CSS::ValueID::Auto) {
+    } else if (aspect_ratio->is_keyword() && aspect_ratio->as_keyword().keyword() == CSS::Keyword::Auto) {
         computed_values.set_aspect_ratio({ true, {} });
     } else if (aspect_ratio->is_ratio()) {
-        computed_values.set_aspect_ratio({ false, aspect_ratio->as_ratio().ratio() });
+        // https://drafts.csswg.org/css-sizing-4/#aspect-ratio
+        // If the <ratio> is degenerate, the property instead behaves as auto.
+        if (aspect_ratio->as_ratio().ratio().is_degenerate())
+            computed_values.set_aspect_ratio({ true, {} });
+        else
+            computed_values.set_aspect_ratio({ false, aspect_ratio->as_ratio().ratio() });
     }
 
     auto math_shift_value = computed_style.property(CSS::PropertyID::MathShift);
-    if (auto math_shift = value_id_to_math_shift(math_shift_value->to_identifier()); math_shift.has_value())
+    if (auto math_shift = keyword_to_math_shift(math_shift_value->to_keyword()); math_shift.has_value())
         computed_values.set_math_shift(math_shift.value());
 
     auto math_style_value = computed_style.property(CSS::PropertyID::MathStyle);
-    if (auto math_style = value_id_to_math_style(math_style_value->to_identifier()); math_style.has_value())
+    if (auto math_style = keyword_to_math_style(math_style_value->to_keyword()); math_style.has_value())
         computed_values.set_math_style(math_style.value());
 
     computed_values.set_math_depth(computed_style.math_depth());
     computed_values.set_quotes(computed_style.quotes());
+    computed_values.set_counter_increment(computed_style.counter_data(CSS::PropertyID::CounterIncrement));
+    computed_values.set_counter_reset(computed_style.counter_data(CSS::PropertyID::CounterReset));
+    computed_values.set_counter_set(computed_style.counter_data(CSS::PropertyID::CounterSet));
 
     if (auto object_fit = computed_style.object_fit(); object_fit.has_value())
         computed_values.set_object_fit(object_fit.value());
 
     computed_values.set_object_position(computed_style.object_position());
 
+    if (auto direction = computed_style.direction(); direction.has_value())
+        computed_values.set_direction(direction.value());
+
+    if (auto unicode_bidi = computed_style.unicode_bidi(); unicode_bidi.has_value())
+        computed_values.set_unicode_bidi(unicode_bidi.value());
+
     if (auto scrollbar_width = computed_style.scrollbar_width(); scrollbar_width.has_value())
         computed_values.set_scrollbar_width(scrollbar_width.value());
+
+    if (auto writing_mode = computed_style.writing_mode(); writing_mode.has_value())
+        computed_values.set_writing_mode(writing_mode.value());
 
     propagate_style_to_anonymous_wrappers();
 }
@@ -874,6 +951,7 @@ void NodeWithStyle::propagate_style_to_anonymous_wrappers()
             auto& child_computed_values = static_cast<CSS::MutableComputedValues&>(static_cast<CSS::ComputedValues&>(const_cast<CSS::ImmutableComputedValues&>(child.computed_values())));
             child_computed_values.inherit_from(computed_values());
         }
+        return IterationDecision::Continue;
     });
 }
 
@@ -884,7 +962,7 @@ bool Node::is_root_element() const
     return is<HTML::HTMLHtmlElement>(*dom_node());
 }
 
-ByteString Node::debug_description() const
+String Node::debug_description() const
 {
     StringBuilder builder;
     builder.append(class_name());
@@ -900,7 +978,7 @@ ByteString Node::debug_description() const
     } else {
         builder.append("(anonymous)"sv);
     }
-    return builder.to_byte_string();
+    return MUST(builder.to_string());
 }
 
 CSS::Display Node::display() const

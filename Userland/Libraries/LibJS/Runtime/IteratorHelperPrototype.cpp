@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2023-2024, Tim Flynn <trflynn89@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,6 +12,7 @@ namespace JS {
 
 JS_DEFINE_ALLOCATOR(IteratorHelperPrototype);
 
+// 27.1.2.1 The %IteratorHelperPrototype% Object, https://tc39.es/ecma262/#sec-%iteratorhelperprototype%-object
 IteratorHelperPrototype::IteratorHelperPrototype(Realm& realm)
     : PrototypeObject(realm.intrinsics().iterator_prototype())
 {
@@ -26,11 +27,11 @@ void IteratorHelperPrototype::initialize(Realm& realm)
     define_native_function(realm, vm.names.next, next, 0, attr);
     define_native_function(realm, vm.names.return_, return_, 0, attr);
 
-    // 3.1.2.1.3 %IteratorHelperPrototype% [ @@toStringTag ], https://tc39.es/proposal-iterator-helpers/#sec-%iteratorhelperprototype%-@@tostringtag
+    // 27.1.2.1.3 %IteratorHelperPrototype% [ %Symbol.toStringTag% ], https://tc39.es/ecma262/#sec-%iteratorhelperprototype%-%symbol.tostringtag%
     define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, "Iterator Helper"_string), Attribute::Configurable);
 }
 
-// 3.1.2.1.1 %IteratorHelperPrototype%.next ( ), https://tc39.es/proposal-iterator-helpers/#sec-%iteratorhelperprototype%.next
+// 27.1.2.1.1 %IteratorHelperPrototype%.next ( ), https://tc39.es/ecma262/#sec-%iteratorhelperprototype%.next
 JS_DEFINE_NATIVE_FUNCTION(IteratorHelperPrototype::next)
 {
     auto iterator = TRY(typed_this_object(vm));
@@ -39,7 +40,7 @@ JS_DEFINE_NATIVE_FUNCTION(IteratorHelperPrototype::next)
     return iterator->resume(vm, js_undefined(), "Iterator Helper"sv);
 }
 
-// 3.1.2.1.2 %IteratorHelperPrototype%.return ( ), https://tc39.es/proposal-iterator-helpers/#sec-%iteratorhelperprototype%.return
+// 27.1.2.1.2 %IteratorHelperPrototype%.return ( ), https://tc39.es/ecma262/#sec-%iteratorhelperprototype%.return
 JS_DEFINE_NATIVE_FUNCTION(IteratorHelperPrototype::return_)
 {
     // 1. Let O be this value.
@@ -47,7 +48,7 @@ JS_DEFINE_NATIVE_FUNCTION(IteratorHelperPrototype::return_)
     auto iterator = TRY(typed_this_object(vm));
 
     // 3. Assert: O has a [[GeneratorState]] slot.
-    // 4. If O.[[GeneratorState]] is suspendedStart, then
+    // 4. If O.[[GeneratorState]] is suspended-start, then
     if (iterator->generator_state() == GeneratorObject::GeneratorState::SuspendedStart) {
         // a. Set O.[[GeneratorState]] to completed.
         iterator->set_generator_state(GeneratorObject::GeneratorState::Completed);
@@ -62,7 +63,7 @@ JS_DEFINE_NATIVE_FUNCTION(IteratorHelperPrototype::return_)
     }
 
     // 5. Let C be Completion { [[Type]]: return, [[Value]]: undefined, [[Target]]: empty }.
-    Completion completion { Completion::Type::Return, js_undefined(), {} };
+    Completion completion { Completion::Type::Return, js_undefined() };
 
     // 6. Return ? GeneratorResumeAbrupt(O, C, "Iterator Helper").
     return TRY(iterator->resume_abrupt(vm, move(completion), "Iterator Helper"sv));

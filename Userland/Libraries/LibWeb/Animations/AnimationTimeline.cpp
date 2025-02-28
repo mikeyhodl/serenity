@@ -6,6 +6,7 @@
 
 #include <LibWeb/Animations/Animation.h>
 #include <LibWeb/Animations/AnimationTimeline.h>
+#include <LibWeb/Bindings/AnimationTimelinePrototype.h>
 #include <LibWeb/DOM/Document.h>
 
 namespace Web::Animations {
@@ -64,8 +65,7 @@ void AnimationTimeline::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_associated_document);
-    for (auto const& animation : m_associated_animations)
-        visitor.visit(animation);
+    visitor.visit(m_associated_animations);
 }
 
 }

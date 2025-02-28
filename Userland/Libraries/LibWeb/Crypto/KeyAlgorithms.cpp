@@ -16,6 +16,7 @@ namespace Web::Crypto {
 JS_DEFINE_ALLOCATOR(KeyAlgorithm);
 JS_DEFINE_ALLOCATOR(RsaKeyAlgorithm);
 JS_DEFINE_ALLOCATOR(RsaHashedKeyAlgorithm);
+JS_DEFINE_ALLOCATOR(EcKeyAlgorithm);
 
 template<typename T>
 static JS::ThrowCompletionOr<T*> impl_from(JS::VM& vm, StringView Name)
@@ -54,6 +55,12 @@ JS_DEFINE_NATIVE_FUNCTION(KeyAlgorithm::name_getter)
     auto* impl = TRY(impl_from<KeyAlgorithm>(vm, "KeyAlgorithm"sv));
     auto name = TRY(Bindings::throw_dom_exception_if_needed(vm, [&] { return impl->name(); }));
     return JS::PrimitiveString::create(vm, name);
+}
+
+void KeyAlgorithm::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_realm);
 }
 
 JS::NonnullGCPtr<RsaKeyAlgorithm> RsaKeyAlgorithm::create(JS::Realm& realm)
@@ -117,6 +124,29 @@ JS_DEFINE_NATIVE_FUNCTION(RsaKeyAlgorithm::public_exponent_getter)
 {
     auto* impl = TRY(impl_from<RsaKeyAlgorithm>(vm, "RsaKeyAlgorithm"sv));
     return impl->public_exponent();
+}
+
+JS::NonnullGCPtr<EcKeyAlgorithm> EcKeyAlgorithm::create(JS::Realm& realm)
+{
+    return realm.heap().allocate<EcKeyAlgorithm>(realm, realm);
+}
+
+EcKeyAlgorithm::EcKeyAlgorithm(JS::Realm& realm)
+    : KeyAlgorithm(realm)
+{
+}
+
+void EcKeyAlgorithm::initialize(JS::Realm& realm)
+{
+    Base::initialize(realm);
+
+    define_native_accessor(realm, "namedCurve", named_curve_getter, {}, JS::Attribute::Enumerable | JS::Attribute::Configurable);
+}
+
+JS_DEFINE_NATIVE_FUNCTION(EcKeyAlgorithm::named_curve_getter)
+{
+    auto* impl = TRY(impl_from<EcKeyAlgorithm>(vm, "EcKeyAlgorithm"sv));
+    return JS::PrimitiveString::create(vm, impl->named_curve());
 }
 
 JS::NonnullGCPtr<RsaHashedKeyAlgorithm> RsaHashedKeyAlgorithm::create(JS::Realm& realm)

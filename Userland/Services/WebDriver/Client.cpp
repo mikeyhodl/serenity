@@ -3,7 +3,7 @@
  * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
  * Copyright (c) 2022, Tobias Christiansen <tobyase@serenityos.org>
  * Copyright (c) 2022, Linus Groh <linusg@serenityos.org>
- * Copyright (c) 2022-2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,6 +11,8 @@
 #include <AK/Debug.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
+#include <LibCore/EventLoop.h>
+#include <LibCore/Timer.h>
 #include <LibWeb/WebDriver/Capabilities.h>
 #include <LibWeb/WebDriver/TimeoutsConfiguration.h>
 #include <WebDriver/Client.h>
@@ -23,7 +25,7 @@ HashMap<unsigned, NonnullRefPtr<Session>> Client::s_sessions;
 ErrorOr<NonnullRefPtr<Client>> Client::try_create(NonnullOwnPtr<Core::BufferedTCPSocket> socket, LaunchBrowserCallbacks callbacks, Core::EventReceiver* parent)
 {
     if (!callbacks.launch_browser || !callbacks.launch_headless_browser)
-        return Error::from_string_view("All callbacks to launch a browser must be provided"sv);
+        return Error::from_string_literal("All callbacks to launch a browser must be provided");
 
     TRY(socket->set_blocking(true));
     return adopt_nonnull_ref_or_enomem(new (nothrow) Client(move(socket), move(callbacks), parent));
@@ -37,14 +39,18 @@ Client::Client(NonnullOwnPtr<Core::BufferedTCPSocket> socket, LaunchBrowserCallb
 
 Client::~Client() = default;
 
-ErrorOr<NonnullRefPtr<Session>, Web::WebDriver::Error> Client::find_session_with_id(StringView session_id)
+ErrorOr<NonnullRefPtr<Session>, Web::WebDriver::Error> Client::find_session_with_id(StringView session_id, AllowInvalidWindowHandle allow_invalid_window_handle)
 {
     auto session_id_or_error = session_id.to_number<unsigned>();
     if (!session_id_or_error.has_value())
         return Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidSessionId, "Invalid session id");
 
-    if (auto session = s_sessions.get(*session_id_or_error); session.has_value())
+    if (auto session = s_sessions.get(*session_id_or_error); session.has_value()) {
+        if (allow_invalid_window_handle == AllowInvalidWindowHandle::No)
+            TRY(session.value()->ensure_current_window_handle_is_valid());
+
         return *session.release_value();
+    }
 
     return Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidSessionId, "Invalid session id");
 }
@@ -184,7 +190,7 @@ Web::WebDriver::Response Client::delete_session(Web::WebDriver::Parameters param
     dbgln_if(WEBDRIVER_DEBUG, "Handling DELETE /session/<session_id>");
 
     // 1. If the current session is an active session, try to close the session.
-    if (auto session = find_session_with_id(parameters[0]); !session.is_error())
+    if (auto session = find_session_with_id(parameters[0], AllowInvalidWindowHandle::Yes); !session.is_error())
         close_session(session.value()->session_id());
 
     // 2. Return success with data null.
@@ -235,7 +241,7 @@ Web::WebDriver::Response Client::navigate_to(Web::WebDriver::Parameters paramete
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/url");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().navigate_to(payload);
+    return session->navigate_to(payload);
 }
 
 // 10.2 Get Current URL, https://w3c.github.io/webdriver/#dfn-get-current-url
@@ -311,7 +317,7 @@ Web::WebDriver::Response Client::close_window(Web::WebDriver::Parameters paramet
 Web::WebDriver::Response Client::switch_to_window(Web::WebDriver::Parameters parameters, AK::JsonValue payload)
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/window");
-    auto session = TRY(find_session_with_id(parameters[0]));
+    auto session = TRY(find_session_with_id(parameters[0], AllowInvalidWindowHandle::Yes));
 
     if (!payload.is_object())
         return Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::InvalidArgument, "Payload is not a JSON object");
@@ -331,7 +337,7 @@ Web::WebDriver::Response Client::switch_to_window(Web::WebDriver::Parameters par
 Web::WebDriver::Response Client::get_window_handles(Web::WebDriver::Parameters parameters, JsonValue)
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling GET /session/<session_id>/window/handles");
-    auto session = TRY(find_session_with_id(parameters[0]));
+    auto session = TRY(find_session_with_id(parameters[0], AllowInvalidWindowHandle::Yes));
     return session->get_window_handles();
 }
 
@@ -341,7 +347,39 @@ Web::WebDriver::Response Client::new_window(Web::WebDriver::Parameters parameter
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/window/new");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().new_window(payload);
+    auto handle = TRY(session->web_content_connection().new_window(payload));
+
+    constexpr u32 CONNECTION_TIMEOUT_MS = 5000;
+    auto timeout_fired = false;
+    auto timer = Core::Timer::create_single_shot(CONNECTION_TIMEOUT_MS, [&timeout_fired] { timeout_fired = true; });
+    timer->start();
+
+    Core::EventLoop::current().spin_until([&session, &timeout_fired, handle = handle.as_object().get("handle"sv)->as_string()]() {
+        return session->has_window_handle(handle) || timeout_fired;
+    });
+
+    if (timeout_fired)
+        return Web::WebDriver::Error::from_code(Web::WebDriver::ErrorCode::Timeout, "Timed out waiting for window handle");
+
+    return handle;
+}
+
+// 11.6 Switch To Frame, https://w3c.github.io/webdriver/#dfn-switch-to-frame
+// POST /session/{session id}/frame
+Web::WebDriver::Response Client::switch_to_frame(Web::WebDriver::Parameters parameters, JsonValue payload)
+{
+    dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/frame");
+    auto session = TRY(find_session_with_id(parameters[0]));
+    return session->web_content_connection().switch_to_frame(move(payload));
+}
+
+// 11.7 Switch To Parent Frame, https://w3c.github.io/webdriver/#dfn-switch-to-parent-frame
+// POST /session/{session id}/frame/parent
+Web::WebDriver::Response Client::switch_to_parent_frame(Web::WebDriver::Parameters parameters, JsonValue payload)
+{
+    dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/frame/parent");
+    auto session = TRY(find_session_with_id(parameters[0]));
+    return session->web_content_connection().switch_to_parent_frame(move(payload));
 }
 
 // 11.8.1 Get Window Rect, https://w3c.github.io/webdriver/#dfn-get-window-rect
@@ -387,6 +425,15 @@ Web::WebDriver::Response Client::fullscreen_window(Web::WebDriver::Parameters pa
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/window/fullscreen");
     auto session = TRY(find_session_with_id(parameters[0]));
     return session->web_content_connection().fullscreen_window();
+}
+
+// Extension: Consume User Activation, https://html.spec.whatwg.org/multipage/interaction.html#user-activation-user-agent-automation
+// POST /session/{session id}/window/consume-user-activation
+Web::WebDriver::Response Client::consume_user_activation(Web::WebDriver::Parameters parameters, JsonValue)
+{
+    dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/window/consume-user-activation");
+    auto session = TRY(find_session_with_id(parameters[0]));
+    return session->web_content_connection().consume_user_activation();
 }
 
 // 12.3.2 Find Element, https://w3c.github.io/webdriver/#dfn-find-element
@@ -557,7 +604,25 @@ Web::WebDriver::Response Client::element_click(Web::WebDriver::Parameters parame
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/element/<element_id>/click");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().element_click(move(parameters[1]));
+    return session->element_click(move(parameters[1]));
+}
+
+// 12.5.2 Element Clear, https://w3c.github.io/webdriver/#dfn-element-clear
+// POST /session/{session id}/element/{element id}/clear
+Web::WebDriver::Response Client::element_clear(Web::WebDriver::Parameters parameters, JsonValue)
+{
+    dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/element/<element_id>/clear");
+    auto session = TRY(find_session_with_id(parameters[0]));
+    return session->web_content_connection().element_clear(move(parameters[1]));
+}
+
+// 12.5.3 Element Send Keys, https://w3c.github.io/webdriver/#dfn-element-send-keys
+// POST /session/{session id}/element/{element id}/value
+Web::WebDriver::Response Client::element_send_keys(Web::WebDriver::Parameters parameters, JsonValue payload)
+{
+    dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/element/<element_id>/value");
+    auto session = TRY(find_session_with_id(parameters[0]));
+    return session->element_send_keys(move(parameters[1]), move(payload));
 }
 
 // 13.1 Get Page Source, https://w3c.github.io/webdriver/#dfn-get-page-source
@@ -575,7 +640,7 @@ Web::WebDriver::Response Client::execute_script(Web::WebDriver::Parameters param
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/execute/sync");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().execute_script(payload);
+    return session->execute_script(move(payload), Session::ScriptMode::Sync);
 }
 
 // 13.2.2 Execute Async Script, https://w3c.github.io/webdriver/#dfn-execute-async-script
@@ -584,7 +649,7 @@ Web::WebDriver::Response Client::execute_async_script(Web::WebDriver::Parameters
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/execute/async");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().execute_async_script(payload);
+    return session->execute_script(move(payload), Session::ScriptMode::Async);
 }
 
 // 14.1 Get All Cookies, https://w3c.github.io/webdriver/#dfn-get-all-cookies
@@ -632,6 +697,15 @@ Web::WebDriver::Response Client::delete_all_cookies(Web::WebDriver::Parameters p
     return session->web_content_connection().delete_all_cookies();
 }
 
+// 15.7 Perform Actions, https://w3c.github.io/webdriver/#perform-actions
+// POST /session/{session id}/actions
+Web::WebDriver::Response Client::perform_actions(Web::WebDriver::Parameters parameters, JsonValue payload)
+{
+    dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/actions");
+    auto session = TRY(find_session_with_id(parameters[0]));
+    return session->perform_actions(move(payload));
+}
+
 // 15.8 Release Actions, https://w3c.github.io/webdriver/#release-actions
 // DELETE /session/{session id}/actions
 Web::WebDriver::Response Client::release_actions(Web::WebDriver::Parameters parameters, JsonValue)
@@ -647,7 +721,7 @@ Web::WebDriver::Response Client::dismiss_alert(Web::WebDriver::Parameters parame
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/alert/dismiss");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().dismiss_alert();
+    return session->dismiss_alert();
 }
 
 // 16.2 Accept Alert, https://w3c.github.io/webdriver/#accept-alert
@@ -656,7 +730,7 @@ Web::WebDriver::Response Client::accept_alert(Web::WebDriver::Parameters paramet
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session_id>/alert/accept");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().accept_alert();
+    return session->accept_alert();
 }
 
 // 16.3 Get Alert Text, https://w3c.github.io/webdriver/#get-alert-text
@@ -697,11 +771,11 @@ Web::WebDriver::Response Client::take_element_screenshot(Web::WebDriver::Paramet
 
 // 18.1 Print Page, https://w3c.github.io/webdriver/#dfn-print-page
 // POST /session/{session id}/print
-Web::WebDriver::Response Client::print_page(Web::WebDriver::Parameters parameters, JsonValue)
+Web::WebDriver::Response Client::print_page(Web::WebDriver::Parameters parameters, JsonValue payload)
 {
     dbgln_if(WEBDRIVER_DEBUG, "Handling POST /session/<session id>/print");
     auto session = TRY(find_session_with_id(parameters[0]));
-    return session->web_content_connection().print_page();
+    return session->web_content_connection().print_page(move(payload));
 }
 
 }

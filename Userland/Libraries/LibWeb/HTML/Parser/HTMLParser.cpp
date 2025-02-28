@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2021, Luke Wilde <lukew@serenityos.org>
  * Copyright (c) 2023-2024, Shannon Booth <shannon@serenityos.org>
  *
@@ -10,6 +10,7 @@
 #include <AK/SourceLocation.h>
 #include <AK/Utf32View.h>
 #include <LibTextCodec/Decoder.h>
+#include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
@@ -21,6 +22,7 @@
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/ProcessingInstruction.h>
 #include <LibWeb/DOM/QualifiedName.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/CustomElements/CustomElementDefinition.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
@@ -33,6 +35,7 @@
 #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/Parser/HTMLToken.h>
+#include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Infra/CharacterTypes.h>
@@ -132,10 +135,10 @@ static bool is_html_integration_point(DOM::Element const& element)
     return false;
 }
 
-HTMLParser::HTMLParser(DOM::Document& document, StringView input, ByteString const& encoding)
+HTMLParser::HTMLParser(DOM::Document& document, StringView input, StringView encoding)
     : m_tokenizer(input, encoding)
     , m_scripting_enabled(document.is_scripting_enabled())
-    , m_document(JS::make_handle(document))
+    , m_document(document)
 {
     m_tokenizer.set_parser({}, *this);
     m_document->set_parser({}, *this);
@@ -146,7 +149,7 @@ HTMLParser::HTMLParser(DOM::Document& document, StringView input, ByteString con
 
 HTMLParser::HTMLParser(DOM::Document& document)
     : m_scripting_enabled(document.is_scripting_enabled())
-    , m_document(JS::make_handle(document))
+    , m_document(document)
 {
     m_document->set_parser({}, *this);
     m_tokenizer.set_parser({}, *this);
@@ -174,7 +177,7 @@ void HTMLParser::run(HTMLTokenizer::StopAtInsertionPoint stop_at_insertion_point
     for (;;) {
         // FIXME: Find a better way to say that we come from Document::close() and want to process EOF.
         if (!m_tokenizer.is_eof_inserted() && m_tokenizer.is_insertion_point_reached())
-            return;
+            break;
 
         auto optional_token = m_tokenizer.next_token(stop_at_insertion_point);
         if (!optional_token.has_value())
@@ -291,9 +294,9 @@ void HTMLParser::the_end(JS::NonnullGCPtr<DOM::Document> document, JS::GCPtr<HTM
     }
 
     // 6. Queue a global task on the DOM manipulation task source given the Document's relevant global object to run the following substeps:
-    queue_global_task(HTML::Task::Source::DOMManipulation, *document, [document = document] {
+    queue_global_task(HTML::Task::Source::DOMManipulation, *document, JS::create_heap_function(document->heap(), [document = document] {
         // 1. Set the Document's load timing info's DOM content loaded event start time to the current high resolution time given the Document's relevant global object.
-        document->load_timing_info().dom_content_loaded_event_start_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().dom_content_loaded_event_start_time = HighResolutionTime::current_high_resolution_time(relevant_global_object(*document));
 
         // 2. Fire an event named DOMContentLoaded at the Document object, with its bubbles attribute initialized to true.
         auto content_loaded_event = DOM::Event::create(document->realm(), HTML::EventNames::DOMContentLoaded);
@@ -301,12 +304,12 @@ void HTMLParser::the_end(JS::NonnullGCPtr<DOM::Document> document, JS::GCPtr<HTM
         document->dispatch_event(content_loaded_event);
 
         // 3. Set the Document's load timing info's DOM content loaded event end time to the current high resolution time given the Document's relevant global object.
-        document->load_timing_info().dom_content_loaded_event_end_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().dom_content_loaded_event_end_time = HighResolutionTime::current_high_resolution_time(relevant_global_object(*document));
 
         // FIXME: 4. Enable the client message queue of the ServiceWorkerContainer object whose associated service worker client is the Document object's relevant settings object.
 
         // FIXME: 5. Invoke WebDriver BiDi DOM content loaded with the Document's browsing context, and a new WebDriver BiDi navigation status whose id is the Document object's navigation id, status is "pending", and url is the Document object's URL.
-    });
+    }));
 
     // 7. Spin the event loop until the set of scripts that will execute as soon as possible and the list of scripts that will execute in order as soon as possible are empty.
     main_thread_event_loop().spin_until([&] {
@@ -319,7 +322,7 @@ void HTMLParser::the_end(JS::NonnullGCPtr<DOM::Document> document, JS::GCPtr<HTM
     });
 
     // 9. Queue a global task on the DOM manipulation task source given the Document's relevant global object to run the following steps:
-    queue_global_task(HTML::Task::Source::DOMManipulation, *document, [document = document] {
+    queue_global_task(HTML::Task::Source::DOMManipulation, *document, JS::create_heap_function(document->heap(), [document = document] {
         // 1. Update the current document readiness to "complete".
         document->update_readiness(HTML::DocumentReadyState::Complete);
 
@@ -331,7 +334,7 @@ void HTMLParser::the_end(JS::NonnullGCPtr<DOM::Document> document, JS::GCPtr<HTM
         auto& window = verify_cast<Window>(relevant_global_object(*document));
 
         // 4. Set the Document's load timing info's load event start time to the current high resolution time given window.
-        document->load_timing_info().load_event_start_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().load_event_start_time = HighResolutionTime::current_high_resolution_time(window);
 
         // 5. Fire an event named load at window, with legacy target override flag set.
         // FIXME: The legacy target override flag is currently set by a virtual override of dispatch_event()
@@ -343,7 +346,7 @@ void HTMLParser::the_end(JS::NonnullGCPtr<DOM::Document> document, JS::GCPtr<HTM
         // FIXME: 7. Set the Document object's navigation id to null.
 
         // 8. Set the Document's load timing info's load event end time to the current high resolution time given window.
-        document->load_timing_info().load_event_end_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().load_event_end_time = HighResolutionTime::current_high_resolution_time(window);
 
         // 9. Assert: Document's page showing is false.
         VERIFY(!document->page_showing());
@@ -358,7 +361,7 @@ void HTMLParser::the_end(JS::NonnullGCPtr<DOM::Document> document, JS::GCPtr<HTM
         document->completely_finish_loading();
 
         // FIXME: 13. Queue the navigation timing entry for the Document.
-    });
+    }));
 
     // FIXME: 10. If the Document's print when loaded flag is set, then run the printing steps.
 
@@ -614,6 +617,7 @@ DOM::Element& HTMLParser::node_before_current_node()
 // https://html.spec.whatwg.org/multipage/parsing.html#appropriate-place-for-inserting-a-node
 HTMLParser::AdjustedInsertionLocation HTMLParser::find_appropriate_place_for_inserting_node(JS::GCPtr<DOM::Element> override_target)
 {
+    // 1. If there was an override target specified, then let target be the override target.
     auto& target = override_target ? *override_target.ptr() : current_node();
     HTMLParser::AdjustedInsertionLocation adjusted_insertion_location;
 
@@ -657,9 +661,12 @@ HTMLParser::AdjustedInsertionLocation HTMLParser::find_appropriate_place_for_ins
         adjusted_insertion_location = { target, nullptr };
     }
 
+    // 3. If the adjusted insertion location is inside a template element,
+    //    let it instead be inside the template element's template contents, after its last child (if any).
     if (is<HTMLTemplateElement>(*adjusted_insertion_location.parent))
-        return { verify_cast<HTMLTemplateElement>(*adjusted_insertion_location.parent).content().ptr(), nullptr };
+        adjusted_insertion_location = { static_cast<HTMLTemplateElement const&>(*adjusted_insertion_location.parent).content().ptr(), nullptr };
 
+    // 4. Return the adjusted insertion location.
     return adjusted_insertion_location;
 }
 
@@ -754,43 +761,30 @@ JS::NonnullGCPtr<DOM::Element> HTMLParser::create_element_for(HTMLToken const& t
 }
 
 // https://html.spec.whatwg.org/multipage/parsing.html#insert-a-foreign-element
-JS::NonnullGCPtr<DOM::Element> HTMLParser::insert_foreign_element(HTMLToken const& token, Optional<FlyString> const& namespace_)
+JS::NonnullGCPtr<DOM::Element> HTMLParser::insert_foreign_element(HTMLToken const& token, Optional<FlyString> const& namespace_, OnlyAddToElementStack only_add_to_element_stack)
 {
+    // 1. Let the adjusted insertion location be the appropriate place for inserting a node.
     auto adjusted_insertion_location = find_appropriate_place_for_inserting_node();
 
-    // NOTE: adjusted_insertion_location.parent will be non-null, however, it uses RP to be able to default-initialize HTMLParser::AdjustedInsertionLocation.
+    // 2. Let element be the result of creating an element for the token in the given namespace,
+    //    with the intended parent being the element in which the adjusted insertion location finds itself.
     auto element = create_element_for(token, namespace_, *adjusted_insertion_location.parent);
 
-    auto pre_insertion_validity = adjusted_insertion_location.parent->ensure_pre_insertion_validity(*element, adjusted_insertion_location.insert_before_sibling);
-
-    // NOTE: If it's not possible to insert the element at the adjusted insertion location, the element is simply dropped.
-    if (!pre_insertion_validity.is_exception()) {
-        // 1. If the parser was not created as part of the HTML fragment parsing algorithm, then push a new element queue onto element's relevant agent's custom element reactions stack.
-        if (!m_parsing_fragment) {
-            auto& vm = main_thread_event_loop().vm();
-            auto& custom_data = verify_cast<Bindings::WebEngineCustomData>(*vm.custom_data());
-            custom_data.custom_element_reactions_stack.element_queue_stack.append({});
-        }
-
-        // 2. Insert element at the adjusted insertion location.
-        adjusted_insertion_location.parent->insert_before(*element, adjusted_insertion_location.insert_before_sibling);
-
-        // 3. If the parser was not created as part of the HTML fragment parsing algorithm, then pop the element queue from element's relevant agent's custom element reactions stack, and invoke custom element reactions in that queue.
-        if (!m_parsing_fragment) {
-            auto& vm = main_thread_event_loop().vm();
-            auto& custom_data = verify_cast<Bindings::WebEngineCustomData>(*vm.custom_data());
-            auto queue = custom_data.custom_element_reactions_stack.element_queue_stack.take_last();
-            Bindings::invoke_custom_element_reactions(queue);
-        }
+    // 3. If onlyAddToElementStack is false, then run insert an element at the adjusted insertion location with element.
+    if (only_add_to_element_stack == OnlyAddToElementStack::No) {
+        insert_an_element_at_the_adjusted_insertion_location(element);
     }
 
+    // 4. Push element onto the stack of open elements so that it is the new current node.
     m_stack_of_open_elements.push(element);
+
+    // 5. Return element.
     return element;
 }
 
 JS::NonnullGCPtr<DOM::Element> HTMLParser::insert_html_element(HTMLToken const& token)
 {
-    return insert_foreign_element(token, Namespace::HTML);
+    return insert_foreign_element(token, Namespace::HTML, OnlyAddToElementStack::No);
 }
 
 void HTMLParser::handle_before_head(HTMLToken& token)
@@ -816,7 +810,7 @@ void HTMLParser::handle_before_head(HTMLToken& token)
 
     if (token.is_start_tag() && token.tag_name() == HTML::TagNames::head) {
         auto element = insert_html_element(token);
-        m_head_element = JS::make_handle(verify_cast<HTMLHeadElement>(*element));
+        m_head_element = verify_cast<HTMLHeadElement>(*element);
         m_insertion_mode = InsertionMode::InHead;
         return;
     }
@@ -831,7 +825,7 @@ void HTMLParser::handle_before_head(HTMLToken& token)
     }
 
 AnythingElse:
-    m_head_element = JS::make_handle(verify_cast<HTMLHeadElement>(*insert_html_element(HTMLToken::make_start_tag(HTML::TagNames::head))));
+    m_head_element = verify_cast<HTMLHeadElement>(*insert_html_element(HTMLToken::make_start_tag(HTML::TagNames::head)));
     m_insertion_mode = InsertionMode::InHead;
     process_using_the_rules_for(InsertionMode::InHead, token);
     return;
@@ -931,29 +925,138 @@ void HTMLParser::handle_in_head(HTMLToken& token)
         goto AnythingElse;
     }
 
+    // -> A start tag whose tag name is "template"
     if (token.is_start_tag() && token.tag_name() == HTML::TagNames::template_) {
-        (void)insert_html_element(token);
+        // Let template start tag be the start tag.
+        auto const& template_start_tag = token;
+
+        // Insert a marker at the end of the list of active formatting elements.
         m_list_of_active_formatting_elements.add_marker();
+
+        // Set the frameset-ok flag to "not ok".
         m_frameset_ok = false;
+
+        // Switch the insertion mode to "in template".
         m_insertion_mode = InsertionMode::InTemplate;
+
+        // Push "in template" onto the stack of template insertion modes so that it is the new current template insertion mode.
         m_stack_of_template_insertion_modes.append(InsertionMode::InTemplate);
+
+        // Let the adjusted insertion location be the appropriate place for inserting a node.
+        auto adjusted_insertion_location = find_appropriate_place_for_inserting_node();
+
+        // Let intended parent be the element in which the adjusted insertion location finds itself.
+        auto& intended_parent = adjusted_insertion_location.parent;
+
+        // Let document be intended parent's node document.
+        auto& document = intended_parent->document();
+
+        Optional<Bindings::ShadowRootMode> shadowrootmode = {};
+        {
+            auto shadowrootmode_attribute_value = template_start_tag.attribute(HTML::AttributeNames::shadowrootmode);
+            if (shadowrootmode_attribute_value.has_value()) {
+                if (shadowrootmode_attribute_value.value() == "open"sv) {
+                    shadowrootmode = Bindings::ShadowRootMode::Open;
+                } else if (shadowrootmode_attribute_value.value() == "closed"sv) {
+                    shadowrootmode = Bindings::ShadowRootMode::Closed;
+                }
+            }
+        }
+
+        // If any of the following are false:
+        // - template start tag's shadowrootmode is not in the none state;
+        // - Document's allow declarative shadow roots is true; or
+        // - the adjusted current node is not the topmost element in the stack of open elements,
+        if (!shadowrootmode.has_value()
+            || !document.allow_declarative_shadow_roots()
+            || &adjusted_current_node() == &m_stack_of_open_elements.first()) {
+            // then insert an HTML element for the token.
+            (void)insert_html_element(token);
+        }
+
+        // Otherwise:
+        else {
+            // 1. Let declarative shadow host element be adjusted current node.
+            auto& declarative_shadow_host_element = adjusted_current_node();
+
+            // 2. Let template be the result of insert a foreign element for template start tag, with HTML namespace and true.
+            auto template_ = insert_foreign_element(template_start_tag, Namespace::HTML, OnlyAddToElementStack::Yes);
+
+            // 3. Let mode be template start tag's shadowrootmode attribute's value.
+            auto mode = shadowrootmode.value();
+
+            // 4. Let clonable be true if template start tag has a shadowrootclonable attribute; otherwise false.
+            auto clonable = template_start_tag.attribute(HTML::AttributeNames::shadowrootclonable).has_value();
+
+            // 5. Let serializable be true if template start tag has a shadowrootserializable attribute; otherwise false.
+            auto serializable = template_start_tag.attribute(HTML::AttributeNames::shadowrootserializable).has_value();
+
+            // 6. Let delegatesFocus be true if template start tag has a shadowrootdelegatesfocus attribute; otherwise false.
+            auto delegates_focus = template_start_tag.attribute(HTML::AttributeNames::shadowrootdelegatesfocus).has_value();
+
+            // 7. If declarative shadow host element is a shadow host, then insert an element at the adjusted insertion location with template.
+            if (declarative_shadow_host_element.is_shadow_host()) {
+                // FIXME: We do manual "insert before" instead of "insert an element at the adjusted insertion location" here
+                //        Otherwise, two template elements in a row will cause the second to try to insert into itself.
+                //        This might be a spec bug(?)
+                adjusted_insertion_location.parent->insert_before(*template_, adjusted_insertion_location.insert_before_sibling);
+            }
+
+            // 8. Otherwise:
+            else {
+                // 1. Attach a shadow root with declarative shadow host element, mode, clonable, serializable, delegatesFocus, and "named".
+                //    If an exception is thrown, then catch it, report the exception, insert an element at the adjusted insertion location with template, and return.
+                auto result = declarative_shadow_host_element.attach_a_shadow_root(mode, clonable, serializable, delegates_focus, Bindings::SlotAssignmentMode::Named);
+                if (result.is_error()) {
+                    report_exception(Bindings::dom_exception_to_throw_completion(vm(), result.release_error()), realm());
+                    insert_an_element_at_the_adjusted_insertion_location(template_);
+                    return;
+                }
+
+                // 2. Let shadow be declarative shadow host element's shadow root.
+                auto& shadow = *declarative_shadow_host_element.shadow_root();
+
+                // 3. Set shadow's declarative to true.
+                shadow.set_declarative(true);
+
+                // 4. Set template's template contents property to shadow.
+                verify_cast<HTMLTemplateElement>(*template_).set_template_contents(shadow);
+
+                // 5. Set shadow's available to element internals to true.
+                shadow.set_available_to_element_internals(true);
+            }
+        }
+
         return;
     }
 
+    // -> An end tag whose tag name is "template"
     if (token.is_end_tag() && token.tag_name() == HTML::TagNames::template_) {
+        // If there is no template element on the stack of open elements, then this is a parse error; ignore the token.
         if (!m_stack_of_open_elements.contains(HTML::TagNames::template_)) {
             log_parse_error();
             return;
         }
 
+        // Otherwise, run these steps:
+
+        // 1. Generate all implied end tags thoroughly.
         generate_all_implied_end_tags_thoroughly();
 
+        // 2. If the current node is not a template element, then this is a parse error.
         if (current_node().local_name() != HTML::TagNames::template_)
             log_parse_error();
 
+        // 3. Pop elements from the stack of open elements until a template element has been popped from the stack.
         m_stack_of_open_elements.pop_until_an_element_with_tag_name_has_been_popped(HTML::TagNames::template_);
+
+        // 4. Clear the list of active formatting elements up to the last marker.
         m_list_of_active_formatting_elements.clear_up_to_the_last_marker();
+
+        // 5. Pop the current template insertion mode off the stack of template insertion modes.
         m_stack_of_template_insertion_modes.take_last();
+
+        // 6. Reset the insertion mode appropriately.
         reset_the_insertion_mode_appropriately();
         return;
     }
@@ -1052,17 +1155,17 @@ void HTMLParser::insert_character(u32 data)
 {
     auto node = find_character_insertion_node();
     if (node == m_character_insertion_node.ptr()) {
-        m_character_insertion_builder.append(Utf32View { &data, 1 });
+        m_character_insertion_builder.append_code_point(data);
         return;
     }
     if (!m_character_insertion_node.ptr()) {
-        m_character_insertion_node = JS::make_handle(node);
-        m_character_insertion_builder.append(Utf32View { &data, 1 });
+        m_character_insertion_node = node;
+        m_character_insertion_builder.append_code_point(data);
         return;
     }
     flush_character_insertions();
-    m_character_insertion_node = JS::make_handle(node);
-    m_character_insertion_builder.append(Utf32View { &data, 1 });
+    m_character_insertion_node = node;
+    m_character_insertion_builder.append_code_point(data);
 }
 
 void HTMLParser::handle_after_head(HTMLToken& token)
@@ -1263,7 +1366,7 @@ Create:
     auto new_element = insert_html_element(HTMLToken::make_start_tag(entry->element->local_name()));
 
     // 9. Replace the entry for entry in the list with an entry for new element.
-    m_list_of_active_formatting_elements.entries().at(index).element = JS::make_handle(new_element);
+    m_list_of_active_formatting_elements.entries().at(index).element = new_element;
 
     // 10. If the entry for new element in the list of active formatting elements is not the last entry in the list, return to the step labeled advance.
     if (index != m_list_of_active_formatting_elements.entries().size() - 1)
@@ -1551,6 +1654,7 @@ bool HTMLParser::is_special_tag(FlyString const& tag_name, Optional<FlyString> c
             MathML::TagNames::mi,
             MathML::TagNames::mo,
             MathML::TagNames::mn,
+            MathML::TagNames::ms,
             MathML::TagNames::mtext,
             MathML::TagNames::annotation_xml);
     }
@@ -1616,9 +1720,10 @@ void HTMLParser::handle_in_body(HTMLToken& token)
 
         // Otherwise, for each attribute on the token, check to see if the attribute is already present on the top element of the stack of open elements.
         // If it is not, add the attribute and its corresponding value to that element.
+        auto& top_element = m_stack_of_open_elements.first();
         token.for_each_attribute([&](auto& attribute) {
-            if (!current_node().has_attribute(attribute.local_name))
-                MUST(current_node().set_attribute(attribute.local_name, attribute.value));
+            if (!top_element.has_attribute(attribute.local_name))
+                top_element.append_attribute(attribute.local_name, attribute.value);
             return IterationDecision::Continue;
         });
         return;
@@ -1640,16 +1745,15 @@ void HTMLParser::handle_in_body(HTMLToken& token)
 
     // -> A start tag whose tag name is "body"
     if (token.is_start_tag() && token.tag_name() == HTML::TagNames::body) {
-
         // Parse error.
         log_parse_error();
 
         // If the stack of open elements has only one node on it, if the second element on the stack of open elements is not a body element,
-        // or if there is a template element on the stack of open elements, then ignore the token. (fragment case)
+        // or if there is a template element on the stack of open elements, then ignore the token.
+        // (fragment case or there is a template element on the stack)
         if (m_stack_of_open_elements.elements().size() == 1
             || m_stack_of_open_elements.elements().at(1)->local_name() != HTML::TagNames::body
             || m_stack_of_open_elements.contains(HTML::TagNames::template_)) {
-            VERIFY(m_parsing_fragment);
             return;
         }
 
@@ -1660,7 +1764,7 @@ void HTMLParser::handle_in_body(HTMLToken& token)
         auto& body_element = m_stack_of_open_elements.elements().at(1);
         token.for_each_attribute([&](auto& attribute) {
             if (!body_element->has_attribute(attribute.local_name))
-                MUST(body_element->set_attribute(attribute.local_name, attribute.value));
+                body_element->append_attribute(attribute.local_name, attribute.value);
             return IterationDecision::Continue;
         });
         return;
@@ -1831,7 +1935,7 @@ void HTMLParser::handle_in_body(HTMLToken& token)
         // Insert an HTML element for the token, and, if there is no template element on the stack of open elements, set the form element pointer to point to the element created.
         auto element = insert_html_element(token);
         if (!m_stack_of_open_elements.contains(HTML::TagNames::template_))
-            m_form_element = JS::make_handle(verify_cast<HTMLFormElement>(*element));
+            m_form_element = verify_cast<HTMLFormElement>(*element);
         return;
     }
 
@@ -2099,7 +2203,7 @@ void HTMLParser::handle_in_body(HTMLToken& token)
         return;
     }
 
-    // 3. An end tag whose tag name is one of: "h1", "h2", "h3", "h4", "h5", "h6"
+    // -> An end tag whose tag name is one of: "h1", "h2", "h3", "h4", "h5", "h6"
     if (token.is_end_tag() && token.tag_name().is_one_of(HTML::TagNames::h1, HTML::TagNames::h2, HTML::TagNames::h3, HTML::TagNames::h4, HTML::TagNames::h5, HTML::TagNames::h6)) {
         // If the stack of open elements does not have an element in scope that is an HTML element and whose tag name is one of "h1", "h2", "h3", "h4", "h5", or "h6", then this is a parse error; ignore the token.
         if (!m_stack_of_open_elements.has_in_scope(HTML::TagNames::h1)
@@ -2128,6 +2232,12 @@ void HTMLParser::handle_in_body(HTMLToken& token)
                 break;
         }
         return;
+    }
+
+    // -> An end tag whose tag name is "sarcasm"
+    if (token.is_end_tag() && token.tag_name().is_one_of("sarcasm"_fly_string)) {
+        // Take a deep breath, then act as described in the "any other end tag" entry below.
+        goto AnyOtherEndTag;
     }
 
     // -> A start tag whose tag name is "a"
@@ -2268,8 +2378,6 @@ void HTMLParser::handle_in_body(HTMLToken& token)
 
         // Insert an HTML element for the token. Immediately pop the current node off the stack of open elements.
         (void)insert_html_element(token);
-
-        // Acknowledge the token's self-closing flag, if it is set.
         (void)m_stack_of_open_elements.pop();
 
         // Acknowledge the token's self-closing flag, if it is set.
@@ -2486,7 +2594,7 @@ void HTMLParser::handle_in_body(HTMLToken& token)
         adjust_foreign_attributes(token);
 
         // Insert a foreign element for the token, with MathML namespace and false.
-        (void)insert_foreign_element(token, Namespace::MathML);
+        (void)insert_foreign_element(token, Namespace::MathML, OnlyAddToElementStack::No);
 
         // If the token has its self-closing flag set, pop the current node off the stack of open elements and acknowledge the token's self-closing flag.
         if (token.is_self_closing()) {
@@ -2509,7 +2617,7 @@ void HTMLParser::handle_in_body(HTMLToken& token)
 
         // FIXME: We are not setting the 'onlyAddToElementStack' flag here.
         // Insert a foreign element for the token, with SVG namespace and false.
-        (void)insert_foreign_element(token, Namespace::SVG);
+        (void)insert_foreign_element(token, Namespace::SVG, OnlyAddToElementStack::No);
 
         // If the token has its self-closing flag set, pop the current node off the stack of open elements and acknowledge the token's self-closing flag.
         if (token.is_self_closing()) {
@@ -2582,121 +2690,154 @@ void HTMLParser::adjust_mathml_attributes(HTMLToken& token)
 
 void HTMLParser::adjust_svg_tag_names(HTMLToken& token)
 {
-    token.adjust_tag_name("altglyph"_fly_string, "altGlyph"_fly_string);
-    token.adjust_tag_name("altglyphdef"_fly_string, "altGlyphDef"_fly_string);
-    token.adjust_tag_name("altglyphitem"_fly_string, "altGlyphItem"_fly_string);
-    token.adjust_tag_name("animatecolor"_fly_string, "animateColor"_fly_string);
-    token.adjust_tag_name("animatemotion"_fly_string, "animateMotion"_fly_string);
-    token.adjust_tag_name("animatetransform"_fly_string, "animateTransform"_fly_string);
-    token.adjust_tag_name("clippath"_fly_string, "clipPath"_fly_string);
-    token.adjust_tag_name("feblend"_fly_string, "feBlend"_fly_string);
-    token.adjust_tag_name("fecolormatrix"_fly_string, "feColorMatrix"_fly_string);
-    token.adjust_tag_name("fecomponenttransfer"_fly_string, "feComponentTransfer"_fly_string);
-    token.adjust_tag_name("fecomposite"_fly_string, "feComposite"_fly_string);
-    token.adjust_tag_name("feconvolvematrix"_fly_string, "feConvolveMatrix"_fly_string);
-    token.adjust_tag_name("fediffuselighting"_fly_string, "feDiffuseLighting"_fly_string);
-    token.adjust_tag_name("fedisplacementmap"_fly_string, "feDisplacementMap"_fly_string);
-    token.adjust_tag_name("fedistantlight"_fly_string, "feDistantLight"_fly_string);
-    token.adjust_tag_name("fedropshadow"_fly_string, "feDropShadow"_fly_string);
-    token.adjust_tag_name("feflood"_fly_string, "feFlood"_fly_string);
-    token.adjust_tag_name("fefunca"_fly_string, "feFuncA"_fly_string);
-    token.adjust_tag_name("fefuncb"_fly_string, "feFuncB"_fly_string);
-    token.adjust_tag_name("fefuncg"_fly_string, "feFuncG"_fly_string);
-    token.adjust_tag_name("fefuncr"_fly_string, "feFuncR"_fly_string);
-    token.adjust_tag_name("fegaussianblur"_fly_string, "feGaussianBlur"_fly_string);
-    token.adjust_tag_name("feimage"_fly_string, "feImage"_fly_string);
-    token.adjust_tag_name("femerge"_fly_string, "feMerge"_fly_string);
-    token.adjust_tag_name("femergenode"_fly_string, "feMergeNode"_fly_string);
-    token.adjust_tag_name("femorphology"_fly_string, "feMorphology"_fly_string);
-    token.adjust_tag_name("feoffset"_fly_string, "feOffset"_fly_string);
-    token.adjust_tag_name("fepointlight"_fly_string, "fePointLight"_fly_string);
-    token.adjust_tag_name("fespecularlighting"_fly_string, "feSpecularLighting"_fly_string);
-    token.adjust_tag_name("fespotlight"_fly_string, "feSpotlight"_fly_string);
-    token.adjust_tag_name("foreignobject"_fly_string, "foreignObject"_fly_string);
-    token.adjust_tag_name("glyphref"_fly_string, "glyphRef"_fly_string);
-    token.adjust_tag_name("lineargradient"_fly_string, "linearGradient"_fly_string);
-    token.adjust_tag_name("radialgradient"_fly_string, "radialGradient"_fly_string);
-    token.adjust_tag_name("textpath"_fly_string, "textPath"_fly_string);
+    struct TagNameAdjustment {
+        FlyString from;
+        FlyString to;
+    };
+
+    static TagNameAdjustment adjustments[] = {
+        { "altglyph"_fly_string, "altGlyph"_fly_string },
+        { "altglyphdef"_fly_string, "altGlyphDef"_fly_string },
+        { "altglyphitem"_fly_string, "altGlyphItem"_fly_string },
+        { "animatecolor"_fly_string, "animateColor"_fly_string },
+        { "animatemotion"_fly_string, "animateMotion"_fly_string },
+        { "animatetransform"_fly_string, "animateTransform"_fly_string },
+        { "clippath"_fly_string, "clipPath"_fly_string },
+        { "feblend"_fly_string, "feBlend"_fly_string },
+        { "fecolormatrix"_fly_string, "feColorMatrix"_fly_string },
+        { "fecomponenttransfer"_fly_string, "feComponentTransfer"_fly_string },
+        { "fecomposite"_fly_string, "feComposite"_fly_string },
+        { "feconvolvematrix"_fly_string, "feConvolveMatrix"_fly_string },
+        { "fediffuselighting"_fly_string, "feDiffuseLighting"_fly_string },
+        { "fedisplacementmap"_fly_string, "feDisplacementMap"_fly_string },
+        { "fedistantlight"_fly_string, "feDistantLight"_fly_string },
+        { "fedropshadow"_fly_string, "feDropShadow"_fly_string },
+        { "feflood"_fly_string, "feFlood"_fly_string },
+        { "fefunca"_fly_string, "feFuncA"_fly_string },
+        { "fefuncb"_fly_string, "feFuncB"_fly_string },
+        { "fefuncg"_fly_string, "feFuncG"_fly_string },
+        { "fefuncr"_fly_string, "feFuncR"_fly_string },
+        { "fegaussianblur"_fly_string, "feGaussianBlur"_fly_string },
+        { "feimage"_fly_string, "feImage"_fly_string },
+        { "femerge"_fly_string, "feMerge"_fly_string },
+        { "femergenode"_fly_string, "feMergeNode"_fly_string },
+        { "femorphology"_fly_string, "feMorphology"_fly_string },
+        { "feoffset"_fly_string, "feOffset"_fly_string },
+        { "fepointlight"_fly_string, "fePointLight"_fly_string },
+        { "fespecularlighting"_fly_string, "feSpecularLighting"_fly_string },
+        { "fespotlight"_fly_string, "feSpotlight"_fly_string },
+        { "foreignobject"_fly_string, "foreignObject"_fly_string },
+        { "glyphref"_fly_string, "glyphRef"_fly_string },
+        { "lineargradient"_fly_string, "linearGradient"_fly_string },
+        { "radialgradient"_fly_string, "radialGradient"_fly_string },
+        { "textpath"_fly_string, "textPath"_fly_string },
+    };
+
+    for (auto const& adjustment : adjustments) {
+        token.adjust_tag_name(adjustment.from, adjustment.to);
+    }
 }
 
 void HTMLParser::adjust_svg_attributes(HTMLToken& token)
 {
-    token.adjust_attribute_name("attributename"_fly_string, "attributeName"_fly_string);
-    token.adjust_attribute_name("attributetype"_fly_string, "attributeType"_fly_string);
-    token.adjust_attribute_name("basefrequency"_fly_string, "baseFrequency"_fly_string);
-    token.adjust_attribute_name("baseprofile"_fly_string, "baseProfile"_fly_string);
-    token.adjust_attribute_name("calcmode"_fly_string, "calcMode"_fly_string);
-    token.adjust_attribute_name("clippathunits"_fly_string, "clipPathUnits"_fly_string);
-    token.adjust_attribute_name("diffuseconstant"_fly_string, "diffuseConstant"_fly_string);
-    token.adjust_attribute_name("edgemode"_fly_string, "edgeMode"_fly_string);
-    token.adjust_attribute_name("filterunits"_fly_string, "filterUnits"_fly_string);
-    token.adjust_attribute_name("glyphref"_fly_string, "glyphRef"_fly_string);
-    token.adjust_attribute_name("gradienttransform"_fly_string, "gradientTransform"_fly_string);
-    token.adjust_attribute_name("gradientunits"_fly_string, "gradientUnits"_fly_string);
-    token.adjust_attribute_name("kernelmatrix"_fly_string, "kernelMatrix"_fly_string);
-    token.adjust_attribute_name("kernelunitlength"_fly_string, "kernelUnitLength"_fly_string);
-    token.adjust_attribute_name("keypoints"_fly_string, "keyPoints"_fly_string);
-    token.adjust_attribute_name("keysplines"_fly_string, "keySplines"_fly_string);
-    token.adjust_attribute_name("keytimes"_fly_string, "keyTimes"_fly_string);
-    token.adjust_attribute_name("lengthadjust"_fly_string, "lengthAdjust"_fly_string);
-    token.adjust_attribute_name("limitingconeangle"_fly_string, "limitingConeAngle"_fly_string);
-    token.adjust_attribute_name("markerheight"_fly_string, "markerHeight"_fly_string);
-    token.adjust_attribute_name("markerunits"_fly_string, "markerUnits"_fly_string);
-    token.adjust_attribute_name("markerwidth"_fly_string, "markerWidth"_fly_string);
-    token.adjust_attribute_name("maskcontentunits"_fly_string, "maskContentUnits"_fly_string);
-    token.adjust_attribute_name("maskunits"_fly_string, "maskUnits"_fly_string);
-    token.adjust_attribute_name("numoctaves"_fly_string, "numOctaves"_fly_string);
-    token.adjust_attribute_name("pathlength"_fly_string, "pathLength"_fly_string);
-    token.adjust_attribute_name("patterncontentunits"_fly_string, "patternContentUnits"_fly_string);
-    token.adjust_attribute_name("patterntransform"_fly_string, "patternTransform"_fly_string);
-    token.adjust_attribute_name("patternunits"_fly_string, "patternUnits"_fly_string);
-    token.adjust_attribute_name("pointsatx"_fly_string, "pointsAtX"_fly_string);
-    token.adjust_attribute_name("pointsaty"_fly_string, "pointsAtY"_fly_string);
-    token.adjust_attribute_name("pointsatz"_fly_string, "pointsAtZ"_fly_string);
-    token.adjust_attribute_name("preservealpha"_fly_string, "preserveAlpha"_fly_string);
-    token.adjust_attribute_name("preserveaspectratio"_fly_string, "preserveAspectRatio"_fly_string);
-    token.adjust_attribute_name("primitiveunits"_fly_string, "primitiveUnits"_fly_string);
-    token.adjust_attribute_name("refx"_fly_string, "refX"_fly_string);
-    token.adjust_attribute_name("refy"_fly_string, "refY"_fly_string);
-    token.adjust_attribute_name("repeatcount"_fly_string, "repeatCount"_fly_string);
-    token.adjust_attribute_name("repeatdur"_fly_string, "repeatDur"_fly_string);
-    token.adjust_attribute_name("requiredextensions"_fly_string, "requiredExtensions"_fly_string);
-    token.adjust_attribute_name("requiredfeatures"_fly_string, "requiredFeatures"_fly_string);
-    token.adjust_attribute_name("specularconstant"_fly_string, "specularConstant"_fly_string);
-    token.adjust_attribute_name("specularexponent"_fly_string, "specularExponent"_fly_string);
-    token.adjust_attribute_name("spreadmethod"_fly_string, "spreadMethod"_fly_string);
-    token.adjust_attribute_name("startoffset"_fly_string, "startOffset"_fly_string);
-    token.adjust_attribute_name("stddeviation"_fly_string, "stdDeviation"_fly_string);
-    token.adjust_attribute_name("stitchtiles"_fly_string, "stitchTiles"_fly_string);
-    token.adjust_attribute_name("surfacescale"_fly_string, "surfaceScale"_fly_string);
-    token.adjust_attribute_name("systemlanguage"_fly_string, "systemLanguage"_fly_string);
-    token.adjust_attribute_name("tablevalues"_fly_string, "tableValues"_fly_string);
-    token.adjust_attribute_name("targetx"_fly_string, "targetX"_fly_string);
-    token.adjust_attribute_name("targety"_fly_string, "targetY"_fly_string);
-    token.adjust_attribute_name("textlength"_fly_string, "textLength"_fly_string);
-    token.adjust_attribute_name("viewbox"_fly_string, "viewBox"_fly_string);
-    token.adjust_attribute_name("viewtarget"_fly_string, "viewTarget"_fly_string);
-    token.adjust_attribute_name("xchannelselector"_fly_string, "xChannelSelector"_fly_string);
-    token.adjust_attribute_name("ychannelselector"_fly_string, "yChannelSelector"_fly_string);
-    token.adjust_attribute_name("zoomandpan"_fly_string, "zoomAndPan"_fly_string);
+    struct AttributeAdjustment {
+        FlyString from;
+        FlyString to;
+    };
+
+    static AttributeAdjustment adjustments[] = {
+        { "attributename"_fly_string, "attributeName"_fly_string },
+        { "attributetype"_fly_string, "attributeType"_fly_string },
+        { "basefrequency"_fly_string, "baseFrequency"_fly_string },
+        { "baseprofile"_fly_string, "baseProfile"_fly_string },
+        { "calcmode"_fly_string, "calcMode"_fly_string },
+        { "clippathunits"_fly_string, "clipPathUnits"_fly_string },
+        { "diffuseconstant"_fly_string, "diffuseConstant"_fly_string },
+        { "edgemode"_fly_string, "edgeMode"_fly_string },
+        { "filterunits"_fly_string, "filterUnits"_fly_string },
+        { "glyphref"_fly_string, "glyphRef"_fly_string },
+        { "gradienttransform"_fly_string, "gradientTransform"_fly_string },
+        { "gradientunits"_fly_string, "gradientUnits"_fly_string },
+        { "kernelmatrix"_fly_string, "kernelMatrix"_fly_string },
+        { "kernelunitlength"_fly_string, "kernelUnitLength"_fly_string },
+        { "keypoints"_fly_string, "keyPoints"_fly_string },
+        { "keysplines"_fly_string, "keySplines"_fly_string },
+        { "keytimes"_fly_string, "keyTimes"_fly_string },
+        { "lengthadjust"_fly_string, "lengthAdjust"_fly_string },
+        { "limitingconeangle"_fly_string, "limitingConeAngle"_fly_string },
+        { "markerheight"_fly_string, "markerHeight"_fly_string },
+        { "markerunits"_fly_string, "markerUnits"_fly_string },
+        { "markerwidth"_fly_string, "markerWidth"_fly_string },
+        { "maskcontentunits"_fly_string, "maskContentUnits"_fly_string },
+        { "maskunits"_fly_string, "maskUnits"_fly_string },
+        { "numoctaves"_fly_string, "numOctaves"_fly_string },
+        { "pathlength"_fly_string, "pathLength"_fly_string },
+        { "patterncontentunits"_fly_string, "patternContentUnits"_fly_string },
+        { "patterntransform"_fly_string, "patternTransform"_fly_string },
+        { "patternunits"_fly_string, "patternUnits"_fly_string },
+        { "pointsatx"_fly_string, "pointsAtX"_fly_string },
+        { "pointsaty"_fly_string, "pointsAtY"_fly_string },
+        { "pointsatz"_fly_string, "pointsAtZ"_fly_string },
+        { "preservealpha"_fly_string, "preserveAlpha"_fly_string },
+        { "preserveaspectratio"_fly_string, "preserveAspectRatio"_fly_string },
+        { "primitiveunits"_fly_string, "primitiveUnits"_fly_string },
+        { "refx"_fly_string, "refX"_fly_string },
+        { "refy"_fly_string, "refY"_fly_string },
+        { "repeatcount"_fly_string, "repeatCount"_fly_string },
+        { "repeatdur"_fly_string, "repeatDur"_fly_string },
+        { "requiredextensions"_fly_string, "requiredExtensions"_fly_string },
+        { "requiredfeatures"_fly_string, "requiredFeatures"_fly_string },
+        { "specularconstant"_fly_string, "specularConstant"_fly_string },
+        { "specularexponent"_fly_string, "specularExponent"_fly_string },
+        { "spreadmethod"_fly_string, "spreadMethod"_fly_string },
+        { "startoffset"_fly_string, "startOffset"_fly_string },
+        { "stddeviation"_fly_string, "stdDeviation"_fly_string },
+        { "stitchtiles"_fly_string, "stitchTiles"_fly_string },
+        { "surfacescale"_fly_string, "surfaceScale"_fly_string },
+        { "systemlanguage"_fly_string, "systemLanguage"_fly_string },
+        { "tablevalues"_fly_string, "tableValues"_fly_string },
+        { "targetx"_fly_string, "targetX"_fly_string },
+        { "targety"_fly_string, "targetY"_fly_string },
+        { "textlength"_fly_string, "textLength"_fly_string },
+        { "viewbox"_fly_string, "viewBox"_fly_string },
+        { "viewtarget"_fly_string, "viewTarget"_fly_string },
+        { "xchannelselector"_fly_string, "xChannelSelector"_fly_string },
+        { "ychannelselector"_fly_string, "yChannelSelector"_fly_string },
+        { "zoomandpan"_fly_string, "zoomAndPan"_fly_string },
+    };
+
+    for (auto const& adjustment : adjustments) {
+        token.adjust_attribute_name(adjustment.from, adjustment.to);
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/parsing.html#adjust-foreign-attributes
 void HTMLParser::adjust_foreign_attributes(HTMLToken& token)
 {
-    token.adjust_foreign_attribute("xlink:actuate"_fly_string, "xlink"_fly_string, "actuate"_fly_string, Namespace::XLink);
-    token.adjust_foreign_attribute("xlink:arcrole"_fly_string, "xlink"_fly_string, "arcrole"_fly_string, Namespace::XLink);
-    token.adjust_foreign_attribute("xlink:href"_fly_string, "xlink"_fly_string, "href"_fly_string, Namespace::XLink);
-    token.adjust_foreign_attribute("xlink:role"_fly_string, "xlink"_fly_string, "role"_fly_string, Namespace::XLink);
-    token.adjust_foreign_attribute("xlink:show"_fly_string, "xlink"_fly_string, "show"_fly_string, Namespace::XLink);
-    token.adjust_foreign_attribute("xlink:title"_fly_string, "xlink"_fly_string, "title"_fly_string, Namespace::XLink);
-    token.adjust_foreign_attribute("xlink:type"_fly_string, "xlink"_fly_string, "type"_fly_string, Namespace::XLink);
+    struct ForeignAttributeAdjustment {
+        FlyString attribute_name;
+        Optional<FlyString> prefix;
+        FlyString local_name;
+        FlyString namespace_;
+    };
 
-    token.adjust_foreign_attribute("xml:lang"_fly_string, "xml"_fly_string, "lang"_fly_string, Namespace::XML);
-    token.adjust_foreign_attribute("xml:space"_fly_string, "xml"_fly_string, "space"_fly_string, Namespace::XML);
+    static ForeignAttributeAdjustment adjustments[] = {
+        { "xlink:actuate"_fly_string, "xlink"_fly_string, "actuate"_fly_string, Namespace::XLink },
+        { "xlink:arcrole"_fly_string, "xlink"_fly_string, "arcrole"_fly_string, Namespace::XLink },
+        { "xlink:href"_fly_string, "xlink"_fly_string, "href"_fly_string, Namespace::XLink },
+        { "xlink:role"_fly_string, "xlink"_fly_string, "role"_fly_string, Namespace::XLink },
+        { "xlink:show"_fly_string, "xlink"_fly_string, "show"_fly_string, Namespace::XLink },
+        { "xlink:title"_fly_string, "xlink"_fly_string, "title"_fly_string, Namespace::XLink },
+        { "xlink:type"_fly_string, "xlink"_fly_string, "type"_fly_string, Namespace::XLink },
+        { "xml:lang"_fly_string, "xml"_fly_string, "lang"_fly_string, Namespace::XML },
+        { "xml:space"_fly_string, "xml"_fly_string, "space"_fly_string, Namespace::XML },
+        { "xmlns"_fly_string, {}, "xmlns"_fly_string, Namespace::XMLNS },
+        { "xmlns:xlink"_fly_string, "xmlns"_fly_string, "xlink"_fly_string, Namespace::XMLNS },
+    };
 
-    token.adjust_foreign_attribute("xmlns"_fly_string, {}, "xmlns"_fly_string, Namespace::XMLNS);
-    token.adjust_foreign_attribute("xmlns:xlink"_fly_string, "xmlns"_fly_string, "xlink"_fly_string, Namespace::XMLNS);
+    for (auto const& adjustment : adjustments) {
+        token.adjust_foreign_attribute(adjustment.attribute_name, adjustment.prefix, adjustment.local_name, adjustment.namespace_);
+    }
 }
 
 void HTMLParser::increment_script_nesting_level()
@@ -3325,7 +3466,7 @@ void HTMLParser::handle_in_table(HTMLToken& token)
 
         // Otherwise:
         // Insert an HTML element for the token, and set the form element pointer to point to the element created.
-        m_form_element = JS::make_handle(verify_cast<HTMLFormElement>(*insert_html_element(token)));
+        m_form_element = verify_cast<HTMLFormElement>(*insert_html_element(token));
 
         // Pop that form element off the stack of open elements.
         (void)m_stack_of_open_elements.pop();
@@ -3914,8 +4055,8 @@ void HTMLParser::process_using_the_rules_for_foreign_content(HTMLToken& token)
         // Adjust foreign attributes for the token. (This fixes the use of namespaced attributes, in particular XLink in SVG.)
         adjust_foreign_attributes(token);
 
-        // Insert a foreign element for the token, in the same namespace as the adjusted current node.
-        (void)insert_foreign_element(token, adjusted_current_node().namespace_uri());
+        // Insert a foreign element for the token, with adjusted current node's namespace and false.
+        (void)insert_foreign_element(token, adjusted_current_node().namespace_uri(), OnlyAddToElementStack::No);
 
         // If the token has its self-closing flag set, then run the appropriate steps from the following list:
         if (token.is_self_closing()) {
@@ -4130,25 +4271,31 @@ DOM::Document& HTMLParser::document()
 }
 
 // https://html.spec.whatwg.org/multipage/parsing.html#parsing-html-fragments
-Vector<JS::Handle<DOM::Node>> HTMLParser::parse_html_fragment(DOM::Element& context_element, StringView markup)
+Vector<JS::Handle<DOM::Node>> HTMLParser::parse_html_fragment(DOM::Element& context_element, StringView markup, AllowDeclarativeShadowRoots allow_declarative_shadow_roots)
 {
     // 1. Create a new Document node, and mark it as being an HTML document.
-    auto temp_document = DOM::Document::create(context_element.realm());
+    auto temp_document = DOM::Document::create_for_fragment_parsing(context_element.realm());
     temp_document->set_document_type(DOM::Document::Type::HTML);
 
-    temp_document->set_is_temporary_document_for_fragment_parsing({});
+    // AD-HOC: We set the about base URL of the document to the same as the context element's document.
+    //         This is required for Document::parse_url() to work inside iframe srcdoc documents.
+    temp_document->set_about_base_url(context_element.document().about_base_url());
 
     // 2. If the node document of the context element is in quirks mode, then let the Document be in quirks mode.
     //    Otherwise, the node document of the context element is in limited-quirks mode, then let the Document be in limited-quirks mode.
     //    Otherwise, leave the Document in no-quirks mode.
     temp_document->set_quirks_mode(context_element.document().mode());
 
-    // 3. Create a new HTML parser, and associate it with the just created Document node.
-    auto parser = HTMLParser::create(*temp_document, markup, "utf-8");
-    parser->m_context_element = JS::make_handle(context_element);
+    // 3. If allowDeclarativeShadowRoots is true, then set Document's allow declarative shadow roots to true.
+    if (allow_declarative_shadow_roots == AllowDeclarativeShadowRoots::Yes)
+        temp_document->set_allow_declarative_shadow_roots(true);
+
+    // 4. Create a new HTML parser, and associate it with the just created Document node.
+    auto parser = HTMLParser::create(*temp_document, markup, "utf-8"sv);
+    parser->m_context_element = context_element;
     parser->m_parsing_fragment = true;
 
-    // 4. Set the state of the HTML parser's tokenization stage as follows, switching on the context element:
+    // 5. Set the state of the HTML parser's tokenization stage as follows, switching on the context element:
     // - title
     // - textarea
     if (context_element.local_name().is_one_of(HTML::TagNames::title, HTML::TagNames::textarea)) {
@@ -4185,37 +4332,37 @@ Vector<JS::Handle<DOM::Node>> HTMLParser::parse_html_fragment(DOM::Element& cont
         // Leave the tokenizer in the data state.
     }
 
-    // 5. Let root be a new html element with no attributes.
+    // 6. Let root be a new html element with no attributes.
     auto root = create_element(context_element.document(), HTML::TagNames::html, Namespace::HTML).release_value_but_fixme_should_propagate_errors();
 
-    // 6. Append the element root to the Document node created above.
+    // 7. Append the element root to the Document node created above.
     MUST(temp_document->append_child(root));
 
-    // 7. Set up the parser's stack of open elements so that it contains just the single element root.
+    // 8. Set up the parser's stack of open elements so that it contains just the single element root.
     parser->m_stack_of_open_elements.push(root);
 
-    // 8. If the context element is a template element,
+    // 9. If the context element is a template element,
     if (context_element.local_name() == HTML::TagNames::template_) {
         // push "in template" onto the stack of template insertion modes so that it is the new current template insertion mode.
         parser->m_stack_of_template_insertion_modes.append(InsertionMode::InTemplate);
     }
 
-    // FIXME: 9. Create a start tag token whose name is the local name of context and whose attributes are the attributes of context.
+    // FIXME: 10. Create a start tag token whose name is the local name of context and whose attributes are the attributes of context.
     //           Let this start tag token be the start tag token of the context node, e.g. for the purposes of determining if it is an HTML integration point.
 
-    // 10. Reset the parser's insertion mode appropriately.
+    // 11. Reset the parser's insertion mode appropriately.
     parser->reset_the_insertion_mode_appropriately();
 
-    // 11. Set the parser's form element pointer to the nearest node to the context element that is a form element
+    // 12. Set the parser's form element pointer to the nearest node to the context element that is a form element
     //     (going straight up the ancestor chain, and including the element itself, if it is a form element), if any.
     //     (If there is no such form element, the form element pointer keeps its initial value, null.)
     parser->m_form_element = context_element.first_ancestor_of_type<HTMLFormElement>();
 
-    // 12. Place the input into the input stream for the HTML parser just created. The encoding confidence is irrelevant.
-    // 13. Start the parser and let it run until it has consumed all the characters just inserted into the input stream.
+    // 13. Place the input into the input stream for the HTML parser just created. The encoding confidence is irrelevant.
+    // 14. Start the parser and let it run until it has consumed all the characters just inserted into the input stream.
     parser->run(context_element.document().url());
 
-    // 14. Return the child nodes of root, in tree order.
+    // 15. Return the child nodes of root, in tree order.
     Vector<JS::Handle<DOM::Node>> children;
     while (JS::GCPtr<DOM::Node> child = root->first_child()) {
         MUST(root->remove_child(*child));
@@ -4230,23 +4377,143 @@ JS::NonnullGCPtr<HTMLParser> HTMLParser::create_for_scripting(DOM::Document& doc
     return document.heap().allocate_without_realm<HTMLParser>(document);
 }
 
-JS::NonnullGCPtr<HTMLParser> HTMLParser::create_with_uncertain_encoding(DOM::Document& document, ByteBuffer const& input)
+JS::NonnullGCPtr<HTMLParser> HTMLParser::create_with_uncertain_encoding(DOM::Document& document, ByteBuffer const& input, Optional<MimeSniff::MimeType> maybe_mime_type)
 {
     if (document.has_encoding())
         return document.heap().allocate_without_realm<HTMLParser>(document, input, document.encoding().value().to_byte_string());
-    auto encoding = run_encoding_sniffing_algorithm(document, input);
+    auto encoding = run_encoding_sniffing_algorithm(document, input, maybe_mime_type);
     dbgln_if(HTML_PARSER_DEBUG, "The encoding sniffing algorithm returned encoding '{}'", encoding);
     return document.heap().allocate_without_realm<HTMLParser>(document, input, encoding);
 }
 
-JS::NonnullGCPtr<HTMLParser> HTMLParser::create(DOM::Document& document, StringView input, ByteString const& encoding)
+JS::NonnullGCPtr<HTMLParser> HTMLParser::create(DOM::Document& document, StringView input, StringView encoding)
 {
     return document.heap().allocate_without_realm<HTMLParser>(document, input, encoding);
 }
 
-// https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-serialisation-algorithm
-String HTMLParser::serialize_html_fragment(DOM::Node const& node)
+enum class AttributeMode {
+    No,
+    Yes,
+};
+
+static String escape_string(StringView string, AttributeMode attribute_mode)
 {
+    // https://html.spec.whatwg.org/multipage/parsing.html#escapingString
+    StringBuilder builder;
+    for (auto code_point : Utf8View { string }) {
+        // 1. Replace any occurrence of the "&" character by the string "&amp;".
+        if (code_point == '&')
+            builder.append("&amp;"sv);
+        // 2. Replace any occurrences of the U+00A0 NO-BREAK SPACE character by the string "&nbsp;".
+        else if (code_point == 0xA0)
+            builder.append("&nbsp;"sv);
+        // 3. If the algorithm was invoked in the attribute mode, replace any occurrences of the """ character by the string "&quot;".
+        else if (code_point == '"' && attribute_mode == AttributeMode::Yes)
+            builder.append("&quot;"sv);
+        // 4. If the algorithm was not invoked in the attribute mode, replace any occurrences of the "<" character by the string "&lt;", and any occurrences of the ">" character by the string "&gt;".
+        else if (code_point == '<' && attribute_mode == AttributeMode::No)
+            builder.append("&lt;"sv);
+        else if (code_point == '>' && attribute_mode == AttributeMode::No)
+            builder.append("&gt;"sv);
+        else
+            builder.append_code_point(code_point);
+    }
+    return builder.to_string_without_validation();
+}
+
+// https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-serialisation-algorithm
+String HTMLParser::serialize_html_fragment(DOM::Node const& node, SerializableShadowRoots serializable_shadow_roots, Vector<JS::Handle<DOM::ShadowRoot>> const& shadow_roots, DOM::FragmentSerializationMode fragment_serialization_mode)
+{
+    // NOTE: Steps in this function are jumbled a bit to accommodate the Element.outerHTML API.
+    //       When called with FragmentSerializationMode::Outer, we will serialize the element itself,
+    //       not just its children.
+
+    // 2. Let s be a string, and initialize it to the empty string.
+    StringBuilder builder;
+
+    auto serialize_element = [&](DOM::Element const& element) {
+        // If current node is an element in the HTML namespace, the MathML namespace, or the SVG namespace, then let tagname be current node's local name.
+        // Otherwise, let tagname be current node's qualified name.
+        FlyString tag_name;
+
+        if (element.namespace_uri().has_value() && element.namespace_uri()->is_one_of(Namespace::HTML, Namespace::MathML, Namespace::SVG))
+            tag_name = element.local_name();
+        else
+            tag_name = element.qualified_name();
+
+        // Append a U+003C LESS-THAN SIGN character (<), followed by tagname.
+        builder.append('<');
+        builder.append(tag_name);
+
+        // If current node's is value is not null, and the element does not have an is attribute in its attribute list,
+        // then append the string " is="",
+        // followed by current node's is value escaped as described below in attribute mode,
+        // followed by a U+0022 QUOTATION MARK character (").
+        if (element.is_value().has_value() && !element.has_attribute(AttributeNames::is)) {
+            builder.append(" is=\""sv);
+            builder.append(escape_string(element.is_value().value(), AttributeMode::Yes));
+            builder.append('"');
+        }
+
+        // For each attribute that the element has,
+        // append a U+0020 SPACE character,
+        // the attribute's serialized name as described below,
+        // a U+003D EQUALS SIGN character (=),
+        // a U+0022 QUOTATION MARK character ("),
+        // the attribute's value, escaped as described below in attribute mode,
+        // and a second U+0022 QUOTATION MARK character (").
+        element.for_each_attribute([&](auto const& attribute) {
+            builder.append(' ');
+
+            // An attribute's serialized name for the purposes of the previous paragraph must be determined as follows:
+
+            // NOTE: As far as I can tell, these steps are equivalent to just using the qualified name.
+            //
+            // -> If the attribute has no namespace:
+            //         The attribute's serialized name is the attribute's local name.
+            // -> If the attribute is in the XML namespace:
+            //         The attribute's serialized name is the string "xml:" followed by the attribute's local name.
+            // -> If the attribute is in the XMLNS namespace and the attribute's local name is xmlns:
+            //         The attribute's serialized name is the string "xmlns".
+            // -> If the attribute is in the XMLNS namespace and the attribute's local name is not xmlns:
+            //         The attribute's serialized name is the string "xmlns:" followed by the attribute's local name.
+            // -> If the attribute is in the XLink namespace:
+            //         The attribute's serialized name is the string "xlink:" followed by the attribute's local name.
+            // -> If the attribute is in some other namespace:
+            //         The attribute's serialized name is the attribute's qualified name.
+            builder.append(attribute.name());
+
+            builder.append("=\""sv);
+            builder.append(escape_string(attribute.value(), AttributeMode::Yes));
+            builder.append('"');
+        });
+
+        // Append a U+003E GREATER-THAN SIGN character (>).
+        builder.append('>');
+
+        // If current node serializes as void, then continue on to the next child node at this point.
+        if (element.serializes_as_void())
+            return IterationDecision::Continue;
+
+        // Append the value of running the HTML fragment serialization algorithm with current node,
+        // serializableShadowRoots, and shadowRoots (thus recursing into this algorithm for that node),
+        // followed by a U+003C LESS-THAN SIGN character (<),
+        // a U+002F SOLIDUS character (/),
+        // tagname again,
+        // and finally a U+003E GREATER-THAN SIGN character (>).
+        builder.append(serialize_html_fragment(element, serializable_shadow_roots, shadow_roots));
+        builder.append("</"sv);
+        builder.append(tag_name);
+        builder.append('>');
+
+        return IterationDecision::Continue;
+    };
+
+    if (fragment_serialization_mode == DOM::FragmentSerializationMode::Outer) {
+        serialize_element(verify_cast<DOM::Element>(node));
+        return builder.to_string_without_validation();
+    }
+
     // The algorithm takes as input a DOM Element, Document, or DocumentFragment referred to as the node.
     VERIFY(node.is_element() || node.is_document() || node.is_document_fragment());
     JS::NonnullGCPtr<DOM::Node const> actual_node = node;
@@ -4263,41 +4530,53 @@ String HTMLParser::serialize_html_fragment(DOM::Node const& node)
         //    (NOTE: This is out of order of the spec to avoid another dynamic cast. The second step just creates a string builder, so it shouldn't matter)
         if (is<HTML::HTMLTemplateElement>(element))
             actual_node = verify_cast<HTML::HTMLTemplateElement>(element).content();
+
+        // 4. If current node is a shadow host, then:
+        if (element.is_shadow_host()) {
+            // 1. Let shadow be current node's shadow root.
+            auto shadow = element.shadow_root();
+
+            // 2. If one of the following is true:
+            //    - serializableShadowRoots is true and shadow's serializable is true; or
+            //    - shadowRoots contains shadow,
+            if ((serializable_shadow_roots == SerializableShadowRoots::Yes && shadow->serializable())
+                || shadow_roots.find_first_index_if([&](auto& entry) { return entry == shadow; }).has_value()) {
+                // then:
+                // 1. Append "<template shadowrootmode="".
+                builder.append("<template shadowrootmode=\""sv);
+
+                // 2. If shadow's mode is "open", then append "open". Otherwise, append "closed".
+                builder.append(shadow->mode() == Bindings::ShadowRootMode::Open ? "open"sv : "closed"sv);
+
+                // 3. Append """.
+                builder.append('"');
+
+                // 4. If shadow's delegates focus is set, then append " shadowrootdelegatesfocus=""".
+                if (shadow->delegates_focus())
+                    builder.append(" shadowrootdelegatesfocus=\"\""sv);
+
+                // 5. If shadow's serializable is set, then append " shadowrootserializable=""".
+                if (shadow->serializable())
+                    builder.append(" shadowrootserializable=\"\""sv);
+
+                // 6. If shadow's clonable is set, then append " shadowrootclonable=""".
+                if (shadow->clonable())
+                    builder.append(" shadowrootclonable=\"\""sv);
+
+                // 7. Append ">".
+                builder.append('>');
+
+                // 8. Append the value of running the HTML fragment serialization algorithm with shadow,
+                //    serializableShadowRoots, and shadowRoots (thus recursing into this algorithm for that element).
+                builder.append(serialize_html_fragment(*shadow, serializable_shadow_roots, shadow_roots));
+
+                // 9. Append "</template>".
+                builder.append("</template>"sv);
+            }
+        }
     }
 
-    enum class AttributeMode {
-        No,
-        Yes,
-    };
-
-    auto escape_string = [](StringView string, AttributeMode attribute_mode) -> String {
-        // https://html.spec.whatwg.org/multipage/parsing.html#escapingString
-        StringBuilder builder;
-        for (auto code_point : Utf8View { string }) {
-            // 1. Replace any occurrence of the "&" character by the string "&amp;".
-            if (code_point == '&')
-                builder.append("&amp;"sv);
-            // 2. Replace any occurrences of the U+00A0 NO-BREAK SPACE character by the string "&nbsp;".
-            else if (code_point == 0xA0)
-                builder.append("&nbsp;"sv);
-            // 3. If the algorithm was invoked in the attribute mode, replace any occurrences of the """ character by the string "&quot;".
-            else if (code_point == '"' && attribute_mode == AttributeMode::Yes)
-                builder.append("&quot;"sv);
-            // 4. If the algorithm was not invoked in the attribute mode, replace any occurrences of the "<" character by the string "&lt;", and any occurrences of the ">" character by the string "&gt;".
-            else if (code_point == '<' && attribute_mode == AttributeMode::No)
-                builder.append("&lt;"sv);
-            else if (code_point == '>' && attribute_mode == AttributeMode::No)
-                builder.append("&gt;"sv);
-            else
-                builder.append_code_point(code_point);
-        }
-        return MUST(builder.to_string());
-    };
-
-    // 2. Let s be a string, and initialize it to the empty string.
-    StringBuilder builder;
-
-    // 4. For each child node of the node, in tree order, run the following steps:
+    // 5. For each child node of the node, in tree order, run the following steps:
     actual_node->for_each_child([&](DOM::Node& current_node) {
         // 1. Let current node be the child node being processed.
 
@@ -4306,72 +4585,7 @@ String HTMLParser::serialize_html_fragment(DOM::Node const& node)
         if (is<DOM::Element>(current_node)) {
             // -> If current node is an Element
             auto& element = verify_cast<DOM::Element>(current_node);
-
-            // 1. If current node is an element in the HTML namespace, the MathML namespace, or the SVG namespace, then let tagname be current node's local name.
-            //    Otherwise, let tagname be current node's qualified name.
-            FlyString tag_name;
-
-            if (element.namespace_uri().has_value() && element.namespace_uri()->is_one_of(Namespace::HTML, Namespace::MathML, Namespace::SVG))
-                tag_name = element.local_name();
-            else
-                tag_name = element.qualified_name();
-
-            // 2. Append a U+003C LESS-THAN SIGN character (<), followed by tagname.
-            builder.append('<');
-            builder.append(tag_name);
-
-            // 3. If current node's is value is not null, and the element does not have an is attribute in its attribute list,
-            //    then append the string " is="", followed by current node's is value escaped as described below in attribute mode,
-            //    followed by a U+0022 QUOTATION MARK character (").
-            if (element.is_value().has_value() && !element.has_attribute(AttributeNames::is)) {
-                builder.append(" is=\""sv);
-                builder.append(escape_string(element.is_value().value(), AttributeMode::Yes));
-                builder.append('"');
-            }
-
-            // 4. For each attribute that the element has, append a U+0020 SPACE character, the attribute's serialized name as described below, a U+003D EQUALS SIGN character (=),
-            //    a U+0022 QUOTATION MARK character ("), the attribute's value, escaped as described below in attribute mode, and a second U+0022 QUOTATION MARK character (").
-            //    NOTE: The order of attributes is implementation-defined. The only constraint is that the order must be stable.
-            element.for_each_attribute([&](auto const& attribute) {
-                builder.append(' ');
-
-                // An attribute's serialized name for the purposes of the previous paragraph must be determined as follows:
-
-                // NOTE: As far as I can tell, these steps are equivalent to just using the qualified name.
-                //
-                // -> If the attribute has no namespace:
-                //         The attribute's serialized name is the attribute's local name.
-                // -> If the attribute is in the XML namespace:
-                //         The attribute's serialized name is the string "xml:" followed by the attribute's local name.
-                // -> If the attribute is in the XMLNS namespace and the attribute's local name is xmlns:
-                //         The attribute's serialized name is the string "xmlns".
-                // -> If the attribute is in the XMLNS namespace and the attribute's local name is not xmlns:
-                //         The attribute's serialized name is the string "xmlns:" followed by the attribute's local name.
-                // -> If the attribute is in the XLink namespace:
-                //         The attribute's serialized name is the string "xlink:" followed by the attribute's local name.
-                // -> If the attribute is in some other namespace:
-                //         The attribute's serialized name is the attribute's qualified name.
-                builder.append(attribute.name());
-
-                builder.append("=\""sv);
-                builder.append(escape_string(attribute.value(), AttributeMode::Yes));
-                builder.append('"');
-            });
-
-            // 5. Append a U+003E GREATER-THAN SIGN character (>).
-            builder.append('>');
-
-            // 6. If current node serializes as void, then continue on to the next child node at this point.
-            if (element.serializes_as_void())
-                return IterationDecision::Continue;
-
-            // 7. Append the value of running the HTML fragment serialization algorithm on the current node element (thus recursing into this algorithm for that element),
-            //    followed by a U+003C LESS-THAN SIGN character (<), a U+002F SOLIDUS character (/), tagname again, and finally a U+003E GREATER-THAN SIGN character (>).
-            builder.append(serialize_html_fragment(element));
-            builder.append("</"sv);
-            builder.append(tag_name);
-            builder.append('>');
-
+            serialize_element(element);
             return IterationDecision::Continue;
         }
 
@@ -4383,8 +4597,8 @@ String HTMLParser::serialize_html_fragment(DOM::Node const& node)
             if (is<DOM::Element>(parent)) {
                 auto& parent_element = verify_cast<DOM::Element>(*parent);
 
-                // 1. If the parent of current node is a style, script, xmp, iframe, noembed, noframes, or plaintext element,
-                //    or if the parent of current node is a noscript element and scripting is enabled for the node, then append the value of current node's data IDL attribute literally.
+                // If the parent of current node is a style, script, xmp, iframe, noembed, noframes, or plaintext element,
+                // or if the parent of current node is a noscript element and scripting is enabled for the node, then append the value of current node's data IDL attribute literally.
                 if (parent_element.local_name().is_one_of(HTML::TagNames::style, HTML::TagNames::script, HTML::TagNames::xmp, HTML::TagNames::iframe, HTML::TagNames::noembed, HTML::TagNames::noframes, HTML::TagNames::plaintext)
                     || (parent_element.local_name() == HTML::TagNames::noscript && !parent_element.is_scripting_disabled())) {
                     builder.append(text_node.data());
@@ -4392,17 +4606,16 @@ String HTMLParser::serialize_html_fragment(DOM::Node const& node)
                 }
             }
 
-            // 2. Otherwise, append the value of current node's data IDL attribute, escaped as described below.
+            // Otherwise, append the value of current node's data IDL attribute, escaped as described below.
             builder.append(escape_string(text_node.data(), AttributeMode::No));
-            return IterationDecision::Continue;
         }
 
         if (is<DOM::Comment>(current_node)) {
             // -> If current node is a Comment
             auto& comment_node = verify_cast<DOM::Comment>(current_node);
 
-            // 1. Append the literal string "<!--" (U+003C LESS-THAN SIGN, U+0021 EXCLAMATION MARK, U+002D HYPHEN-MINUS, U+002D HYPHEN-MINUS),
-            //    followed by the value of current node's data IDL attribute, followed by the literal string "-->" (U+002D HYPHEN-MINUS, U+002D HYPHEN-MINUS, U+003E GREATER-THAN SIGN).
+            // Append the literal string "<!--" (U+003C LESS-THAN SIGN, U+0021 EXCLAMATION MARK, U+002D HYPHEN-MINUS, U+002D HYPHEN-MINUS),
+            // followed by the value of current node's data IDL attribute, followed by the literal string "-->" (U+002D HYPHEN-MINUS, U+002D HYPHEN-MINUS, U+003E GREATER-THAN SIGN).
             builder.append("<!--"sv);
             builder.append(comment_node.data());
             builder.append("-->"sv);
@@ -4413,8 +4626,8 @@ String HTMLParser::serialize_html_fragment(DOM::Node const& node)
             // -> If current node is a ProcessingInstruction
             auto& processing_instruction_node = verify_cast<DOM::ProcessingInstruction>(current_node);
 
-            // 1. Append the literal string "<?" (U+003C LESS-THAN SIGN, U+003F QUESTION MARK), followed by the value of current node's target IDL attribute,
-            //    followed by a single U+0020 SPACE character, followed by the value of current node's data IDL attribute, followed by a single U+003E GREATER-THAN SIGN character (>).
+            // Append the literal string "<?" (U+003C LESS-THAN SIGN, U+003F QUESTION MARK), followed by the value of current node's target IDL attribute,
+            // followed by a single U+0020 SPACE character, followed by the value of current node's data IDL attribute, followed by a single U+003E GREATER-THAN SIGN character (>).
             builder.append("<?"sv);
             builder.append(processing_instruction_node.target());
             builder.append(' ');
@@ -4427,9 +4640,9 @@ String HTMLParser::serialize_html_fragment(DOM::Node const& node)
             // -> If current node is a DocumentType
             auto& document_type_node = verify_cast<DOM::DocumentType>(current_node);
 
-            // 1. Append the literal string "<!DOCTYPE" (U+003C LESS-THAN SIGN, U+0021 EXCLAMATION MARK, U+0044 LATIN CAPITAL LETTER D, U+004F LATIN CAPITAL LETTER O,
-            //    U+0043 LATIN CAPITAL LETTER C, U+0054 LATIN CAPITAL LETTER T, U+0059 LATIN CAPITAL LETTER Y, U+0050 LATIN CAPITAL LETTER P, U+0045 LATIN CAPITAL LETTER E),
-            //    followed by a space (U+0020 SPACE), followed by the value of current node's name IDL attribute, followed by the literal string ">" (U+003E GREATER-THAN SIGN).
+            // Append the literal string "<!DOCTYPE" (U+003C LESS-THAN SIGN, U+0021 EXCLAMATION MARK, U+0044 LATIN CAPITAL LETTER D, U+004F LATIN CAPITAL LETTER O,
+            // U+0043 LATIN CAPITAL LETTER C, U+0054 LATIN CAPITAL LETTER T, U+0059 LATIN CAPITAL LETTER Y, U+0050 LATIN CAPITAL LETTER P, U+0045 LATIN CAPITAL LETTER E),
+            // followed by a space (U+0020 SPACE), followed by the value of current node's name IDL attribute, followed by the literal string ">" (U+003E GREATER-THAN SIGN).
             builder.append("<!DOCTYPE "sv);
             builder.append(document_type_node.name());
             builder.append('>');
@@ -4439,12 +4652,12 @@ String HTMLParser::serialize_html_fragment(DOM::Node const& node)
         return IterationDecision::Continue;
     });
 
-    // 5. Return s.
+    // 6. Return s.
     return MUST(builder.to_string());
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#current-dimension-value
-static RefPtr<CSS::StyleValue> parse_current_dimension_value(float value, Utf8View input, Utf8View::Iterator position)
+static RefPtr<CSS::CSSStyleValue> parse_current_dimension_value(float value, Utf8View input, Utf8View::Iterator position)
 {
     // 1. If position is past the end of input, then return value as a length.
     if (position == input.end())
@@ -4459,7 +4672,7 @@ static RefPtr<CSS::StyleValue> parse_current_dimension_value(float value, Utf8Vi
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-dimension-values
-RefPtr<CSS::StyleValue> parse_dimension_value(StringView string)
+RefPtr<CSS::CSSStyleValue> parse_dimension_value(StringView string)
 {
     // 1. Let input be the string being parsed.
     auto input = Utf8View(string);
@@ -4485,13 +4698,16 @@ RefPtr<CSS::StyleValue> parse_dimension_value(StringView string)
         number_string.append(*position);
         ++position;
     }
-    auto integer_value = number_string.string_view().to_number<int>();
+    auto integer_value = number_string.string_view().to_number<double>();
+
+    // NOTE: This is apparently the largest value allowed by Firefox.
+    static float max_dimension_value = 17895700;
+
+    float value = min(*integer_value, max_dimension_value);
 
     // 6. If position is past the end of input, then return value as a length.
     if (position == input.end())
-        return CSS::LengthStyleValue::create(CSS::Length::make_px(*integer_value));
-
-    float value = *integer_value;
+        return CSS::LengthStyleValue::create(CSS::Length::make_px(CSSPixels(value)));
 
     // 7. If the code point at position within input is U+002E (.), then:
     if (*position == '.') {
@@ -4533,7 +4749,7 @@ RefPtr<CSS::StyleValue> parse_dimension_value(StringView string)
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-zero-dimension-values
-RefPtr<CSS::StyleValue> parse_nonzero_dimension_value(StringView string)
+RefPtr<CSS::CSSStyleValue> parse_nonzero_dimension_value(StringView string)
 {
     // 1. Let input be the string being parsed.
     // 2. Let value be the result of parsing input using the rules for parsing dimension values.
@@ -4555,23 +4771,22 @@ RefPtr<CSS::StyleValue> parse_nonzero_dimension_value(StringView string)
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-a-legacy-colour-value
-Optional<Color> parse_legacy_color_value(StringView string)
+Optional<Color> parse_legacy_color_value(StringView string_view)
 {
-    // 1. Let input be the string being parsed
-    ByteString input = MUST(ByteString::from_utf8(string));
-
-    // 2. If input is the empty string, then return an error.
-    if (input.is_empty())
+    // 1. If input is the empty string, then return failure.
+    if (string_view.is_empty())
         return {};
 
-    // 3. Strip leading and trailing ASCII whitespace from input.
+    ByteString input = string_view;
+
+    // 2. Strip leading and trailing ASCII whitespace from input.
     input = input.trim(Infra::ASCII_WHITESPACE);
 
-    // 4. If input is an ASCII case-insensitive match for the string "transparent", then return an error.
+    // 3. If input is an ASCII case-insensitive match for "transparent", then return failure.
     if (Infra::is_ascii_case_insensitive_match(input, "transparent"sv))
         return {};
 
-    // 5. If input is an ASCII case-insensitive match for one of the named colors, then return the simple color corresponding to that keyword. [CSSCOLOR]
+    // 4. If input is an ASCII case-insensitive match for one of the named colors, then return the CSS color corresponding to that keyword. [CSSCOLOR]
     if (auto const color = Color::from_named_css_color_string(input); color.has_value())
         return color;
 
@@ -4583,9 +4798,9 @@ Optional<Color> parse_legacy_color_value(StringView string)
         return nibble - 'A' + 10;
     };
 
-    // 6. If input's code point length is four, and the first character in input is U+0023 (#), and the last three characters of input are all ASCII hex digits, then:
+    // 5. If input's code point length is four, and the first character in input is U+0023 (#), and the last three characters of input are all ASCII hex digits, then:
     if (input.length() == 4 && input[0] == '#' && is_ascii_hex_digit(input[1]) && is_ascii_hex_digit(input[2]) && is_ascii_hex_digit(input[3])) {
-        // 1. Let result be a simple color.
+        // 1. Let result be a CSS color.
         Color result;
         result.set_alpha(0xFF);
 
@@ -4602,7 +4817,7 @@ Optional<Color> parse_legacy_color_value(StringView string)
         return result;
     }
 
-    // 7. Replace any code points greater than U+FFFF in input (i.e., any characters that are not in the basic multilingual plane) with the two-character string "00".
+    // 6. Replace any code points greater than U+FFFF in input (i.e., any characters that are not in the basic multilingual plane) with "00".
     auto replace_non_basic_multilingual_code_points = [](StringView string) -> ByteString {
         StringBuilder builder;
         for (auto code_point : Utf8View { string }) {
@@ -4615,15 +4830,15 @@ Optional<Color> parse_legacy_color_value(StringView string)
     };
     input = replace_non_basic_multilingual_code_points(input);
 
-    // 8. If input's code point length is greater than 128, truncate input, leaving only the first 128 characters.
+    // 7. If input's code point length is greater than 128, truncate input, leaving only the first 128 characters.
     if (input.length() > 128)
         input = input.substring(0, 128);
 
-    // 9. If the first character in input is a U+0023 NUMBER SIGN character (#), remove it.
+    // 8. If the first character in input is U+0023 (#), then remove it.
     if (input[0] == '#')
         input = input.substring(1);
 
-    // 10. Replace any character in input that is not an ASCII hex digit with the character U+0030 DIGIT ZERO (0).
+    // 9. Replace any character in input that is not an ASCII hex digit with U+0030 (0).
     auto replace_non_ascii_hex = [](StringView string) -> ByteString {
         StringBuilder builder;
         for (auto code_point : Utf8View { string }) {
@@ -4636,20 +4851,20 @@ Optional<Color> parse_legacy_color_value(StringView string)
     };
     input = replace_non_ascii_hex(input);
 
-    // 11. While input's code point length is zero or not a multiple of three, append a U+0030 DIGIT ZERO (0) character to input.
+    // 10. While input's code point length is zero or not a multiple of three, append U+0030 (0) to input.
     StringBuilder builder;
     builder.append(input);
     while (builder.length() == 0 || (builder.length() % 3 != 0))
         builder.append_code_point('0');
     input = builder.to_byte_string();
 
-    // 12. Split input into three strings of equal code point length, to obtain three components. Let length be the code point length that all of those components have (one third the code point length of input).
+    // 11. Split input into three strings of equal code point length, to obtain three components. Let length be the code point length that all of those components have (one third the code point length of input).
     auto length = input.length() / 3;
     auto first_component = input.substring_view(0, length);
     auto second_component = input.substring_view(length, length);
     auto third_component = input.substring_view(length * 2, length);
 
-    // 13. If length is greater than 8, then remove the leading length-8 characters in each component, and let length be 8.
+    // 12. If length is greater than 8, then remove the leading length-8 characters in each component, and let length be 8.
     if (length > 8) {
         first_component = first_component.substring_view(length - 8);
         second_component = second_component.substring_view(length - 8);
@@ -4657,7 +4872,7 @@ Optional<Color> parse_legacy_color_value(StringView string)
         length = 8;
     }
 
-    // 14. While length is greater than two and the first character in each component is a U+0030 DIGIT ZERO (0) character, remove that character and reduce length by one.
+    // 13. While length is greater than two and the first character in each component is U+0030 (0), remove that character and reduce length by one.
     while (length > 2 && first_component[0] == '0' && second_component[0] == '0' && third_component[0] == '0') {
         --length;
         first_component = first_component.substring_view(1);
@@ -4665,7 +4880,7 @@ Optional<Color> parse_legacy_color_value(StringView string)
         third_component = third_component.substring_view(1);
     }
 
-    // 15. If length is still greater than two, truncate each component, leaving only the first two characters in each.
+    // 14. If length is still greater than two, truncate each component, leaving only the first two characters in each.
     if (length > 2) {
         first_component = first_component.substring_view(0, 2);
         second_component = second_component.substring_view(0, 2);
@@ -4673,25 +4888,28 @@ Optional<Color> parse_legacy_color_value(StringView string)
     }
 
     auto to_hex = [&](StringView string) -> u8 {
+        if (length == 1) {
+            return hex_nibble_to_u8(string[0]);
+        }
         auto nib1 = hex_nibble_to_u8(string[0]);
         auto nib2 = hex_nibble_to_u8(string[1]);
         return nib1 << 4 | nib2;
     };
 
-    // 16. Let result be a simple color.
+    // 15. Let result be a CSS color.
     Color result;
     result.set_alpha(0xFF);
 
-    // 17. Interpret the first component as a hexadecimal number; let the red component of result be the resulting number.
+    // 16. Interpret the first component as a hexadecimal number; let the red component of result be the resulting number.
     result.set_red(to_hex(first_component));
 
-    // 18. Interpret the second component as a hexadecimal number; let the green component of result be the resulting number.
+    // 17. Interpret the second component as a hexadecimal number; let the green component of result be the resulting number.
     result.set_green(to_hex(second_component));
 
-    // 19. Interpret the third component as a hexadecimal number; let the blue component of result be the resulting number.
+    // 18. Interpret the third component as a hexadecimal number; let the blue component of result be the resulting number.
     result.set_blue(to_hex(third_component));
 
-    // 20. Return result.
+    // 19. Return result.
     return result;
 }
 
@@ -4719,6 +4937,35 @@ void HTMLParser::abort()
     m_document->update_readiness(DocumentReadyState::Complete);
 
     m_aborted = true;
+}
+
+// https://html.spec.whatwg.org/multipage/parsing.html#insert-an-element-at-the-adjusted-insertion-location
+void HTMLParser::insert_an_element_at_the_adjusted_insertion_location(JS::NonnullGCPtr<DOM::Element> element)
+{
+    // 1. Let the adjusted insertion location be the appropriate place for inserting a node.
+    auto adjusted_insertion_location = find_appropriate_place_for_inserting_node();
+
+    // 2. If it is not possible to insert element at the adjusted insertion location, abort these steps.
+    if (!adjusted_insertion_location.parent)
+        return;
+
+    // 3. If the parser was not created as part of the HTML fragment parsing algorithm,
+    //    then push a new element queue onto element's relevant agent's custom element reactions stack.
+    if (!m_parsing_fragment) {
+        auto& custom_data = verify_cast<Bindings::WebEngineCustomData>(*relevant_agent(*element).custom_data());
+        custom_data.custom_element_reactions_stack.element_queue_stack.append({});
+    }
+
+    // 4. Insert element at the adjusted insertion location.
+    adjusted_insertion_location.parent->insert_before(element, adjusted_insertion_location.insert_before_sibling);
+
+    // 5. If the parser was not created as part of the HTML fragment parsing algorithm,
+    //    then pop the element queue from element's relevant agent's custom element reactions stack, and invoke custom element reactions in that queue.
+    if (!m_parsing_fragment) {
+        auto& custom_data = verify_cast<Bindings::WebEngineCustomData>(*relevant_agent(*element).custom_data());
+        auto queue = custom_data.custom_element_reactions_stack.element_queue_stack.take_last();
+        Bindings::invoke_custom_element_reactions(queue);
+    }
 }
 
 }

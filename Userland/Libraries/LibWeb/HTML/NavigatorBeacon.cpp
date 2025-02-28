@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibURL/Parser.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
 #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
+#include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
 #include <LibWeb/HTML/Navigator.h>
 #include <LibWeb/HTML/NavigatorBeacon.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
@@ -42,7 +44,7 @@ WebIDL::ExceptionOr<bool> NavigatorBeaconMixin::send_beacon(String const& url, O
     auto cors_mode = Fetch::Infrastructure::Request::Mode::NoCORS;
 
     // 6. If data is not null:
-    Optional<JS::NonnullGCPtr<Fetch::Infrastructure::Body>> transmitted_data;
+    JS::GCPtr<Fetch::Infrastructure::Body> transmitted_data;
     if (data.has_value()) {
         // 6.1 Set transmittedData and contentType to the result of extracting data's byte stream with the keepalive flag set.
         auto body_with_type = TRY(Fetch::extract_body(realm, data.value(), true));
@@ -50,7 +52,8 @@ WebIDL::ExceptionOr<bool> NavigatorBeaconMixin::send_beacon(String const& url, O
         auto& content_type = body_with_type.type;
 
         // 6.2 If the amount of data that can be queued to be sent by keepalive enabled requests is exceeded by the size of transmittedData (as defined in HTTP-network-or-cache fetch), set the return value to false and terminate these steps.
-        // FIXME: We don't have a size limit in Fetching::fetch
+        if (transmitted_data->length().has_value() && transmitted_data->length().value() > Fetch::Fetching::keepalive_maximum_size)
+            return false;
 
         // 6.3 If contentType is not null:
         if (content_type.has_value()) {
@@ -58,12 +61,12 @@ WebIDL::ExceptionOr<bool> NavigatorBeaconMixin::send_beacon(String const& url, O
             cors_mode = Fetch::Infrastructure::Request::Mode::CORS;
 
             // If contentType value is a CORS-safelisted request-header value for the Content-Type header, set corsMode to "no-cors".
-            auto content_type_header = MUST(Fetch::Infrastructure::Header::from_string_pair("Content-Type"sv, content_type.value()));
+            auto content_type_header = Fetch::Infrastructure::Header::from_string_pair("Content-Type"sv, content_type.value());
             if (Fetch::Infrastructure::is_cors_safelisted_request_header(content_type_header))
                 cors_mode = Fetch::Infrastructure::Request::Mode::NoCORS;
 
             // Append a Content-Type header with value contentType to headerList.
-            MUST(header_list->append(content_type_header));
+            header_list->append(content_type_header);
         }
     }
 
@@ -77,11 +80,11 @@ WebIDL::ExceptionOr<bool> NavigatorBeaconMixin::send_beacon(String const& url, O
     req->set_header_list(header_list);                         // header list: headerList
     req->set_origin(origin);                                   // origin: origin
     req->set_keepalive(true);                                  // keepalive: true
-    if (transmitted_data.has_value())
-        req->set_body(transmitted_data.value());                                         // body: transmittedData
-    req->set_mode(cors_mode);                                                            // mode: corsMode
-    req->set_credentials_mode(Fetch::Infrastructure::Request::CredentialsMode::Include); // credentials mode: include
-    req->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::Beacon);      // initiator type: "beacon"
+    if (transmitted_data)
+        req->set_body(JS::NonnullGCPtr<Fetch::Infrastructure::Body> { *transmitted_data }); // body: transmittedData
+    req->set_mode(cors_mode);                                                               // mode: corsMode
+    req->set_credentials_mode(Fetch::Infrastructure::Request::CredentialsMode::Include);    // credentials mode: include
+    req->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::Beacon);         // initiator type: "beacon"
 
     // 7.2 Fetch req.
     (void)Fetch::Fetching::fetch(realm, req, Fetch::Infrastructure::FetchAlgorithms::create(vm, {}));

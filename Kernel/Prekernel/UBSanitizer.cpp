@@ -15,11 +15,17 @@ extern "C" {
 
 static void print_location(SourceLocation const&)
 {
-#if ARCH(X86_64)
-    asm volatile("cli; hlt");
+    for (;;) {
+#if ARCH(AARCH64)
+        asm volatile("msr daifset, #2; wfi");
+#elif ARCH(RISCV64)
+        asm volatile("csrw sie, zero; wfi");
+#elif ARCH(X86_64)
+        asm volatile("cli; hlt");
 #else
-    for (;;) { }
+#    error Unknown architecture
 #endif
+    }
 }
 
 void __ubsan_handle_load_invalid_value(InvalidValueData const&, ValueHandle) __attribute__((used));
@@ -130,14 +136,20 @@ void __ubsan_handle_implicit_conversion(ImplicitConversionData const& data, Valu
     print_location(data.location);
 }
 
-void __ubsan_handle_invalid_builtin(const InvalidBuiltinData) __attribute__((used));
-void __ubsan_handle_invalid_builtin(const InvalidBuiltinData data)
+void __ubsan_handle_invalid_builtin(InvalidBuiltinData const) __attribute__((used));
+void __ubsan_handle_invalid_builtin(InvalidBuiltinData const data)
 {
     print_location(data.location);
 }
 
 void __ubsan_handle_pointer_overflow(PointerOverflowData const&, ValueHandle, ValueHandle) __attribute__((used));
 void __ubsan_handle_pointer_overflow(PointerOverflowData const& data, ValueHandle, ValueHandle)
+{
+    print_location(data.location);
+}
+
+void __ubsan_handle_function_type_mismatch(FunctionTypeMismatchData const&, ValueHandle) __attribute__((used));
+void __ubsan_handle_function_type_mismatch(FunctionTypeMismatchData const& data, ValueHandle)
 {
     print_location(data.location);
 }

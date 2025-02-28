@@ -82,7 +82,7 @@ static ErrorOr<SupportedGroup> oid_to_curve(Vector<int> curve)
     else if (curve == curve_prime256)
         return SupportedGroup::SECP256R1;
 
-    return Error::from_string_view("Unknown curve oid"sv);
+    return Error::from_string_literal("Unknown curve oid");
 }
 
 static ErrorOr<Crypto::UnsignedBigInteger> parse_certificate_version(Crypto::ASN1::Decoder& decoder, Vector<StringView> current_scope)
@@ -349,7 +349,7 @@ static ErrorOr<Validity> parse_validity(Crypto::ASN1::Decoder& decoder, Vector<S
     return validity;
 }
 
-static ErrorOr<SubjectPublicKey> parse_subject_public_key_info(Crypto::ASN1::Decoder& decoder, Vector<StringView> current_scope)
+ErrorOr<SubjectPublicKey> parse_subject_public_key_info(Crypto::ASN1::Decoder& decoder, Vector<StringView> current_scope)
 {
     // SubjectPublicKeyInfo ::= Sequence {
     //     algorithm           AlgorithmIdentifier,
@@ -387,9 +387,53 @@ static ErrorOr<SubjectPublicKey> parse_subject_public_key_info(Crypto::ASN1::Dec
 
     String algo_oid = TRY(String::join("."sv, public_key.algorithm.identifier));
     ERROR_WITH_SCOPE(TRY(String::formatted("Unhandled algorithm {}", algo_oid)));
+}
 
-    EXIT_SCOPE();
-    return public_key;
+// https://www.rfc-editor.org/rfc/rfc5208#section-5
+ErrorOr<PrivateKey> parse_private_key_info(Crypto::ASN1::Decoder& decoder, Vector<StringView> current_scope)
+{
+    // PrivateKeyInfo ::= SEQUENCE {
+    //     version                   Version,
+    //     privateKeyAlgorithm       PrivateKeyAlgorithmIdentifier,
+    //     privateKey                PrivateKey,
+    //     attributes           [0]  IMPLICIT Attributes OPTIONAL
+    //  }
+
+    PrivateKey private_key;
+    ENTER_TYPED_SCOPE(Sequence, "PrivateKeyInfo"sv);
+
+    READ_OBJECT(Integer, Crypto::UnsignedBigInteger, version);
+    if (version != 0) {
+        ERROR_WITH_SCOPE(TRY(String::formatted("Invalid version value at {}", current_scope)));
+    }
+    private_key.algorithm = TRY(parse_algorithm_identifier(decoder, current_scope));
+
+    PUSH_SCOPE("privateKey"sv);
+    READ_OBJECT(OctetString, StringView, value);
+    POP_SCOPE();
+
+    private_key.raw_key = TRY(ByteBuffer::copy(value.bytes()));
+
+    if (private_key.algorithm.identifier.span() == rsa_encryption_oid.span()) {
+        auto key = Crypto::PK::RSA::parse_rsa_key(value.bytes());
+        if (key.private_key.length() == 0) {
+            ERROR_WITH_SCOPE(TRY(String::formatted("Invalid RSA key at {}", current_scope)));
+        }
+
+        private_key.rsa = move(key.private_key);
+
+        EXIT_SCOPE();
+        return private_key;
+    }
+
+    if (private_key.algorithm.identifier.span() == ec_public_key_encryption_oid.span()) {
+        // Note: Raw key is already stored, so we can just exit out at this point.
+        EXIT_SCOPE();
+        return private_key;
+    }
+
+    String algo_oid = TRY(String::join("."sv, private_key.algorithm.identifier));
+    ERROR_WITH_SCOPE(TRY(String::formatted("Unhandled algorithm {}", algo_oid)));
 }
 
 static ErrorOr<Crypto::ASN1::BitStringView> parse_unique_identifier(Crypto::ASN1::Decoder& decoder, Vector<StringView> current_scope)

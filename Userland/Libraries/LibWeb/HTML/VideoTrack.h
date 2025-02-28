@@ -9,7 +9,7 @@
 #include <AK/String.h>
 #include <AK/Time.h>
 #include <LibGfx/Forward.h>
-#include <LibVideo/Forward.h>
+#include <LibMedia/Forward.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 
 namespace Web::HTML {
@@ -25,10 +25,11 @@ public:
 
     void play_video(Badge<HTMLVideoElement>);
     void pause_video(Badge<HTMLVideoElement>);
+    void stop_video(Badge<HTMLVideoElement>);
 
-    Duration position() const;
-    Duration duration() const;
-    void seek(Duration, MediaSeekMode);
+    AK::Duration position() const;
+    AK::Duration duration() const;
+    void seek(AK::Duration, MediaSeekMode);
 
     u64 pixel_width() const;
     u64 pixel_height() const;
@@ -42,7 +43,7 @@ public:
     void set_selected(bool selected);
 
 private:
-    VideoTrack(JS::Realm&, JS::NonnullGCPtr<HTMLMediaElement>, NonnullOwnPtr<Video::PlaybackManager>);
+    VideoTrack(JS::Realm&, JS::NonnullGCPtr<HTMLMediaElement>, NonnullOwnPtr<Media::PlaybackManager>);
 
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
@@ -65,7 +66,7 @@ private:
     JS::NonnullGCPtr<HTMLMediaElement> m_media_element;
     JS::GCPtr<VideoTrackList> m_video_track_list;
 
-    NonnullOwnPtr<Video::PlaybackManager> m_playback_manager;
+    NonnullOwnPtr<Media::PlaybackManager> m_playback_manager;
 };
 
 }

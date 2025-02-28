@@ -17,7 +17,6 @@ JS_DEFINE_ALLOCATOR(AudioTrackList);
 
 AudioTrackList::AudioTrackList(JS::Realm& realm)
     : DOM::EventTarget(realm, MayInterfereWithIndexedPropertyAccess::Yes)
-    , m_audio_tracks(realm.heap())
 {
 }
 
@@ -45,12 +44,10 @@ JS::ThrowCompletionOr<Optional<JS::PropertyDescriptor>> AudioTrackList::internal
     return Base::internal_get_own_property(property_name);
 }
 
-ErrorOr<void> AudioTrackList::add_track(Badge<HTMLMediaElement>, JS::NonnullGCPtr<AudioTrack> audio_track)
+void AudioTrackList::add_track(Badge<HTMLMediaElement>, JS::NonnullGCPtr<AudioTrack> audio_track)
 {
-    TRY(m_audio_tracks.try_append(audio_track));
+    m_audio_tracks.append(audio_track);
     audio_track->set_audio_track_list({}, this);
-
-    return {};
 }
 
 void AudioTrackList::remove_all_tracks(Badge<HTMLMediaElement>)
@@ -118,6 +115,12 @@ void AudioTrackList::set_onremovetrack(WebIDL::CallbackType* event_handler)
 WebIDL::CallbackType* AudioTrackList::onremovetrack()
 {
     return event_handler_attribute(HTML::EventNames::removetrack);
+}
+
+void AudioTrackList::visit_edges(JS::Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_audio_tracks);
 }
 
 }

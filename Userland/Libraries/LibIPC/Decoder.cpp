@@ -34,8 +34,6 @@ template<>
 ErrorOr<ByteString> decode(Decoder& decoder)
 {
     auto length = TRY(decoder.decode_size());
-    if (length == NumericLimits<u32>::max())
-        return ByteString {};
     if (length == 0)
         return ByteString::empty();
 
@@ -83,15 +81,41 @@ ErrorOr<UnixDateTime> decode(Decoder& decoder)
 template<>
 ErrorOr<URL::URL> decode(Decoder& decoder)
 {
-    auto url = TRY(decoder.decode<ByteString>());
-    return URL::URL { url };
+    auto url_string = TRY(decoder.decode<ByteString>());
+    URL::URL url { url_string };
+
+    bool has_blob_url = TRY(decoder.decode<bool>());
+    if (!has_blob_url)
+        return url;
+
+    url.set_blob_url_entry(URL::BlobURLEntry {
+        .type = TRY(decoder.decode<String>()),
+        .byte_buffer = TRY(decoder.decode<ByteBuffer>()),
+        .environment_origin = TRY(decoder.decode<URL::Origin>()),
+    });
+
+    return url;
+}
+
+template<>
+ErrorOr<URL::Origin> decode(Decoder& decoder)
+{
+    auto scheme = TRY(decoder.decode<ByteString>());
+    auto host = TRY(decoder.decode<URL::Host>());
+    auto port = TRY(decoder.decode<Optional<u16>>());
+
+    return URL::Origin { move(scheme), move(host), port };
 }
 
 template<>
 ErrorOr<File> decode(Decoder& decoder)
 {
-    int fd = TRY(decoder.socket().receive_fd(O_CLOEXEC));
-    return File { fd, File::ConstructWithReceivedFileDescriptor };
+    auto file = TRY(decoder.files().try_dequeue());
+    auto fd = file.fd();
+
+    auto fd_flags = TRY(Core::System::fcntl(fd, F_GETFD));
+    TRY(Core::System::fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC));
+    return file;
 }
 
 template<>

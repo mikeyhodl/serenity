@@ -1,3 +1,4 @@
+#import <Fetch/Request.idl>
 #import <HTML/HTMLElement.idl>
 #import <HTML/Scripting/Fetching.idl>
 
@@ -7,17 +8,17 @@ interface HTMLScriptElement : HTMLElement {
 
     [HTMLConstructor] constructor();
 
-    [CEReactions, Reflect] attribute DOMString src;
+    [CEReactions, Reflect, URL] attribute USVString src;
     [CEReactions, Reflect] attribute DOMString type;
     [CEReactions, Reflect=nomodule] attribute boolean noModule;
-    // FIXME: [CEReactions] attribute boolean async;
+    [CEReactions] attribute boolean async;
     [CEReactions, Reflect] attribute boolean defer;
     [CEReactions, Reflect=crossorigin, Enumerated=CORSSettingsAttribute] attribute DOMString? crossOrigin;
     [CEReactions] attribute DOMString text;
     [CEReactions, Reflect] attribute DOMString integrity;
-    [CEReactions, Reflect=referrerpolicy] attribute DOMString referrerPolicy;
-    // FIXME: [SameObject, PutForwards=value] readonly attribute DOMTokenList blocking;
-    // FIXME: [CEReactions] attribute DOMString fetchPriority;
+    [CEReactions, Reflect=referrerpolicy, Enumerated=ReferrerPolicy] attribute DOMString referrerPolicy;
+    [FIXME, SameObject, PutForwards=value] readonly attribute DOMTokenList blocking;
+    [CEReactions, Enumerated=FetchPriorityAttribute, Reflect=fetchpriority] attribute DOMString fetchPriority;
 
     static boolean supports(DOMString type);
 

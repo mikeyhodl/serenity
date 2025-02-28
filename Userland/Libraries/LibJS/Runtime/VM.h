@@ -37,6 +37,11 @@ enum class HandledByHost {
     Unhandled,
 };
 
+enum class EvalMode {
+    Direct,
+    Indirect
+};
+
 class VM : public RefCounted<VM> {
 public:
     struct CustomData {
@@ -75,6 +80,11 @@ public:
         return m_byte_string_cache;
     }
 
+    HashMap<Utf16String, GCPtr<PrimitiveString>>& utf16_string_cache()
+    {
+        return m_utf16_string_cache;
+    }
+
     PrimitiveString& empty_string() { return *m_empty_string; }
 
     PrimitiveString& single_ascii_character_string(u8 character)
@@ -96,9 +106,12 @@ public:
 
     bool did_reach_stack_space_limit() const
     {
-        // Address sanitizer (ASAN) used to check for more space but
-        // currently we can't detect the stack size with it enabled.
+#if defined(AK_OS_MACOS) && defined(HAS_ADDRESS_SANITIZER)
+        // We hit stack limits sooner on macOS 14 arm64 with ASAN enabled.
+        return m_stack_info.size_free() < 96 * KiB;
+#else
         return m_stack_info.size_free() < 32 * KiB;
+#endif
     }
 
     // TODO: Rename this function instead of providing a second argument, now that the global object is no longer passed in.
@@ -195,10 +208,16 @@ public:
         return JS::throw_completion(completion);
     }
 
+    template<typename T>
+    Completion throw_completion(ErrorType type)
+    {
+        return throw_completion<T>(String::from_utf8_without_validation(type.message().bytes()));
+    }
+
     template<typename T, typename... Args>
     Completion throw_completion(ErrorType type, Args&&... args)
     {
-        return throw_completion<T>(ByteString::formatted(type.message(), forward<Args>(args)...));
+        return throw_completion<T>(MUST(String::formatted(type.message(), forward<Args>(args)...)));
     }
 
     Value get_new_target();
@@ -208,9 +227,19 @@ public:
     Object& get_global_object();
 
     CommonPropertyNames names;
+    struct {
+        GCPtr<PrimitiveString> number;
+        GCPtr<PrimitiveString> undefined;
+        GCPtr<PrimitiveString> object;
+        GCPtr<PrimitiveString> string;
+        GCPtr<PrimitiveString> symbol;
+        GCPtr<PrimitiveString> boolean;
+        GCPtr<PrimitiveString> bigint;
+        GCPtr<PrimitiveString> function;
+    } typeof_strings;
 
     void run_queued_promise_jobs();
-    void enqueue_promise_job(Function<ThrowCompletionOr<Value>()> job, Realm*);
+    void enqueue_promise_job(NonnullGCPtr<HeapFunction<ThrowCompletionOr<Value>()>> job, Realm*);
 
     void run_queued_finalization_registry_cleanup_jobs();
     void enqueue_finalization_registry_cleanup_job(FinalizationRegistry&);
@@ -220,13 +249,9 @@ public:
     Function<void()> on_call_stack_emptied;
     Function<void(Promise&)> on_promise_unhandled_rejection;
     Function<void(Promise&)> on_promise_rejection_handled;
+    Function<void(Object const&, PropertyKey const&)> on_unimplemented_property_access;
 
     CustomData* custom_data() { return m_custom_data; }
-
-    ThrowCompletionOr<void> binding_initialization(DeprecatedFlyString const& target, Value value, Environment* environment);
-    ThrowCompletionOr<void> binding_initialization(NonnullRefPtr<BindingPattern const> const& target, Value value, Environment* environment);
-
-    ThrowCompletionOr<Value> named_evaluation_if_anonymous_function(ASTNode const& expression, DeprecatedFlyString const& name);
 
     void save_execution_context_stack();
     void clear_execution_context_stack();
@@ -254,15 +279,13 @@ public:
     Function<void(Promise&, Promise::RejectionOperation)> host_promise_rejection_tracker;
     Function<ThrowCompletionOr<Value>(JobCallback&, Value, ReadonlySpan<Value>)> host_call_job_callback;
     Function<void(FinalizationRegistry&)> host_enqueue_finalization_registry_cleanup_job;
-    Function<void(Function<ThrowCompletionOr<Value>()>, Realm*)> host_enqueue_promise_job;
+    Function<void(NonnullGCPtr<HeapFunction<ThrowCompletionOr<Value>()>>, Realm*)> host_enqueue_promise_job;
     Function<JS::NonnullGCPtr<JobCallback>(FunctionObject&)> host_make_job_callback;
-    Function<ThrowCompletionOr<void>(Realm&)> host_ensure_can_compile_strings;
+    Function<ThrowCompletionOr<void>(Realm&, ReadonlySpan<String>, StringView, EvalMode)> host_ensure_can_compile_strings;
     Function<ThrowCompletionOr<void>(Object&)> host_ensure_can_add_private_element;
     Function<ThrowCompletionOr<HandledByHost>(ArrayBuffer&, size_t)> host_resize_array_buffer;
-
-    // Execute a specific AST node either in AST or BC interpreter, depending on which one is enabled by default.
-    // NOTE: This is meant as a temporary stopgap until everything is bytecode.
-    ThrowCompletionOr<Value> execute_ast_node(ASTNode const&);
+    Function<void(StringView)> host_unrecognized_date_string;
+    Function<ThrowCompletionOr<void>(Realm&, NonnullOwnPtr<ExecutionContext>, ShadowRealm&)> host_initialize_shadow_realm;
 
     Vector<StackTraceElement> stack_trace() const;
 
@@ -278,9 +301,6 @@ private:
 
     VM(OwnPtr<CustomData>, ErrorMessages);
 
-    ThrowCompletionOr<void> property_binding_initialization(BindingPattern const& binding, Value value, Environment* environment);
-    ThrowCompletionOr<void> iterator_binding_initialization(BindingPattern const& binding, IteratorRecord& iterator_record, Environment* environment);
-
     void load_imported_module(ImportedModuleReferrer, ModuleRequest const&, GCPtr<GraphLoadingState::HostDefined>, ImportedModulePayload);
     ThrowCompletionOr<void> link_and_eval_module(CyclicModule&);
 
@@ -288,6 +308,7 @@ private:
 
     HashMap<String, GCPtr<PrimitiveString>> m_string_cache;
     HashMap<ByteString, GCPtr<PrimitiveString>> m_byte_string_cache;
+    HashMap<Utf16String, GCPtr<PrimitiveString>> m_utf16_string_cache;
 
     Heap m_heap;
 
@@ -300,7 +321,7 @@ private:
     // GlobalSymbolRegistry, https://tc39.es/ecma262/#table-globalsymbolregistry-record-fields
     HashMap<String, NonnullGCPtr<Symbol>> m_global_symbol_registry;
 
-    Vector<Function<ThrowCompletionOr<Value>()>> m_promise_jobs;
+    Vector<NonnullGCPtr<HeapFunction<ThrowCompletionOr<Value>()>>> m_promise_jobs;
 
     Vector<GCPtr<FinalizationRegistry>> m_finalization_registry_cleanup_jobs;
 

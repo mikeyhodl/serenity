@@ -10,53 +10,17 @@
 #include <AK/IntrusiveRedBlackTree.h>
 #include <AK/RefPtr.h>
 
+#include <Kernel/Arch/riscv64/VirtualMemoryDefinitions.h>
 #include <Kernel/Forward.h>
 #include <Kernel/Locking/Spinlock.h>
+#include <Kernel/Memory/MemoryType.h>
 #include <Kernel/Memory/PhysicalAddress.h>
-#include <Kernel/Memory/PhysicalPage.h>
+#include <Kernel/Memory/PhysicalRAMPage.h>
 
 #include <AK/Platform.h>
 VALIDATE_IS_RISCV64()
 
 namespace Kernel::Memory {
-
-// Documentation for RISC-V Virtual Memory:
-// The RISC-V Instruction Set Manual, Volume II: Privileged Architecture
-// https://github.com/riscv/riscv-isa-manual/releases/download/Priv-v1.12/riscv-privileged-20211203.pdf
-
-// Currently, only the Sv39 (3 level paging) virtual memory system is implemented
-
-// Figure 4.19-4.21
-constexpr size_t PAGE_TABLE_SHIFT = 12;
-constexpr size_t PAGE_TABLE_SIZE = 1LU << PAGE_TABLE_SHIFT;
-
-constexpr size_t PADDR_PPN_OFFSET = PAGE_TABLE_SHIFT;
-constexpr size_t VADDR_VPN_OFFSET = PAGE_TABLE_SHIFT;
-constexpr size_t PTE_PPN_OFFSET = 10;
-
-constexpr size_t PPN_SIZE = 26 + 9 + 9;
-constexpr size_t VPN_SIZE = 9 + 9 + 9;
-
-constexpr size_t VPN_2_OFFSET = 30;
-constexpr size_t VPN_1_OFFSET = 21;
-constexpr size_t VPN_0_OFFSET = 12;
-
-constexpr size_t PPN_MASK = (1LU << PPN_SIZE) - 1;
-constexpr size_t PTE_PPN_MASK = PPN_MASK << PTE_PPN_OFFSET;
-
-constexpr size_t PAGE_TABLE_INDEX_MASK = 0x1ff;
-
-enum class PageTableEntryBits {
-    Valid = 1 << 0,
-    Readable = 1 << 1,
-    Writeable = 1 << 2,
-    Executable = 1 << 3,
-    UserAllowed = 1 << 4,
-    Global = 1 << 5,
-    Accessed = 1 << 6,
-    Dirty = 1 << 7,
-};
-AK_ENUM_BITWISE_OPERATORS(PageTableEntryBits);
 
 class PageDirectoryEntry {
 public:
@@ -120,17 +84,13 @@ public:
     bool is_writable() const { return (m_raw & to_underlying(PageTableEntryBits::Writeable)) != 0; }
     void set_writable(bool b) { set_bit(PageTableEntryBits::Writeable, b); }
 
-    bool is_cache_disabled() const { TODO_RISCV64(); }
-    void set_cache_disabled(bool) { }
+    void set_memory_type(MemoryType) { }
 
     bool is_global() const { TODO_RISCV64(); }
     void set_global(bool b) { set_bit(PageTableEntryBits::Global, b); }
 
     bool is_execute_disabled() const { TODO_RISCV64(); }
     void set_execute_disabled(bool b) { set_bit(PageTableEntryBits::Executable, !b); }
-
-    bool is_pat() const { TODO_RISCV64(); }
-    void set_pat(bool) { }
 
     bool is_null() const { return m_raw == 0; }
     void clear() { m_raw = 0; }
@@ -197,8 +157,8 @@ private:
     static void deregister_page_directory(PageDirectory* directory);
 
     Process* m_process { nullptr };
-    RefPtr<PhysicalPage> m_directory_table;
-    RefPtr<PhysicalPage> m_directory_pages[512];
+    RefPtr<PhysicalRAMPage> m_directory_table;
+    RefPtr<PhysicalRAMPage> m_directory_pages[512];
     RecursiveSpinlock<LockRank::None> m_lock {};
 };
 

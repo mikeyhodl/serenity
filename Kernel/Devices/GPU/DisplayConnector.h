@@ -17,7 +17,7 @@ namespace Kernel {
 class GraphicsManagement;
 class DisplayConnector : public CharacterDevice {
     friend class GraphicsManagement;
-    friend class DeviceManagement;
+    friend class Device;
 
 public:
     struct ModeSetting {
@@ -105,8 +105,8 @@ public:
 protected:
     void set_edid_bytes(Array<u8, 128> const& edid_bytes, bool might_be_invalid = false);
 
-    DisplayConnector(PhysicalAddress framebuffer_address, size_t framebuffer_resource_size, bool enable_write_combine_optimization);
-    DisplayConnector(size_t framebuffer_resource_size, bool enable_write_combine_optimization);
+    DisplayConnector(PhysicalAddress framebuffer_address, size_t framebuffer_resource_size, Memory::MemoryType);
+    DisplayConnector(size_t framebuffer_resource_size, Memory::MemoryType);
     virtual void enable_console() = 0;
     virtual void disable_console() = 0;
     virtual ErrorOr<void> flush_first_surface() = 0;
@@ -137,7 +137,7 @@ private:
     virtual bool can_write(OpenFileDescription const&, u64) const final override { return true; }
     virtual ErrorOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override final;
     virtual ErrorOr<size_t> write(OpenFileDescription&, u64, UserOrKernelBuffer const&, size_t) override final;
-    virtual ErrorOr<NonnullLockRefPtr<Memory::VMObject>> vmobject_for_mmap(Process&, Memory::VirtualRange const&, u64&, bool) override final;
+    virtual ErrorOr<VMObjectAndMemoryType> vmobject_and_memory_type_for_mmap(Process&, Memory::VirtualRange const&, u64&, bool) override final;
     virtual ErrorOr<void> ioctl(OpenFileDescription&, unsigned request, Userspace<void*> arg) override final;
     virtual StringView class_name() const override final { return "DisplayConnector"sv; }
 
@@ -156,7 +156,7 @@ private:
     OwnPtr<Memory::Region> m_fake_writes_framebuffer_region;
     u8* m_framebuffer_data {};
 
-    bool const m_enable_write_combine_optimization { false };
+    Memory::MemoryType m_memory_type { Memory::MemoryType::NonCacheable };
     bool const m_framebuffer_at_arbitrary_physical_range { false };
 
 protected:

@@ -5,11 +5,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/API/KeyCode.h>
-#include <LibGUI/Event.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/MouseEventPrototype.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/UIEvents/EventNames.h>
+#include <LibWeb/UIEvents/KeyCode.h>
+#include <LibWeb/UIEvents/MouseButton.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
 
 namespace Web::UIEvents {
@@ -44,8 +45,8 @@ MouseEvent::MouseEvent(JS::Realm& realm, FlyString const& event_name, MouseEvent
     , m_movement_y(event_init.movement_y)
     , m_button(event_init.button)
     , m_buttons(event_init.buttons)
+    , m_related_target(event_init.related_target)
 {
-    set_event_characteristics();
 }
 
 MouseEvent::~MouseEvent() = default;
@@ -54,6 +55,12 @@ void MouseEvent::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     WEB_SET_PROTOTYPE_FOR_INTERFACE(MouseEvent);
+}
+
+void MouseEvent::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_related_target);
 }
 
 bool MouseEvent::get_modifier_state(String const& key_arg) const
@@ -89,23 +96,31 @@ bool MouseEvent::get_modifier_state(String const& key_arg) const
     return false;
 }
 
-// https://www.w3.org/TR/uievents/#dom-mouseevent-button
-static i16 determine_button(unsigned mouse_button)
+// https://w3c.github.io/uievents/#dom-mouseevent-initmouseevent
+void MouseEvent::init_mouse_event(String const& type, bool bubbles, bool cancelable, HTML::Window* view, WebIDL::Long detail, WebIDL::Long screen_x, WebIDL::Long screen_y, WebIDL::Long client_x, WebIDL::Long client_y, bool ctrl_key, bool alt_key, bool shift_key, bool meta_key, WebIDL::Short button, DOM::EventTarget* related_target)
 {
-    switch (mouse_button) {
-    case GUI::MouseButton::Primary:
-        return 0;
-    case GUI::MouseButton::Middle:
-        return 1;
-    case GUI::MouseButton::Secondary:
-        return 2;
-    case GUI::MouseButton::Backward:
-        return 3;
-    case GUI::MouseButton::Forward:
-        return 4;
-    default:
-        VERIFY_NOT_REACHED();
-    }
+    // Initializes attributes of a MouseEvent object. This method has the same behavior as UIEvent.initUIEvent().
+
+    // 1. If this’s dispatch flag is set, then return.
+    if (dispatched())
+        return;
+
+    // 2. Initialize this with type, bubbles, and cancelable.
+    initialize_event(type, bubbles, cancelable);
+
+    // Implementation Defined: Initialise other values.
+    m_view = view;
+    m_detail = detail;
+    m_screen_x = screen_x;
+    m_screen_y = screen_y;
+    m_client_x = client_x;
+    m_client_y = client_y;
+    m_ctrl_key = ctrl_key;
+    m_shift_key = shift_key;
+    m_alt_key = alt_key;
+    m_meta_key = meta_key;
+    m_button = button;
+    m_related_target = related_target;
 }
 
 JS::NonnullGCPtr<MouseEvent> MouseEvent::create(JS::Realm& realm, FlyString const& event_name, MouseEventInit const& event_init, double page_x, double page_y, double offset_x, double offset_y)
@@ -133,20 +148,14 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<MouseEvent>> MouseEvent::create_from_platfo
         event_init.movement_x = movement.value().x().to_double();
         event_init.movement_y = movement.value().y().to_double();
     }
-    event_init.button = determine_button(button);
+    event_init.button = mouse_button_to_button_code(static_cast<MouseButton>(button));
     event_init.buttons = buttons;
     auto event = MouseEvent::create(realm, event_name, event_init, page.x().to_double(), page.y().to_double(), offset.x().to_double(), offset.y().to_double());
     event->set_is_trusted(true);
+    event->set_bubbles(true);
+    event->set_cancelable(true);
+    event->set_composed(true);
     return event;
-}
-
-void MouseEvent::set_event_characteristics()
-{
-    if (type().is_one_of(EventNames::mousedown, EventNames::mousemove, EventNames::mouseout, EventNames::mouseover, EventNames::mouseup, HTML::EventNames::click, EventNames::dblclick, EventNames::contextmenu)) {
-        set_bubbles(true);
-        set_cancelable(true);
-        set_composed(true);
-    }
 }
 
 }

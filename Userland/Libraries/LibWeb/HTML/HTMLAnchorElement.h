@@ -24,11 +24,10 @@ public:
     String target() const { return get_attribute_value(HTML::AttributeNames::target); }
     String download() const { return get_attribute_value(HTML::AttributeNames::download); }
 
+    JS::NonnullGCPtr<DOM::DOMTokenList> rel_list();
+
     String text() const;
     void set_text(String const&);
-
-    StringView referrer_policy() const;
-    WebIDL::ExceptionOr<void> set_referrer_policy(String const&);
 
     // ^EventTarget
     // https://html.spec.whatwg.org/multipage/interaction.html#the-tabindex-attribute:the-a-element
@@ -40,18 +39,21 @@ private:
     HTMLAnchorElement(DOM::Document&, DOM::QualifiedName);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
 
     virtual bool has_activation_behavior() const override;
     virtual void activation_behavior(Web::DOM::Event const&) override;
+    virtual bool has_download_preference() const;
 
     // ^DOM::Element
-    virtual void attribute_changed(FlyString const& name, Optional<String> const& value) override;
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
     virtual i32 default_tab_index_value() const override;
 
     // ^HTML::HTMLHyperlinkElementUtils
     virtual DOM::Document& hyperlink_element_utils_document() override { return document(); }
     virtual Optional<String> hyperlink_element_utils_href() const override;
     virtual WebIDL::ExceptionOr<void> set_hyperlink_element_utils_href(String) override;
+    virtual Optional<String> hyperlink_element_utils_referrerpolicy() const override;
     virtual bool hyperlink_element_utils_is_html_anchor_element() const final { return true; }
     virtual bool hyperlink_element_utils_is_connected() const final { return is_connected(); }
     virtual void hyperlink_element_utils_queue_an_element_task(HTML::Task::Source source, Function<void()> steps) override
@@ -68,6 +70,8 @@ private:
     }
 
     virtual Optional<ARIA::Role> default_role() const override;
+
+    JS::GCPtr<DOM::DOMTokenList> m_rel_list;
 };
 
 }

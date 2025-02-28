@@ -1,13 +1,13 @@
 /*
  * Copyright (c) 2020, the SerenityOS developers.
- * Copyright (c) 2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2023-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibAudio/Loader.h>
 #include <LibJS/Runtime/Promise.h>
-#include <LibVideo/PlaybackManager.h>
+#include <LibMedia/PlaybackManager.h>
 #include <LibWeb/Bindings/HTMLMediaElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Document.h>
@@ -18,6 +18,7 @@
 #include <LibWeb/Fetch/Infrastructure/FetchController.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
+#include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/HTML/AudioTrack.h>
 #include <LibWeb/HTML/AudioTrackList.h>
 #include <LibWeb/HTML/CORSSettingAttribute.h>
@@ -29,12 +30,15 @@
 #include <LibWeb/HTML/PotentialCORSRequest.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+#include <LibWeb/HTML/TextTrack.h>
+#include <LibWeb/HTML/TextTrackList.h>
 #include <LibWeb/HTML/TimeRanges.h>
 #include <LibWeb/HTML/TrackEvent.h>
 #include <LibWeb/HTML/VideoTrack.h>
 #include <LibWeb/HTML/VideoTrackList.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/MimeSniff/MimeType.h>
+#include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/WebIDL/Promise.h>
 
@@ -42,7 +46,6 @@ namespace Web::HTML {
 
 HTMLMediaElement::HTMLMediaElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
-    , m_pending_play_promises(heap())
 {
 }
 
@@ -55,6 +58,7 @@ void HTMLMediaElement::initialize(JS::Realm& realm)
 
     m_audio_tracks = realm.heap().allocate<AudioTrackList>(realm, realm);
     m_video_tracks = realm.heap().allocate<VideoTrackList>(realm, realm);
+    m_text_tracks = realm.heap().allocate<TextTrackList>(realm, realm);
     m_document_observer = realm.heap().allocate<DOM::DocumentObserver>(realm, realm, document());
 
     // https://html.spec.whatwg.org/multipage/media.html#playing-the-media-resource:media-element-82
@@ -63,10 +67,18 @@ void HTMLMediaElement::initialize(JS::Realm& realm)
         // the document is active again.
         pause_element().release_value_but_fixme_should_propagate_errors();
     });
+
+    document().page().register_media_element({}, unique_id());
+}
+
+void HTMLMediaElement::finalize()
+{
+    Base::finalize();
+    document().page().unregister_media_element({}, unique_id());
 }
 
 // https://html.spec.whatwg.org/multipage/media.html#queue-a-media-element-task
-void HTMLMediaElement::queue_a_media_element_task(JS::SafeFunction<void()> steps)
+void HTMLMediaElement::queue_a_media_element_task(Function<void()> steps)
 {
     // To queue a media element task with a media element element and a series of steps steps, queue an element task on the media element's
     // media element event task source given element and steps.
@@ -79,14 +91,16 @@ void HTMLMediaElement::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_error);
     visitor.visit(m_audio_tracks);
     visitor.visit(m_video_tracks);
+    visitor.visit(m_text_tracks);
     visitor.visit(m_document_observer);
     visitor.visit(m_source_element_selector);
     visitor.visit(m_fetch_controller);
+    visitor.visit(m_pending_play_promises);
 }
 
-void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    Base::attribute_changed(name, value);
+    Base::attribute_changed(name, old_value, value);
 
     if (name == HTML::AttributeNames::src) {
         load_element().release_value_but_fixme_should_propagate_errors();
@@ -117,7 +131,7 @@ void HTMLMediaElement::removed_from(DOM::Node* node)
 }
 
 // https://html.spec.whatwg.org/multipage/media.html#fatal-decode-error
-WebIDL::ExceptionOr<void> HTMLMediaElement::set_decoder_error(String error_message)
+void HTMLMediaElement::set_decoder_error(String error_message)
 {
     auto& realm = this->realm();
     auto& vm = realm.vm();
@@ -127,7 +141,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::set_decoder_error(String error_messa
     // resource is usable (i.e. once the media element's readyState attribute is no longer HAVE_NOTHING) must cause the
     // user agent to execute the following steps:
     if (m_ready_state == ReadyState::HaveNothing)
-        return {};
+        return;
 
     // 1. The user agent should cancel the fetching process.
     if (m_fetch_controller)
@@ -146,8 +160,6 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::set_decoder_error(String error_messa
     dispatch_event(DOM::Event::create(realm, HTML::EventNames::error));
 
     // FIXME: 6. Abort the overall resource selection algorithm.
-
-    return {};
 }
 
 // https://html.spec.whatwg.org/multipage/media.html#dom-media-buffered
@@ -164,10 +176,8 @@ JS::NonnullGCPtr<TimeRanges> HTMLMediaElement::buffered() const
 }
 
 // https://html.spec.whatwg.org/multipage/media.html#dom-navigator-canplaytype
-WebIDL::ExceptionOr<Bindings::CanPlayTypeResult> HTMLMediaElement::can_play_type(StringView type) const
+Bindings::CanPlayTypeResult HTMLMediaElement::can_play_type(StringView type) const
 {
-    auto& vm = this->vm();
-
     // The canPlayType(type) method must:
     // - return the empty string if type is a type that the user agent knows it cannot render or is the type "application/octet-stream"
     // - return "probably" if the user agent is confident that the type represents a media resource that it can render if used in with this audio or video element
@@ -176,7 +186,7 @@ WebIDL::ExceptionOr<Bindings::CanPlayTypeResult> HTMLMediaElement::can_play_type
     if (type == "application/octet-stream"sv)
         return Bindings::CanPlayTypeResult::Empty;
 
-    auto mime_type = TRY_OR_THROW_OOM(vm, MimeSniff::MimeType::parse(type));
+    auto mime_type = MimeSniff::MimeType::parse(type);
 
     if (mime_type.has_value() && mime_type->type() == "video"sv) {
         if (mime_type->subtype() == "webm"sv)
@@ -333,7 +343,6 @@ void HTMLMediaElement::set_duration(double duration)
 WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> HTMLMediaElement::play()
 {
     auto& realm = this->realm();
-    auto& vm = realm.vm();
 
     // FIXME: 1. If the media element is not allowed to play, then return a promise rejected with a "NotAllowedError" DOMException.
 
@@ -346,7 +355,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> HTMLMediaElement::play()
 
     // 3. Let promise be a new promise and append promise to the list of pending play promises.
     auto promise = WebIDL::create_promise(realm);
-    TRY_OR_THROW_OOM(vm, m_pending_play_promises.try_append(promise));
+    m_pending_play_promises.append(promise);
 
     // 4. Run the internal play steps for the media element.
     TRY(play_element());
@@ -392,7 +401,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::set_volume(double volume)
     // set to the new value. If the new value is outside the range 0.0 to 1.0 inclusive, then, on setting, an
     // "IndexSizeError" DOMException must be thrown instead.
     if (volume < 0.0 || volume > 1.0)
-        return WebIDL::IndexSizeError::create(realm(), "Volume must be in the range 0.0 to 1.0, inclusive"_fly_string);
+        return WebIDL::IndexSizeError::create(realm(), "Volume must be in the range 0.0 to 1.0, inclusive"_string);
 
     m_volume = volume;
     volume_or_muted_attribute_changed();
@@ -429,11 +438,18 @@ void HTMLMediaElement::volume_or_muted_attribute_changed()
     on_volume_change();
 }
 
+void HTMLMediaElement::page_mute_state_changed(Badge<Page>)
+{
+    on_volume_change();
+}
+
 // https://html.spec.whatwg.org/multipage/media.html#effective-media-volume
 double HTMLMediaElement::effective_media_volume() const
 {
-    // FIXME 1. If the user has indicated that the user agent is to override the volume of the element, then return the
-    //          volume desired by the user.
+    // 1. If the user has indicated that the user agent is to override the volume of the element, then return the
+    //    volume desired by the user.
+    if (document().page().page_mute_state() == MuteState::Muted)
+        return 0.0;
 
     // 2. If the element's audio output is muted, then return zero.
     if (m_muted)
@@ -449,19 +465,53 @@ double HTMLMediaElement::effective_media_volume() const
     return volume;
 }
 
+// https://html.spec.whatwg.org/multipage/media.html#dom-media-addtexttrack
+JS::NonnullGCPtr<TextTrack> HTMLMediaElement::add_text_track(Bindings::TextTrackKind kind, String const& label, String const& language)
+{
+    // 1. Create a new TextTrack object.
+    auto text_track = TextTrack::create(this->realm());
+
+    // 2. Create a new text track corresponding to the new object, and set its text track kind to kind, its text track
+    //    label to label, its text track language to language, its text track readiness state to the text track loaded
+    //    state, its text track mode to the text track hidden mode, and its text track list of cues to an empty list.
+    text_track->set_kind(kind);
+    text_track->set_label(label);
+    text_track->set_language(language);
+    text_track->set_readiness_state(TextTrack::ReadinessState::Loaded);
+    text_track->set_mode(Bindings::TextTrackMode::Hidden);
+    // FIXME: set text track list of cues to an empty list
+
+    // FIXME: 3. Initially, the text track list of cues is not associated with any rules for updating the text track rendering.
+    //    When a text track cue is added to it, the text track list of cues has its rules permanently set accordingly.
+
+    // FIXME: 4. Add the new text track to the media element's list of text tracks.
+
+    // 5. Queue a media element task given the media element to fire an event named addtrack at the media element's
+    //    textTracks attribute's TextTrackList object, using TrackEvent, with the track attribute initialized to the new
+    //    text track's TextTrack object.
+    queue_a_media_element_task([this, text_track] {
+        TrackEventInit event_init {};
+        event_init.track = JS::make_handle(text_track);
+
+        auto event = TrackEvent::create(this->realm(), HTML::EventNames::addtrack, move(event_init));
+        m_text_tracks->dispatch_event(event);
+    });
+
+    // 6. Return the new TextTrack object.
+    return text_track;
+}
+
 // https://html.spec.whatwg.org/multipage/media.html#media-element-load-algorithm
 WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 {
-    auto& vm = this->vm();
-
     m_first_data_load_event_since_load_start = true;
 
     // FIXME: 1. Abort any already-running instance of the resource selection algorithm for this element.
 
     // 2. Let pending tasks be a list of all tasks from the media element's media element event task source in one of the task queues.
-    [[maybe_unused]] auto pending_tasks = TRY_OR_THROW_OOM(vm, HTML::main_thread_event_loop().task_queue().take_tasks_matching([&](auto& task) {
+    [[maybe_unused]] auto pending_tasks = HTML::main_thread_event_loop().task_queue().take_tasks_matching([&](auto& task) {
         return task.source() == media_element_event_task_source();
-    }));
+    });
 
     // FIXME: 3. For each task in pending tasks that would resolve pending play promises or reject pending play promises, immediately resolve or
     //           reject those promises in the order the corresponding tasks were queued.
@@ -504,7 +554,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 
             // 2. Take pending play promises and reject pending play promises with the result and an "AbortError" DOMException.
             auto promises = take_pending_play_promises();
-            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback was aborted"_fly_string);
+            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback was aborted"_string);
         }
 
         // 7. If seeking is true, set it to false.
@@ -571,8 +621,6 @@ public:
 
     WebIDL::ExceptionOr<void> process_candidate()
     {
-        auto& vm = this->vm();
-
         // 2. ⌛ Process candidate: If candidate does not have a src attribute, or if its src attribute's value is the
         //    empty string, then end the synchronous section, and jump down to the failed with elements step below.
         String candiate_src;
@@ -588,7 +636,7 @@ public:
         //    would have resulted from parsing the URL specified by candidate's src attribute's value relative to the
         //    candidate's node document when the src attribute was last changed.
         auto url_record = m_candidate->document().parse_url(candiate_src);
-        auto url_string = TRY_OR_THROW_OOM(vm, String::from_byte_string(url_record.to_byte_string()));
+        auto url_string = MUST(url_record.to_string());
 
         // 4. ⌛ If urlString was not obtained successfully, then end the synchronous section, and jump down to the failed
         //    with elements step below.
@@ -808,7 +856,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::select_resource()
     // -> If mode is attribute
     case SelectMode::Attribute: {
         auto failed_with_attribute = [this](auto error_message) {
-            bool ran_media_element_task = false;
+            IGNORE_USE_IN_ESCAPING_LAMBDA bool ran_media_element_task = false;
 
             // 6. Failed with attribute: Reaching this step indicates that the media resource failed to load or that the given URL could not be parsed. Take
             //    pending play promises and queue a media element task given the media element to run the dedicated media source failure steps with the result.
@@ -836,7 +884,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::select_resource()
 
         // 3. ⌛ If urlString was obtained successfully, set the currentSrc attribute to urlString.
         if (url_record.is_valid())
-            m_current_src = TRY_OR_THROW_OOM(vm, String::from_byte_string(url_record.to_byte_string()));
+            m_current_src = MUST(url_record.to_string());
 
         // 4. End the synchronous section, continuing the remaining steps in parallel.
 
@@ -974,7 +1022,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::fetch_resource(URL::URL const& url_r
             // 2. Let updateMedia be to queue a media element task given the media element to run the first appropriate steps from the media data processing
             //    steps list below. (A new task is used for this so that the work described below occurs relative to the appropriate media element event task
             //    source rather than using the networking task source.)
-            auto update_media = [this, failure_callback = move(failure_callback)](auto media_data) mutable {
+            auto update_media = JS::create_heap_function(heap(), [this, failure_callback = move(failure_callback)](ByteBuffer media_data) mutable {
                 // 6. Update the media data with the contents of response's unsafe response obtained in this fashion. response can be CORS-same-origin or
                 //    CORS-cross-origin; this affects whether subtitles referenced in the media data are exposed in the API and, for video elements, whether
                 //    a canvas gets tainted when the video is drawn on it.
@@ -993,7 +1041,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::fetch_resource(URL::URL const& url_r
                     if (m_ready_state == ReadyState::HaveMetadata)
                         set_ready_state(ReadyState::HaveEnoughData);
                 });
-            };
+            });
 
             // FIXME: 3. Let processEndOfMedia be the following step: If the fetching process has completes without errors, including decoding the media data,
             //           and if all of the data is available to the user agent without network access, then, the user agent must move on to the final step below.
@@ -1003,12 +1051,12 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::fetch_resource(URL::URL const& url_r
             // 5. Otherwise, incrementally read response's body given updateMedia, processEndOfMedia, an empty algorithm, and global.
 
             VERIFY(response->body());
-            auto empty_algorithm = [](auto) {};
+            auto empty_algorithm = JS::create_heap_function(heap(), [](JS::Value) {});
 
             // FIXME: We are "fully" reading the response here, rather than "incrementally". Memory concerns aside, this should be okay for now as we are
             //        always setting byteRange to "entire resource". However, we should switch to incremental reads when that is implemented, and then
             //        implement the processEndOfMedia step.
-            response->body()->fully_read(realm, move(update_media), move(empty_algorithm), JS::NonnullGCPtr { global }).release_value_but_fixme_should_propagate_errors();
+            response->body()->fully_read(realm, update_media, empty_algorithm, JS::NonnullGCPtr { global });
         };
 
         m_fetch_controller = TRY(Fetch::Fetching::fetch(realm, request, Fetch::Infrastructure::FetchAlgorithms::create(vm, move(fetch_algorithms_input))));
@@ -1060,7 +1108,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::process_media_data(Function<void(Str
     auto& vm = realm.vm();
 
     auto audio_loader = Audio::Loader::create(m_media_data.bytes());
-    auto playback_manager = Video::PlaybackManager::from_data(m_media_data);
+    auto playback_manager = Media::PlaybackManager::from_data(m_media_data);
 
     // -> If the media data cannot be fetched at all, due to network errors, causing the user agent to give up trying to fetch the resource
     // -> If the media data can be fetched but is found by inspection to be in an unsupported format, or can otherwise not be rendered at all
@@ -1069,7 +1117,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::process_media_data(Function<void(Str
         m_fetch_controller->stop_fetch();
 
         // 2. Abort this subalgorithm, returning to the resource selection algorithm.
-        failure_callback(TRY_OR_THROW_OOM(vm, String::from_utf8(playback_manager.error().description())));
+        failure_callback(MUST(String::from_utf8(playback_manager.error().description())));
 
         return {};
     }
@@ -1083,7 +1131,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::process_media_data(Function<void(Str
         audio_track = vm.heap().allocate<AudioTrack>(realm, realm, *this, audio_loader.release_value());
 
         // 2. Update the media element's audioTracks attribute's AudioTrackList object with the new AudioTrack object.
-        TRY_OR_THROW_OOM(vm, m_audio_tracks->add_track({}, *audio_track));
+        m_audio_tracks->add_track({}, *audio_track);
 
         // 3. Let enable be unknown.
         auto enable = TriState::Unknown;
@@ -1115,7 +1163,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::process_media_data(Function<void(Str
         video_track = vm.heap().allocate<VideoTrack>(realm, realm, *this, playback_manager.release_value());
 
         // 2. Update the media element's videoTracks attribute's VideoTrackList object with the new VideoTrack object.
-        TRY_OR_THROW_OOM(vm, m_video_tracks->add_track({}, *video_track));
+        m_video_tracks->add_track({}, *video_track);
 
         // 3. Let enable be unknown.
         auto enable = TriState::Unknown;
@@ -1248,7 +1296,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::handle_media_source_failure(Span<JS:
     dispatch_event(DOM::Event::create(realm, HTML::EventNames::error));
 
     // 6. Reject pending play promises with promises and a "NotSupportedError" DOMException.
-    reject_pending_play_promises<WebIDL::NotSupportedError>(promises, "Media is not supported"_fly_string);
+    reject_pending_play_promises<WebIDL::NotSupportedError>(promises, "Media is not supported"_string);
 
     // 7. Set the element's delaying-the-load-event flag to false. This stops delaying the load event.
     m_delaying_the_load_event.clear();
@@ -1474,7 +1522,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::pause_element()
             dispatch_event(DOM::Event::create(realm, HTML::EventNames::pause));
 
             // 3. Reject pending play promises with promises and an "AbortError" DOMException.
-            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback was paused"_fly_string);
+            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback was paused"_string);
         });
 
         // 4. Set the official playback position to the current playback position.
@@ -1576,6 +1624,9 @@ void HTMLMediaElement::notify_about_playing()
     });
 
     on_playing();
+
+    if (m_audio_tracks->has_enabled_track())
+        document().page().client().page_did_change_audio_play_state(AudioPlayState::Playing);
 }
 
 void HTMLMediaElement::set_show_poster(bool show_poster)
@@ -1596,8 +1647,12 @@ void HTMLMediaElement::set_paused(bool paused)
 
     m_paused = paused;
 
-    if (m_paused)
+    if (m_paused) {
         on_paused();
+
+        if (m_audio_tracks->has_enabled_track())
+            document().page().client().page_did_change_audio_play_state(AudioPlayState::Paused);
+    }
 
     if (auto* paintable = this->paintable())
         paintable->set_needs_display();
@@ -1719,7 +1774,7 @@ void HTMLMediaElement::reached_end_of_media_playback()
 
             // 3. Take pending play promises and reject pending play promises with the result and an "AbortError" DOMException.
             auto promises = take_pending_play_promises();
-            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback has ended"_fly_string);
+            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback has ended"_string);
         }
     });
 
@@ -1824,7 +1879,8 @@ JS::MarkedVector<JS::NonnullGCPtr<WebIDL::Promise>> HTMLMediaElement::take_pendi
     // 1. Let promises be an empty list of promises.
     // 2. Copy the media element's list of pending play promises to promises.
     // 3. Clear the media element's list of pending play promises.
-    auto promises = move(m_pending_play_promises);
+    JS::MarkedVector<JS::NonnullGCPtr<WebIDL::Promise>> promises(heap());
+    promises.extend(move(m_pending_play_promises));
 
     // 4. Return promises.
     return promises;
@@ -1858,26 +1914,29 @@ void HTMLMediaElement::reject_pending_play_promises(ReadonlySpan<JS::NonnullGCPt
         WebIDL::reject_promise(realm, promise, error);
 }
 
-WebIDL::ExceptionOr<void> HTMLMediaElement::handle_keydown(Badge<Web::EventHandler>, KeyCode key)
+WebIDL::ExceptionOr<bool> HTMLMediaElement::handle_keydown(Badge<Web::EventHandler>, UIEvents::KeyCode key, u32 modifiers)
 {
+    if (modifiers != UIEvents::KeyModifier::Mod_None)
+        return false;
+
     switch (key) {
-    case KeyCode::Key_Space:
+    case UIEvents::KeyCode::Key_Space:
         TRY(toggle_playback());
         break;
 
-    case KeyCode::Key_Home:
+    case UIEvents::KeyCode::Key_Home:
         set_current_time(0);
         break;
-    case KeyCode::Key_End:
+    case UIEvents::KeyCode::Key_End:
         set_current_time(duration());
         break;
 
-    case KeyCode::Key_Left:
-    case KeyCode::Key_Right: {
+    case UIEvents::KeyCode::Key_Left:
+    case UIEvents::KeyCode::Key_Right: {
         static constexpr double time_skipped_per_key_press = 5.0;
         auto current_time = this->current_time();
 
-        if (key == KeyCode::Key_Left)
+        if (key == UIEvents::KeyCode::Key_Left)
             current_time = max(0.0, current_time - time_skipped_per_key_press);
         else
             current_time = min(duration(), current_time + time_skipped_per_key_press);
@@ -1886,12 +1945,12 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::handle_keydown(Badge<Web::EventHandl
         break;
     }
 
-    case KeyCode::Key_Up:
-    case KeyCode::Key_Down: {
+    case UIEvents::KeyCode::Key_Up:
+    case UIEvents::KeyCode::Key_Down: {
         static constexpr double volume_change_per_key_press = 0.1;
         auto volume = this->volume();
 
-        if (key == KeyCode::Key_Up)
+        if (key == UIEvents::KeyCode::Key_Up)
             volume = min(1.0, volume + volume_change_per_key_press);
         else
             volume = max(0.0, volume - volume_change_per_key_press);
@@ -1900,15 +1959,15 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::handle_keydown(Badge<Web::EventHandl
         break;
     }
 
-    case KeyCode::Key_M:
+    case UIEvents::KeyCode::Key_M:
         set_muted(!muted());
         break;
 
     default:
-        break;
+        return false;
     }
 
-    return {};
+    return true;
 }
 
 void HTMLMediaElement::set_layout_display_time(Badge<Painting::MediaPaintable>, Optional<double> display_time)

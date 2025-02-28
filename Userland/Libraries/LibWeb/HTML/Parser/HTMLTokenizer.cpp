@@ -137,11 +137,17 @@ namespace Web::HTML {
         return m_queued_tokens.dequeue();               \
     } while (0)
 
-#define EMIT_CURRENT_TOKEN                              \
+#define EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF              \
     do {                                                \
         VERIFY(m_current_builder.is_empty());           \
         will_emit(m_current_token);                     \
         m_queued_tokens.enqueue(move(m_current_token)); \
+                                                        \
+        m_has_emitted_eof = true;                       \
+        create_new_token(HTMLToken::Type::EndOfFile);   \
+        will_emit(m_current_token);                     \
+        m_queued_tokens.enqueue(move(m_current_token)); \
+                                                        \
         return m_queued_tokens.dequeue();               \
     } while (0)
 
@@ -166,11 +172,14 @@ namespace Web::HTML {
 #define SWITCH_TO_AND_EMIT_CURRENT_CHARACTER(new_state) \
     SWITCH_TO_AND_EMIT_CHARACTER(current_input_character.value(), new_state)
 
+// clang-format-18 handles the `state:` label rather badly.
+// clang-format off
 #define BEGIN_STATE(state) \
     state:                 \
     case State::state: {   \
         {                  \
             {
+// clang-format on
 
 #define END_STATE         \
     VERIFY_NOT_REACHED(); \
@@ -1428,7 +1437,7 @@ _StartOfFunction:
                 ON_EOF
                 {
                     log_parse_error();
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1460,7 +1469,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1491,7 +1500,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1519,7 +1528,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -1540,7 +1549,7 @@ _StartOfFunction:
                 {
                     log_parse_error();
                     m_current_token.set_comment(consume_current_builder());
-                    EMIT_EOF;
+                    EMIT_CURRENT_TOKEN_FOLLOWED_BY_EOF;
                 }
                 ANYTHING_ELSE
                 {
@@ -2854,6 +2863,9 @@ void HTMLTokenizer::will_emit(HTMLToken& token)
 
     auto is_start_or_end_tag = token.type() == HTMLToken::Type::StartTag || token.type() == HTMLToken::Type::EndTag;
     token.set_end_position({}, nth_last_position(is_start_or_end_tag ? 1 : 0));
+
+    if (is_start_or_end_tag)
+        token.normalize_attributes();
 }
 
 bool HTMLTokenizer::current_end_tag_token_is_appropriate() const
@@ -2886,7 +2898,7 @@ void HTMLTokenizer::restore_to(Utf8CodePointIterator const& new_iterator)
 
 String HTMLTokenizer::consume_current_builder()
 {
-    auto string = MUST(m_current_builder.to_string());
+    auto string = m_current_builder.to_string_without_validation();
     m_current_builder.clear();
     return string;
 }

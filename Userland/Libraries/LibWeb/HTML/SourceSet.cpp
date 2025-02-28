@@ -341,7 +341,7 @@ descriptor_parser:
 // https://html.spec.whatwg.org/multipage/images.html#parse-a-sizes-attribute
 CSS::LengthOrCalculated parse_a_sizes_attribute(DOM::Document const& document, StringView sizes)
 {
-    auto css_parser = CSS::Parser::Parser::create(CSS::Parser::ParsingContext { document }, sizes).release_value_but_fixme_should_propagate_errors();
+    auto css_parser = CSS::Parser::Parser::create(CSS::Parser::ParsingContext { document }, sizes);
     return css_parser.parse_as_sizes_attribute();
 }
 
@@ -418,22 +418,24 @@ void SourceSet::normalize_source_densities(DOM::Element const& element)
         // 2. Otherwise, if the image source has a width descriptor,
         //    replace the width descriptor with a pixel density descriptor
         //    with a value of the width descriptor value divided by the source size and a unit of x.
+        auto descriptor_value_set = false;
         if (image_source.descriptor.has<ImageSource::WidthDescriptorValue>()) {
             auto& width_descriptor = image_source.descriptor.get<ImageSource::WidthDescriptorValue>();
             if (source_size.is_absolute()) {
-                image_source.descriptor = ImageSource::PixelDensityDescriptorValue {
-                    .value = (width_descriptor.value / source_size.absolute_length_to_px()).to_double()
-                };
+                auto source_size_in_pixels = source_size.absolute_length_to_px();
+                if (source_size_in_pixels != 0) {
+                    image_source.descriptor = ImageSource::PixelDensityDescriptorValue {
+                        .value = (width_descriptor.value / source_size_in_pixels).to_double()
+                    };
+                    descriptor_value_set = true;
+                }
             } else {
                 dbgln("FIXME: Image element has unresolved relative length '{}' in sizes attribute", source_size);
-                image_source.descriptor = ImageSource::PixelDensityDescriptorValue {
-                    .value = 1,
-                };
             }
         }
 
         // 3. Otherwise, give the image source a pixel density descriptor of 1x.
-        else {
+        if (!descriptor_value_set) {
             image_source.descriptor = ImageSource::PixelDensityDescriptorValue {
                 .value = 1.0f
             };

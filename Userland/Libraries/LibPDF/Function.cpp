@@ -156,7 +156,7 @@ SampledFunction::create(Document* document, Vector<Bound> domain, Optional<Vecto
         size_product *= size;
     size_t bits_per_plane = size_product * bits_per_sample;
     size_t total_bits = bits_per_plane * decode.size();
-    if (stream->bytes().size() < ceil_div(total_bits, 8ull))
+    if (stream->bytes().size() < ceil_div(total_bits, static_cast<size_t>(8)))
         return Error { Error::Type::MalformedPDF, "Function type 0 stream too small" };
 
     auto function = adopt_ref(*new SampledFunction(stream));
@@ -358,7 +358,7 @@ StitchingFunction::create(Document* document, Vector<Bound> domain, Optional<Vec
 
     Vector<NonnullRefPtr<Function>> functions;
     for (size_t i = 0; i < functions_array->size(); i++) {
-        auto function = TRY(Function::create(document, functions_array->get_object_at(i)));
+        auto function = TRY(Function::create(document, TRY(functions_array->get_object_at(document, i))));
         functions.append(move(function));
     }
 
@@ -394,11 +394,8 @@ StitchingFunction::create(Document* document, Vector<Bound> domain, Optional<Vec
         return Error { Error::Type::MalformedPDF, "Function stitching /Encode size does not match /Functions size" };
 
     Vector<Bound> encode;
-    for (size_t i = 0; i < encode_array->size(); i += 2) {
+    for (size_t i = 0; i < encode_array->size(); i += 2)
         encode.append({ encode_array->at(i).to_float(), encode_array->at(i + 1).to_float() });
-        if (encode.last().lower > encode.last().upper)
-            return Error { Error::Type::MalformedPDF, "Function stitching /Encode lower bound > upper bound" };
-    }
 
     auto function = adopt_ref(*new StitchingFunction(move(functions)));
     function->m_domain = domain[0];
@@ -515,6 +512,7 @@ private:
         Vector<Token> if_false;
     };
 
+    static bool skip_whitespace_and_comments(Reader&);
     static PDFErrorOr<Vector<Token>> parse_postscript_calculator_function(Reader&, Vector<NonnullOwnPtr<IfElse>>&);
 
     struct Stack {
@@ -550,6 +548,8 @@ Optional<PostScriptCalculatorFunction::OperatorType> PostScriptCalculatorFunctio
 {
     auto match_keyword = [&](char const* keyword) {
         if (reader.matches(keyword)) {
+            // FIXME: Check if followed by whitespace or any of (, ), <, >, [, ], {, }, /, %.
+            //        Currently, this incorrectly accepts `add4` as `add 4`.
             reader.consume((int)strlen(keyword));
             return true;
         }
@@ -640,22 +640,42 @@ Optional<PostScriptCalculatorFunction::OperatorType> PostScriptCalculatorFunctio
     return {};
 }
 
+bool PostScriptCalculatorFunction::skip_whitespace_and_comments(Reader& reader)
+{
+    bool did_skip = false;
+    while (!reader.done()) {
+        if (reader.consume_whitespace()) {
+            did_skip = true;
+            continue;
+        }
+        if (reader.matches('%')) {
+            did_skip = true;
+            reader.consume();
+            while (!reader.consume_eol())
+                reader.consume();
+            continue;
+        }
+        break;
+    }
+    return did_skip;
+}
+
 PDFErrorOr<Vector<PostScriptCalculatorFunction::Token>>
 PostScriptCalculatorFunction::parse_postscript_calculator_function(Reader& reader, Vector<NonnullOwnPtr<IfElse>>& if_elses)
 {
     // Assumes valid syntax.
-    reader.consume_whitespace();
+    skip_whitespace_and_comments(reader);
     if (!reader.consume('{'))
         return Error { Error::Type::MalformedPDF, "PostScript expected '{'" };
 
     Vector<PostScriptCalculatorFunction::Token> tokens;
     while (!reader.matches('}')) {
-        if (reader.consume_whitespace())
+        if (skip_whitespace_and_comments(reader))
             continue;
 
         if (reader.matches('{')) {
             auto if_true = TRY(parse_postscript_calculator_function(reader, if_elses));
-            reader.consume_whitespace();
+            skip_whitespace_and_comments(reader);
             if (reader.matches("if")) {
                 reader.consume(2);
                 tokens.append({ OperatorType::If, (int)if_elses.size() });
@@ -665,7 +685,7 @@ PostScriptCalculatorFunction::parse_postscript_calculator_function(Reader& reade
 
             VERIFY(reader.matches('{'));
             auto if_false = TRY(parse_postscript_calculator_function(reader, if_elses));
-            reader.consume_whitespace();
+            skip_whitespace_and_comments(reader);
 
             if (reader.matches("ifelse")) {
                 reader.consume(6);
@@ -679,6 +699,11 @@ PostScriptCalculatorFunction::parse_postscript_calculator_function(Reader& reade
 
         if (reader.matches_number()) {
             // FIXME: Nicer float conversion.
+            // FIXME: Check if followed by whitespace or any of (, ), <, >, [, ], {, }, /, %.
+            //        Currently, this incorrectly accepts `4add` as `4 add`.
+            //        (I think technically `4add` should be an identifier? But since this subset supports no
+            //        identifiers, that won't happen in practice. We should reject it though, instead of accepting it
+            //        as `4 add`.)
             char const* start = reinterpret_cast<char const*>(reader.bytes().slice(reader.offset()).data());
             char* endptr;
             float value = strtof(start, &endptr);
@@ -969,7 +994,6 @@ PDFErrorOr<ReadonlySpan<float>> PostScriptCalculatorFunction::evaluate(ReadonlyS
     if (stack.top != m_range.size())
         return Error { Error::Type::MalformedPDF, "Postscript result size does not match range size"_string };
 
-    // FIXME: Does this need reversing?
     m_result.resize(stack.top);
     for (size_t i = 0; i < stack.top; ++i)
         m_result[i] = clamp(stack.stack[i], m_range[i].lower, m_range[i].upper);

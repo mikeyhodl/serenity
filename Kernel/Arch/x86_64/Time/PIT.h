@@ -34,10 +34,9 @@ namespace Kernel {
 
 class PIT final : public HardwareTimer<IRQHandler> {
 public:
-    static NonnullLockRefPtr<PIT> initialize(Function<void(RegisterState const&)>);
+    static NonnullLockRefPtr<PIT> initialize(Function<void()>);
     virtual HardwareTimerType timer_type() const override { return HardwareTimerType::i8253; }
     virtual StringView model() const override { return "i8254"sv; }
-    virtual size_t ticks_per_second() const override;
 
     virtual bool is_periodic() const override { return m_periodic; }
     virtual bool is_periodic_capable() const override { return true; }
@@ -51,7 +50,7 @@ public:
     virtual size_t calculate_nearest_possible_frequency(size_t frequency) const override;
 
 private:
-    explicit PIT(Function<void(RegisterState const&)>);
+    explicit PIT(Function<void()>);
     bool m_periodic { true };
 };
 }

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/QuickSort.h>
 #include <AK/TemporaryChange.h>
 #include <LibJS/AST.h>
 #include <LibJS/Bytecode/BasicBlock.h>
@@ -11,34 +12,213 @@
 #include <LibJS/Bytecode/Instruction.h>
 #include <LibJS/Bytecode/Op.h>
 #include <LibJS/Bytecode/Register.h>
+#include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 #include <LibJS/Runtime/VM.h>
 
 namespace JS::Bytecode {
 
-Generator::Generator(VM& vm)
+Generator::Generator(VM& vm, GCPtr<ECMAScriptFunctionObject const> function, MustPropagateCompletion must_propagate_completion)
     : m_vm(vm)
     , m_string_table(make<StringTable>())
     , m_identifier_table(make<IdentifierTable>())
     , m_regex_table(make<RegexTable>())
     , m_constants(vm.heap())
+    , m_accumulator(*this, Operand(Register::accumulator()))
+    , m_this_value(*this, Operand(Register::this_value()))
+    , m_must_propagate_completion(must_propagate_completion == MustPropagateCompletion::Yes)
+    , m_function(function)
 {
 }
 
-CodeGenerationErrorOr<NonnullGCPtr<Executable>> Generator::generate(VM& vm, ASTNode const& node, ReadonlySpan<FunctionParameter> parameters, FunctionKind enclosing_function_kind)
+CodeGenerationErrorOr<void> Generator::emit_function_declaration_instantiation(ECMAScriptFunctionObject const& function)
 {
-    Generator generator(vm);
+    if (function.m_has_parameter_expressions) {
+        emit<Op::CreateLexicalEnvironment>();
+    }
 
-    for (auto const& parameter : parameters) {
-        if (auto const* identifier = parameter.binding.get_pointer<NonnullRefPtr<Identifier const>>();
-            identifier && (*identifier)->is_local()) {
-            generator.set_local_initialized((*identifier)->local_variable_index());
+    for (auto const& parameter_name : function.m_parameter_names) {
+        if (parameter_name.value == ECMAScriptFunctionObject::ParameterIsLocal::No) {
+            auto id = intern_identifier(parameter_name.key);
+            emit<Op::CreateVariable>(id, Op::EnvironmentMode::Lexical, false);
+            if (function.m_has_duplicates) {
+                emit<Op::InitializeLexicalBinding>(id, add_constant(js_undefined()));
+            }
         }
     }
+
+    if (function.m_arguments_object_needed) {
+        Optional<Operand> dst;
+        auto local_var_index = function.m_local_variables_names.find_first_index("arguments"sv);
+        if (local_var_index.has_value())
+            dst = local(local_var_index.value());
+
+        if (function.m_strict || !function.has_simple_parameter_list()) {
+            emit<Op::CreateArguments>(dst, Op::CreateArguments::Kind::Unmapped, function.m_strict);
+        } else {
+            emit<Op::CreateArguments>(dst, Op::CreateArguments::Kind::Mapped, function.m_strict);
+        }
+    }
+
+    auto const& formal_parameters = function.formal_parameters();
+    for (u32 param_index = 0; param_index < formal_parameters.size(); ++param_index) {
+        auto const& parameter = formal_parameters[param_index];
+
+        if (parameter.is_rest) {
+            auto argument_reg = allocate_register();
+            emit<Op::CreateRestParams>(argument_reg.operand(), param_index);
+            emit<Op::SetArgument>(param_index, argument_reg.operand());
+        } else if (parameter.default_value) {
+            auto& if_undefined_block = make_block();
+            auto& if_not_undefined_block = make_block();
+
+            auto argument_reg = allocate_register();
+            emit<Op::GetArgument>(argument_reg.operand(), param_index);
+
+            emit<Op::JumpUndefined>(
+                argument_reg.operand(),
+                Label { if_undefined_block },
+                Label { if_not_undefined_block });
+
+            switch_to_basic_block(if_undefined_block);
+            auto operand = TRY(parameter.default_value->generate_bytecode(*this));
+            emit<Op::SetArgument>(param_index, *operand);
+            emit<Op::Jump>(Label { if_not_undefined_block });
+
+            switch_to_basic_block(if_not_undefined_block);
+        }
+
+        if (auto const* identifier = parameter.binding.get_pointer<NonnullRefPtr<Identifier const>>(); identifier) {
+            if ((*identifier)->is_local()) {
+                auto local_variable_index = (*identifier)->local_variable_index();
+                emit<Op::GetArgument>(local(local_variable_index), param_index);
+                set_local_initialized((*identifier)->local_variable_index());
+            } else {
+                auto id = intern_identifier((*identifier)->string());
+                auto argument_reg = allocate_register();
+                emit<Op::GetArgument>(argument_reg.operand(), param_index);
+                if (function.m_has_duplicates) {
+                    emit<Op::SetLexicalBinding>(id, argument_reg.operand());
+                } else {
+                    emit<Op::InitializeLexicalBinding>(id, argument_reg.operand());
+                }
+            }
+        } else if (auto const* binding_pattern = parameter.binding.get_pointer<NonnullRefPtr<BindingPattern const>>(); binding_pattern) {
+            auto input_operand = allocate_register();
+            emit<Op::GetArgument>(input_operand.operand(), param_index);
+            auto init_mode = function.m_has_duplicates ? Op::BindingInitializationMode::Set : Bytecode::Op::BindingInitializationMode::Initialize;
+            TRY((*binding_pattern)->generate_bytecode(*this, init_mode, input_operand, false));
+        }
+    }
+
+    ScopeNode const* scope_body = nullptr;
+    if (is<ScopeNode>(*function.m_ecmascript_code))
+        scope_body = static_cast<ScopeNode const*>(function.m_ecmascript_code.ptr());
+
+    if (!function.m_has_parameter_expressions) {
+        if (scope_body) {
+            for (auto const& variable_to_initialize : function.m_var_names_to_initialize_binding) {
+                auto const& id = variable_to_initialize.identifier;
+                if (id.is_local()) {
+                    emit<Op::Mov>(local(id.local_variable_index()), add_constant(js_undefined()));
+                } else {
+                    auto intern_id = intern_identifier(id.string());
+                    emit<Op::CreateVariable>(intern_id, Op::EnvironmentMode::Var, false);
+                    emit<Op::InitializeVariableBinding>(intern_id, add_constant(js_undefined()));
+                }
+            }
+        }
+    } else {
+        emit<Op::CreateVariableEnvironment>(function.m_var_environment_bindings_count);
+
+        if (scope_body) {
+            for (auto const& variable_to_initialize : function.m_var_names_to_initialize_binding) {
+                auto const& id = variable_to_initialize.identifier;
+                auto initial_value = allocate_register();
+                if (!variable_to_initialize.parameter_binding || variable_to_initialize.function_name) {
+                    emit<Op::Mov>(initial_value, add_constant(js_undefined()));
+                } else {
+                    if (id.is_local()) {
+                        emit<Op::Mov>(initial_value, local(id.local_variable_index()));
+                    } else {
+                        emit<Op::GetBinding>(initial_value, intern_identifier(id.string()));
+                    }
+                }
+
+                if (id.is_local()) {
+                    emit<Op::Mov>(local(id.local_variable_index()), initial_value);
+                } else {
+                    auto intern_id = intern_identifier(id.string());
+                    emit<Op::CreateVariable>(intern_id, Op::EnvironmentMode::Var, false);
+                    emit<Op::InitializeVariableBinding>(intern_id, initial_value);
+                }
+            }
+        }
+    }
+
+    if (!function.m_strict && scope_body) {
+        for (auto const& function_name : function.m_function_names_to_initialize_binding) {
+            auto intern_id = intern_identifier(function_name);
+            emit<Op::CreateVariable>(intern_id, Op::EnvironmentMode::Var, false);
+            emit<Op::InitializeVariableBinding>(intern_id, add_constant(js_undefined()));
+        }
+    }
+
+    if (!function.m_strict) {
+        bool can_elide_declarative_environment = !function.m_contains_direct_call_to_eval && (!scope_body || !scope_body->has_non_local_lexical_declarations());
+        if (!can_elide_declarative_environment) {
+            emit<Op::CreateLexicalEnvironment>(function.m_lex_environment_bindings_count);
+        }
+    }
+
+    if (scope_body) {
+        MUST(scope_body->for_each_lexically_scoped_declaration([&](Declaration const& declaration) {
+            MUST(declaration.for_each_bound_identifier([&](auto const& id) {
+                if (id.is_local()) {
+                    return;
+                }
+
+                emit<Op::CreateVariable>(intern_identifier(id.string()),
+                    Op::EnvironmentMode::Lexical,
+                    declaration.is_constant_declaration(),
+                    false,
+                    declaration.is_constant_declaration());
+            }));
+        }));
+    }
+
+    for (auto const& declaration : function.m_functions_to_initialize) {
+        auto function = allocate_register();
+        emit<Op::NewFunction>(function, declaration, OptionalNone {});
+        if (declaration.name_identifier()->is_local()) {
+            emit<Op::Mov>(local(declaration.name_identifier()->local_variable_index()), function);
+        } else {
+            emit<Op::SetVariableBinding>(intern_identifier(declaration.name()), function);
+        }
+    }
+
+    return {};
+}
+
+CodeGenerationErrorOr<NonnullGCPtr<Executable>> Generator::compile(VM& vm, ASTNode const& node, FunctionKind enclosing_function_kind, GCPtr<ECMAScriptFunctionObject const> function, MustPropagateCompletion must_propagate_completion, Vector<DeprecatedFlyString> local_variable_names)
+{
+    Generator generator(vm, function, must_propagate_completion);
 
     generator.switch_to_basic_block(generator.make_block());
     SourceLocationScope scope(generator, node);
     generator.m_enclosing_function_kind = enclosing_function_kind;
-    if (generator.is_in_generator_or_async_function()) {
+    if (generator.is_in_async_function() && !generator.is_in_generator_function()) {
+        // Immediately yield with no value.
+        auto& start_block = generator.make_block();
+        generator.emit<Bytecode::Op::Yield>(Label { start_block }, generator.add_constant(js_undefined()));
+        generator.switch_to_basic_block(start_block);
+        // NOTE: This doesn't have to handle received throw/return completions, as GeneratorObject::resume_abrupt
+        //       will not enter the generator from the SuspendedStart state and immediately completes the generator.
+    }
+
+    if (function)
+        TRY(generator.emit_function_declaration_instantiation(*function));
+
+    if (generator.is_in_generator_function()) {
         // Immediately yield with no value.
         auto& start_block = generator.make_block();
         generator.emit<Bytecode::Op::Yield>(Label { start_block }, generator.add_constant(js_undefined()));
@@ -59,7 +239,7 @@ CodeGenerationErrorOr<NonnullGCPtr<Executable>> Generator::generate(VM& vm, ASTN
             if (block->is_terminated())
                 continue;
             generator.switch_to_basic_block(*block);
-            generator.emit<Bytecode::Op::Yield>(nullptr, generator.add_constant(js_undefined()));
+            generator.emit_return<Bytecode::Op::Yield>(generator.add_constant(js_undefined()));
         }
     }
 
@@ -70,10 +250,180 @@ CodeGenerationErrorOr<NonnullGCPtr<Executable>> Generator::generate(VM& vm, ASTN
         is_strict_mode = static_cast<FunctionBody const&>(node).in_strict_mode();
     else if (is<FunctionDeclaration>(node))
         is_strict_mode = static_cast<FunctionDeclaration const&>(node).is_strict_mode();
-    else if (is<FunctionExpression>(node))
-        is_strict_mode = static_cast<FunctionExpression const&>(node).is_strict_mode();
+
+    size_t size_needed = 0;
+    for (auto& block : generator.m_root_basic_blocks) {
+        size_needed += block->size();
+    }
+
+    Vector<u8> bytecode;
+    bytecode.ensure_capacity(size_needed);
+
+    Vector<size_t> basic_block_start_offsets;
+    basic_block_start_offsets.ensure_capacity(generator.m_root_basic_blocks.size());
+
+    HashMap<BasicBlock const*, size_t> block_offsets;
+    Vector<size_t> label_offsets;
+
+    struct UnlinkedExceptionHandlers {
+        size_t start_offset;
+        size_t end_offset;
+        BasicBlock const* handler;
+        BasicBlock const* finalizer;
+    };
+    Vector<UnlinkedExceptionHandlers> unlinked_exception_handlers;
+
+    HashMap<size_t, SourceRecord> source_map;
+
+    Optional<ScopedOperand> undefined_constant;
+
+    for (auto& block : generator.m_root_basic_blocks) {
+        if (!block->is_terminated()) {
+            // NOTE: We must ensure that the "undefined" constant, which will be used by the not yet
+            // emitted End instruction, is taken into account while shifting local operands by the
+            // number of constants.
+            undefined_constant = generator.add_constant(js_undefined());
+            break;
+        }
+    }
+
+    auto number_of_registers = generator.m_next_register;
+    auto number_of_constants = generator.m_constants.size();
+
+    // Pass: Rewrite the bytecode to use the correct register and constant indices.
+    for (auto& block : generator.m_root_basic_blocks) {
+        Bytecode::InstructionStreamIterator it(block->instruction_stream());
+        while (!it.at_end()) {
+            auto& instruction = const_cast<Instruction&>(*it);
+
+            instruction.visit_operands([number_of_registers, number_of_constants](Operand& operand) {
+                switch (operand.type()) {
+                case Operand::Type::Register:
+                    break;
+                case Operand::Type::Local:
+                    operand.offset_index_by(number_of_registers + number_of_constants);
+                    break;
+                case Operand::Type::Constant:
+                    operand.offset_index_by(number_of_registers);
+                    break;
+                default:
+                    VERIFY_NOT_REACHED();
+                }
+            });
+
+            ++it;
+        }
+    }
+
+    // Also rewrite the `undefined` constant if we have one for inserting End.
+    if (undefined_constant.has_value())
+        undefined_constant.value().operand().offset_index_by(number_of_registers);
+
+    for (auto& block : generator.m_root_basic_blocks) {
+        basic_block_start_offsets.append(bytecode.size());
+        if (block->handler() || block->finalizer()) {
+            unlinked_exception_handlers.append({
+                .start_offset = bytecode.size(),
+                .end_offset = 0,
+                .handler = block->handler(),
+                .finalizer = block->finalizer(),
+            });
+        }
+
+        block_offsets.set(block.ptr(), bytecode.size());
+
+        for (auto& [offset, source_record] : block->source_map()) {
+            source_map.set(bytecode.size() + offset, source_record);
+        }
+
+        Bytecode::InstructionStreamIterator it(block->instruction_stream());
+        while (!it.at_end()) {
+            auto& instruction = const_cast<Instruction&>(*it);
+
+            if (instruction.type() == Instruction::Type::Jump) {
+                auto& jump = static_cast<Bytecode::Op::Jump&>(instruction);
+
+                // OPTIMIZATION: Don't emit jumps that just jump to the next block.
+                if (jump.target().basic_block_index() == block->index() + 1) {
+                    if (basic_block_start_offsets.last() == bytecode.size()) {
+                        // This block is empty, just skip it.
+                        basic_block_start_offsets.take_last();
+                    }
+                    ++it;
+                    continue;
+                }
+
+                // OPTIMIZATION: For jumps to a return-or-end-only block, we can emit a `Return` or `End` directly instead.
+                auto& target_block = *generator.m_root_basic_blocks[jump.target().basic_block_index()];
+                if (target_block.is_terminated()) {
+                    auto target_instruction_iterator = InstructionStreamIterator { target_block.instruction_stream() };
+                    auto& target_instruction = *target_instruction_iterator;
+
+                    if (target_instruction.type() == Instruction::Type::Return) {
+                        auto& return_instruction = static_cast<Bytecode::Op::Return const&>(target_instruction);
+                        Op::Return return_op(return_instruction.value());
+                        bytecode.append(reinterpret_cast<u8 const*>(&return_op), return_op.length());
+                        ++it;
+                        continue;
+                    }
+
+                    if (target_instruction.type() == Instruction::Type::End) {
+                        auto& return_instruction = static_cast<Bytecode::Op::End const&>(target_instruction);
+                        Op::End end_op(return_instruction.value());
+                        bytecode.append(reinterpret_cast<u8 const*>(&end_op), end_op.length());
+                        ++it;
+                        continue;
+                    }
+                }
+            }
+
+            // OPTIMIZATION: For `JumpIf` where one of the targets is the very next block,
+            //               we can emit a `JumpTrue` or `JumpFalse` (to the other block) instead.
+            if (instruction.type() == Instruction::Type::JumpIf) {
+                auto& jump = static_cast<Bytecode::Op::JumpIf&>(instruction);
+                if (jump.true_target().basic_block_index() == block->index() + 1) {
+                    Op::JumpFalse jump_false(jump.condition(), Label { jump.false_target() });
+                    auto& label = jump_false.target();
+                    size_t label_offset = bytecode.size() + (bit_cast<FlatPtr>(&label) - bit_cast<FlatPtr>(&jump_false));
+                    label_offsets.append(label_offset);
+                    bytecode.append(reinterpret_cast<u8 const*>(&jump_false), jump_false.length());
+                    ++it;
+                    continue;
+                }
+                if (jump.false_target().basic_block_index() == block->index() + 1) {
+                    Op::JumpTrue jump_true(jump.condition(), Label { jump.true_target() });
+                    auto& label = jump_true.target();
+                    size_t label_offset = bytecode.size() + (bit_cast<FlatPtr>(&label) - bit_cast<FlatPtr>(&jump_true));
+                    label_offsets.append(label_offset);
+                    bytecode.append(reinterpret_cast<u8 const*>(&jump_true), jump_true.length());
+                    ++it;
+                    continue;
+                }
+            }
+
+            instruction.visit_labels([&](Label& label) {
+                size_t label_offset = bytecode.size() + (bit_cast<FlatPtr>(&label) - bit_cast<FlatPtr>(&instruction));
+                label_offsets.append(label_offset);
+            });
+            bytecode.append(reinterpret_cast<u8 const*>(&instruction), instruction.length());
+            ++it;
+        }
+        if (!block->is_terminated()) {
+            Op::End end(*undefined_constant);
+            bytecode.append(reinterpret_cast<u8 const*>(&end), end.length());
+        }
+        if (block->handler() || block->finalizer()) {
+            unlinked_exception_handlers.last().end_offset = bytecode.size();
+        }
+    }
+    for (auto label_offset : label_offsets) {
+        auto& label = *reinterpret_cast<Label*>(bytecode.data() + label_offset);
+        auto* block = generator.m_root_basic_blocks[label.basic_block_index()].ptr();
+        label.set_address(block_offsets.get(block).value());
+    }
 
     auto executable = vm.heap().allocate_without_realm<Executable>(
+        move(bytecode),
         move(generator.m_identifier_table),
         move(generator.m_string_table),
         move(generator.m_regex_table),
@@ -81,12 +431,46 @@ CodeGenerationErrorOr<NonnullGCPtr<Executable>> Generator::generate(VM& vm, ASTN
         node.source_code(),
         generator.m_next_property_lookup_cache,
         generator.m_next_global_variable_cache,
-        generator.m_next_environment_variable_cache,
         generator.m_next_register,
-        move(generator.m_root_basic_blocks),
         is_strict_mode);
 
+    Vector<Executable::ExceptionHandlers> linked_exception_handlers;
+
+    for (auto& unlinked_handler : unlinked_exception_handlers) {
+        auto start_offset = unlinked_handler.start_offset;
+        auto end_offset = unlinked_handler.end_offset;
+        auto handler_offset = unlinked_handler.handler ? block_offsets.get(unlinked_handler.handler).value() : Optional<size_t> {};
+        auto finalizer_offset = unlinked_handler.finalizer ? block_offsets.get(unlinked_handler.finalizer).value() : Optional<size_t> {};
+        linked_exception_handlers.append({ start_offset, end_offset, handler_offset, finalizer_offset });
+    }
+
+    quick_sort(linked_exception_handlers, [](auto const& a, auto const& b) {
+        return a.start_offset < b.start_offset;
+    });
+
+    executable->exception_handlers = move(linked_exception_handlers);
+    executable->basic_block_start_offsets = move(basic_block_start_offsets);
+    executable->source_map = move(source_map);
+    executable->local_variable_names = move(local_variable_names);
+    executable->local_index_base = number_of_registers + number_of_constants;
+    executable->length_identifier = generator.m_length_identifier;
+
+    generator.m_finished = true;
+
     return executable;
+}
+
+CodeGenerationErrorOr<NonnullGCPtr<Executable>> Generator::generate_from_ast_node(VM& vm, ASTNode const& node, FunctionKind enclosing_function_kind)
+{
+    Vector<DeprecatedFlyString> local_variable_names;
+    if (is<ScopeNode>(node))
+        local_variable_names = static_cast<ScopeNode const&>(node).local_variables_names();
+    return compile(vm, node, enclosing_function_kind, {}, MustPropagateCompletion::Yes, move(local_variable_names));
+}
+
+CodeGenerationErrorOr<NonnullGCPtr<Executable>> Generator::generate_from_function(VM& vm, ECMAScriptFunctionObject const& function)
+{
+    return compile(vm, function.ecmascript_code(), function.kind(), &function, MustPropagateCompletion::No, function.local_variables_names());
 }
 
 void Generator::grow(size_t additional_size)
@@ -95,10 +479,23 @@ void Generator::grow(size_t additional_size)
     m_current_basic_block->grow(additional_size);
 }
 
-Register Generator::allocate_register()
+ScopedOperand Generator::allocate_register()
 {
+    if (!m_free_registers.is_empty()) {
+        return ScopedOperand { *this, Operand { m_free_registers.take_last() } };
+    }
     VERIFY(m_next_register != NumericLimits<u32>::max());
-    return Register { m_next_register++ };
+    return ScopedOperand { *this, Operand { Register { m_next_register++ } } };
+}
+
+void Generator::free_register(Register reg)
+{
+    m_free_registers.append(reg);
+}
+
+ScopedOperand Generator::local(u32 local_index)
+{
+    return ScopedOperand { *this, Operand { Operand::Type::Local, static_cast<u32>(local_index) } };
 }
 
 Generator::SourceLocationScope::SourceLocationScope(Generator& generator, ASTNode const& node)
@@ -132,10 +529,28 @@ Label Generator::nearest_continuable_scope() const
     return m_continuable_scopes.last().bytecode_target;
 }
 
-void Generator::block_declaration_instantiation(ScopeNode const& scope_node)
+bool Generator::emit_block_declaration_instantiation(ScopeNode const& scope_node)
 {
+    bool needs_block_declaration_instantiation = false;
+    MUST(scope_node.for_each_lexically_scoped_declaration([&](Declaration const& declaration) {
+        if (declaration.is_function_declaration()) {
+            needs_block_declaration_instantiation = true;
+            return;
+        }
+        MUST(declaration.for_each_bound_identifier([&](auto const& id) {
+            if (!id.is_local())
+                needs_block_declaration_instantiation = true;
+        }));
+    }));
+
+    if (!needs_block_declaration_instantiation)
+        return false;
+
+    // FIXME: Generate the actual bytecode for block declaration instantiation
+    //        and get rid of the BlockDeclarationInstantiation instruction.
     start_boundary(BlockBoundaryType::LeaveLexicalEnvironment);
     emit<Bytecode::Op::BlockDeclarationInstantiation>(scope_node);
+    return true;
 }
 
 void Generator::begin_variable_scope()
@@ -189,10 +604,9 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_super_refere
     // https://tc39.es/ecma262/#sec-super-keyword-runtime-semantics-evaluation
     // 1. Let env be GetThisEnvironment().
     // 2. Let actualThis be ? env.GetThisBinding().
-    auto actual_this = Operand(allocate_register());
-    emit<Bytecode::Op::ResolveThisBinding>(actual_this);
+    auto actual_this = get_this();
 
-    Optional<Bytecode::Operand> computed_property_value;
+    Optional<ScopedOperand> computed_property_value;
 
     if (expression.is_computed()) {
         // SuperProperty : super [ Expression ]
@@ -207,7 +621,7 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_super_refere
     // 1. Let env be GetThisEnvironment().
     // 2. Assert: env.HasSuperBinding() is true.
     // 3. Let baseValue be ? env.GetSuperBase().
-    auto base_value = Operand(allocate_register());
+    auto base_value = allocate_register();
     emit<Bytecode::Op::ResolveSuperBase>(base_value);
 
     // 4. Return the Reference Record { [[Base]]: baseValue, [[ReferencedName]]: propertyKey, [[Strict]]: strict, [[ThisValue]]: actualThis }.
@@ -218,7 +632,7 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_super_refere
     };
 }
 
-CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_load_from_reference(JS::ASTNode const& node, Optional<Operand> preferred_dst)
+CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_load_from_reference(JS::ASTNode const& node, Optional<ScopedOperand> preferred_dst)
 {
     if (is<Identifier>(node)) {
         auto& identifier = static_cast<Identifier const&>(node);
@@ -238,7 +652,7 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_load_from_re
     // https://tc39.es/ecma262/#sec-super-keyword-runtime-semantics-evaluation
     if (is<SuperExpression>(expression.object())) {
         auto super_reference = TRY(emit_super_reference(expression));
-        auto dst = preferred_dst.has_value() ? preferred_dst.value() : Operand(allocate_register());
+        auto dst = preferred_dst.has_value() ? preferred_dst.value() : allocate_register();
 
         if (super_reference.referenced_name.has_value()) {
             // 5. Let propertyKey be ? ToPropertyKey(propertyNameValue).
@@ -253,13 +667,16 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_load_from_re
         super_reference.loaded_value = dst;
         return super_reference;
     }
+
     auto base = TRY(expression.object().generate_bytecode(*this)).value();
+    auto base_identifier = intern_identifier_for_expression(expression.object());
+
     if (expression.is_computed()) {
         auto property = TRY(expression.property().generate_bytecode(*this)).value();
-        auto saved_property = Operand(allocate_register());
+        auto saved_property = allocate_register();
         emit<Bytecode::Op::Mov>(saved_property, property);
-        auto dst = preferred_dst.has_value() ? preferred_dst.value() : Operand(allocate_register());
-        emit<Bytecode::Op::GetByValue>(dst, base, property);
+        auto dst = preferred_dst.has_value() ? preferred_dst.value() : allocate_register();
+        emit<Bytecode::Op::GetByValue>(dst, base, property, move(base_identifier));
         return ReferenceOperands {
             .base = base,
             .referenced_name = saved_property,
@@ -269,8 +686,8 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_load_from_re
     }
     if (expression.property().is_identifier()) {
         auto identifier_table_ref = intern_identifier(verify_cast<Identifier>(expression.property()).string());
-        auto dst = preferred_dst.has_value() ? preferred_dst.value() : Operand(allocate_register());
-        emit_get_by_id(dst, base, identifier_table_ref);
+        auto dst = preferred_dst.has_value() ? preferred_dst.value() : allocate_register();
+        emit_get_by_id(dst, base, identifier_table_ref, move(base_identifier));
         return ReferenceOperands {
             .base = base,
             .referenced_identifier = identifier_table_ref,
@@ -280,7 +697,7 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_load_from_re
     }
     if (expression.property().is_private_identifier()) {
         auto identifier_table_ref = intern_identifier(verify_cast<PrivateIdentifier>(expression.property()).string());
-        auto dst = preferred_dst.has_value() ? preferred_dst.value() : Operand(allocate_register());
+        auto dst = preferred_dst.has_value() ? preferred_dst.value() : allocate_register();
         emit<Bytecode::Op::GetPrivateById>(dst, base, identifier_table_ref);
         return ReferenceOperands {
             .base = base,
@@ -295,7 +712,7 @@ CodeGenerationErrorOr<Generator::ReferenceOperands> Generator::emit_load_from_re
     };
 }
 
-CodeGenerationErrorOr<void> Generator::emit_store_to_reference(JS::ASTNode const& node, Operand value)
+CodeGenerationErrorOr<void> Generator::emit_store_to_reference(JS::ASTNode const& node, ScopedOperand value)
 {
     if (is<Identifier>(node)) {
         auto& identifier = static_cast<Identifier const&>(node);
@@ -348,7 +765,7 @@ CodeGenerationErrorOr<void> Generator::emit_store_to_reference(JS::ASTNode const
     };
 }
 
-CodeGenerationErrorOr<void> Generator::emit_store_to_reference(ReferenceOperands const& reference, Operand value)
+CodeGenerationErrorOr<void> Generator::emit_store_to_reference(ReferenceOperands const& reference, ScopedOperand value)
 {
     if (reference.referenced_private_identifier.has_value()) {
         emit<Bytecode::Op::PutPrivateById>(*reference.base, *reference.referenced_private_identifier, value);
@@ -368,14 +785,14 @@ CodeGenerationErrorOr<void> Generator::emit_store_to_reference(ReferenceOperands
     return {};
 }
 
-CodeGenerationErrorOr<Optional<Operand>> Generator::emit_delete_reference(JS::ASTNode const& node)
+CodeGenerationErrorOr<Optional<ScopedOperand>> Generator::emit_delete_reference(JS::ASTNode const& node)
 {
     if (is<Identifier>(node)) {
         auto& identifier = static_cast<Identifier const&>(node);
         if (identifier.is_local()) {
             return add_constant(Value(false));
         }
-        auto dst = Operand(allocate_register());
+        auto dst = allocate_register();
         emit<Bytecode::Op::DeleteVariable>(dst, intern_identifier(identifier.string()));
         return dst;
     }
@@ -387,7 +804,7 @@ CodeGenerationErrorOr<Optional<Operand>> Generator::emit_delete_reference(JS::AS
         if (is<SuperExpression>(expression.object())) {
             auto super_reference = TRY(emit_super_reference(expression));
 
-            auto dst = Operand(allocate_register());
+            auto dst = allocate_register();
             if (super_reference.referenced_name.has_value()) {
                 emit<Bytecode::Op::DeleteByValueWithThis>(dst, *super_reference.base, *super_reference.this_value, *super_reference.referenced_name);
             } else {
@@ -395,11 +812,11 @@ CodeGenerationErrorOr<Optional<Operand>> Generator::emit_delete_reference(JS::AS
                 emit<Bytecode::Op::DeleteByIdWithThis>(dst, *super_reference.base, *super_reference.this_value, identifier_table_ref);
             }
 
-            return Optional<Operand> {};
+            return dst;
         }
 
         auto object = TRY(expression.object().generate_bytecode(*this)).value();
-        auto dst = Operand(allocate_register());
+        auto dst = allocate_register();
 
         if (expression.is_computed()) {
             auto property = TRY(expression.property().generate_bytecode(*this)).value();
@@ -430,17 +847,76 @@ CodeGenerationErrorOr<Optional<Operand>> Generator::emit_delete_reference(JS::AS
     return add_constant(Value(true));
 }
 
-void Generator::emit_set_variable(JS::Identifier const& identifier, Operand value, Bytecode::Op::SetVariable::InitializationMode initialization_mode, Bytecode::Op::EnvironmentMode mode)
+void Generator::emit_set_variable(JS::Identifier const& identifier, ScopedOperand value, Bytecode::Op::BindingInitializationMode initialization_mode, Bytecode::Op::EnvironmentMode environment_mode)
 {
     if (identifier.is_local()) {
-        if (value.is_local() && value.index() == identifier.local_variable_index()) {
+        if (value.operand().is_local() && value.operand().index() == identifier.local_variable_index()) {
             // Moving a local to itself is a no-op.
             return;
         }
-        emit<Bytecode::Op::SetLocal>(identifier.local_variable_index(), value);
+        emit<Bytecode::Op::Mov>(local(identifier.local_variable_index()), value);
     } else {
-        emit<Bytecode::Op::SetVariable>(intern_identifier(identifier.string()), value, next_environment_variable_cache(), initialization_mode, mode);
+        auto identifier_index = intern_identifier(identifier.string());
+        if (environment_mode == Bytecode::Op::EnvironmentMode::Lexical) {
+            if (initialization_mode == Bytecode::Op::BindingInitializationMode::Initialize) {
+                emit<Bytecode::Op::InitializeLexicalBinding>(identifier_index, value);
+            } else if (initialization_mode == Bytecode::Op::BindingInitializationMode::Set) {
+                emit<Bytecode::Op::SetLexicalBinding>(identifier_index, value);
+            }
+        } else if (environment_mode == Bytecode::Op::EnvironmentMode::Var) {
+            if (initialization_mode == Bytecode::Op::BindingInitializationMode::Initialize) {
+                emit<Bytecode::Op::InitializeVariableBinding>(identifier_index, value);
+            } else if (initialization_mode == Bytecode::Op::BindingInitializationMode::Set) {
+                emit<Bytecode::Op::SetVariableBinding>(identifier_index, value);
+            }
+        } else {
+            VERIFY_NOT_REACHED();
+        }
     }
+}
+
+static Optional<ByteString> expression_identifier(Expression const& expression)
+{
+    if (expression.is_identifier()) {
+        auto const& identifier = static_cast<Identifier const&>(expression);
+        return identifier.string();
+    }
+
+    if (expression.is_numeric_literal()) {
+        auto const& literal = static_cast<NumericLiteral const&>(expression);
+        return literal.value().to_string_without_side_effects().to_byte_string();
+    }
+
+    if (expression.is_string_literal()) {
+        auto const& literal = static_cast<StringLiteral const&>(expression);
+        return ByteString::formatted("'{}'", literal.value());
+    }
+
+    if (expression.is_member_expression()) {
+        auto const& member_expression = static_cast<MemberExpression const&>(expression);
+        StringBuilder builder;
+
+        if (auto identifer = expression_identifier(member_expression.object()); identifer.has_value())
+            builder.append(*identifer);
+
+        if (auto identifer = expression_identifier(member_expression.property()); identifer.has_value()) {
+            if (member_expression.is_computed())
+                builder.appendff("[{}]", *identifer);
+            else
+                builder.appendff(".{}", *identifer);
+        }
+
+        return builder.to_byte_string();
+    }
+
+    return {};
+}
+
+Optional<IdentifierTableIndex> Generator::intern_identifier_for_expression(Expression const& expression)
+{
+    if (auto identifer = expression_identifier(expression); identifer.has_value())
+        return intern_identifier(identifer.release_value());
+    return {};
 }
 
 void Generator::generate_scoped_jump(JumpType type)
@@ -464,7 +940,6 @@ void Generator::generate_scoped_jump(JumpType type)
             }
             break;
         case Unwind:
-            VERIFY(last_was_finally || !m_current_unwind_context->finalizer().has_value());
             if (!last_was_finally) {
                 VERIFY(m_current_unwind_context && m_current_unwind_context->handler().has_value());
                 emit<Bytecode::Op::LeaveUnwindContext>();
@@ -485,7 +960,10 @@ void Generator::generate_scoped_jump(JumpType type)
             switch_to_basic_block(block);
             last_was_finally = true;
             break;
-        };
+        }
+        case LeaveFinally:
+            emit<Op::LeaveFinally>();
+            break;
         }
     }
     VERIFY_NOT_REACHED();
@@ -503,7 +981,6 @@ void Generator::generate_labelled_jump(JumpType type, DeprecatedFlyString const&
         for (; current_boundary > 0; --current_boundary) {
             auto boundary = m_boundaries[current_boundary - 1];
             if (boundary == BlockBoundaryType::Unwind) {
-                VERIFY(last_was_finally || !m_current_unwind_context->finalizer().has_value());
                 if (!last_was_finally) {
                     VERIFY(m_current_unwind_context && m_current_unwind_context->handler().has_value());
                     emit<Bytecode::Op::LeaveUnwindContext>();
@@ -558,7 +1035,7 @@ void Generator::generate_continue(DeprecatedFlyString const& continue_label)
     generate_labelled_jump(JumpType::Continue, continue_label);
 }
 
-void Generator::push_home_object(Operand object)
+void Generator::push_home_object(ScopedOperand object)
 {
     m_home_objects.append(object);
 }
@@ -568,7 +1045,7 @@ void Generator::pop_home_object()
     m_home_objects.take_last();
 }
 
-void Generator::emit_new_function(Operand dst, FunctionExpression const& function_node, Optional<IdentifierTableIndex> lhs_name)
+void Generator::emit_new_function(ScopedOperand dst, FunctionExpression const& function_node, Optional<IdentifierTableIndex> lhs_name)
 {
     if (m_home_objects.is_empty()) {
         emit<Op::NewFunction>(dst, function_node, lhs_name);
@@ -577,7 +1054,7 @@ void Generator::emit_new_function(Operand dst, FunctionExpression const& functio
     }
 }
 
-CodeGenerationErrorOr<Optional<Operand>> Generator::emit_named_evaluation_if_anonymous_function(Expression const& expression, Optional<IdentifierTableIndex> lhs_name, Optional<Operand> preferred_dst)
+CodeGenerationErrorOr<Optional<ScopedOperand>> Generator::emit_named_evaluation_if_anonymous_function(Expression const& expression, Optional<IdentifierTableIndex> lhs_name, Optional<ScopedOperand> preferred_dst)
 {
     if (is<FunctionExpression>(expression)) {
         auto const& function_expression = static_cast<FunctionExpression const&>(expression);
@@ -596,22 +1073,31 @@ CodeGenerationErrorOr<Optional<Operand>> Generator::emit_named_evaluation_if_ano
     return expression.generate_bytecode(*this, preferred_dst);
 }
 
-void Generator::emit_get_by_id(Operand dst, Operand base, IdentifierTableIndex id)
+void Generator::emit_get_by_id(ScopedOperand dst, ScopedOperand base, IdentifierTableIndex property_identifier, Optional<IdentifierTableIndex> base_identifier)
 {
-    emit<Op::GetById>(dst, base, id, m_next_property_lookup_cache++);
+    if (m_identifier_table->get(property_identifier) == "length"sv) {
+        m_length_identifier = property_identifier;
+        emit<Op::GetLength>(dst, base, move(base_identifier), m_next_property_lookup_cache++);
+        return;
+    }
+    emit<Op::GetById>(dst, base, property_identifier, move(base_identifier), m_next_property_lookup_cache++);
 }
 
-void Generator::emit_get_by_id_with_this(Operand dst, Operand base, IdentifierTableIndex id, Operand this_value)
+void Generator::emit_get_by_id_with_this(ScopedOperand dst, ScopedOperand base, IdentifierTableIndex id, ScopedOperand this_value)
 {
+    if (m_identifier_table->get(id) == "length"sv) {
+        emit<Op::GetLengthWithThis>(dst, base, this_value, m_next_property_lookup_cache++);
+        return;
+    }
     emit<Op::GetByIdWithThis>(dst, base, id, this_value, m_next_property_lookup_cache++);
 }
 
-void Generator::emit_iterator_value(Operand dst, Operand result)
+void Generator::emit_iterator_value(ScopedOperand dst, ScopedOperand result)
 {
     emit_get_by_id(dst, result, intern_identifier("value"sv));
 }
 
-void Generator::emit_iterator_complete(Operand dst, Operand result)
+void Generator::emit_iterator_complete(ScopedOperand dst, ScopedOperand result)
 {
     emit_get_by_id(dst, result, intern_identifier("done"sv));
 }
@@ -624,6 +1110,134 @@ bool Generator::is_local_initialized(u32 local_index) const
 void Generator::set_local_initialized(u32 local_index)
 {
     m_initialized_locals.set(local_index);
+}
+
+ScopedOperand Generator::get_this(Optional<ScopedOperand> preferred_dst)
+{
+    if (m_current_basic_block->has_resolved_this())
+        return this_value();
+    if (m_root_basic_blocks[0]->has_resolved_this()) {
+        m_current_basic_block->set_has_resolved_this();
+        return this_value();
+    }
+
+    // OPTIMIZATION: If we're compiling a function that doesn't allocate a FunctionEnvironment,
+    //               it will always have the same `this` value as the outer function,
+    //               and so the `this` value is already in the `this` register!
+    if (m_function && !m_function->allocates_function_environment())
+        return this_value();
+
+    auto dst = preferred_dst.has_value() ? preferred_dst.value() : allocate_register();
+    emit<Bytecode::Op::ResolveThisBinding>();
+    m_current_basic_block->set_has_resolved_this();
+    return this_value();
+}
+
+ScopedOperand Generator::accumulator()
+{
+    return m_accumulator;
+}
+
+ScopedOperand Generator::this_value()
+{
+    return m_this_value;
+}
+
+bool Generator::fuse_compare_and_jump(ScopedOperand const& condition, Label true_target, Label false_target)
+{
+    auto& last_instruction = *reinterpret_cast<Instruction const*>(m_current_basic_block->data() + m_current_basic_block->last_instruction_start_offset());
+
+#define HANDLE_COMPARISON_OP(op_TitleCase, op_snake_case, numeric_operator)        \
+    if (last_instruction.type() == Instruction::Type::op_TitleCase) {              \
+        auto& comparison = static_cast<Op::op_TitleCase const&>(last_instruction); \
+        VERIFY(comparison.dst() == condition);                                     \
+        auto lhs = comparison.lhs();                                               \
+        auto rhs = comparison.rhs();                                               \
+        m_current_basic_block->rewind();                                           \
+        emit<Op::Jump##op_TitleCase>(lhs, rhs, true_target, false_target);         \
+        return true;                                                               \
+    }
+
+    JS_ENUMERATE_COMPARISON_OPS(HANDLE_COMPARISON_OP);
+#undef HANDLE_COMPARISON_OP
+
+    return false;
+}
+
+void Generator::emit_jump_if(ScopedOperand const& condition, Label true_target, Label false_target)
+{
+    if (condition.operand().is_constant()) {
+        auto value = m_constants[condition.operand().index()];
+        if (value.is_boolean()) {
+            if (value.as_bool()) {
+                emit<Op::Jump>(true_target);
+            } else {
+                emit<Op::Jump>(false_target);
+            }
+            return;
+        }
+    }
+
+    // NOTE: It's only safe to fuse compare-and-jump if the condition is a temporary with no other dependents.
+    if (condition.operand().is_register()
+        && condition.ref_count() == 1
+        && m_current_basic_block->size() > 0) {
+        if (fuse_compare_and_jump(condition, true_target, false_target))
+            return;
+    }
+
+    emit<Op::JumpIf>(condition, true_target, false_target);
+}
+
+ScopedOperand Generator::copy_if_needed_to_preserve_evaluation_order(ScopedOperand const& operand)
+{
+    if (!operand.operand().is_local())
+        return operand;
+    auto new_register = allocate_register();
+    emit<Bytecode::Op::Mov>(new_register, operand);
+    return new_register;
+}
+
+ScopedOperand Generator::add_constant(Value value)
+{
+    auto append_new_constant = [&] {
+        m_constants.append(value);
+        return ScopedOperand { *this, Operand(Operand::Type::Constant, m_constants.size() - 1) };
+    };
+
+    if (value.is_boolean()) {
+        if (value.as_bool()) {
+            if (!m_true_constant.has_value())
+                m_true_constant = append_new_constant();
+            return m_true_constant.value();
+        } else {
+            if (!m_false_constant.has_value())
+                m_false_constant = append_new_constant();
+            return m_false_constant.value();
+        }
+    }
+    if (value.is_undefined()) {
+        if (!m_undefined_constant.has_value())
+            m_undefined_constant = append_new_constant();
+        return m_undefined_constant.value();
+    }
+    if (value.is_null()) {
+        if (!m_null_constant.has_value())
+            m_null_constant = append_new_constant();
+        return m_null_constant.value();
+    }
+    if (value.is_empty()) {
+        if (!m_empty_constant.has_value())
+            m_empty_constant = append_new_constant();
+        return m_empty_constant.value();
+    }
+    if (value.is_int32()) {
+        auto as_int32 = value.as_i32();
+        return m_int32_constants.ensure(as_int32, [&] {
+            return append_new_constant();
+        });
+    }
+    return append_new_constant();
 }
 
 }

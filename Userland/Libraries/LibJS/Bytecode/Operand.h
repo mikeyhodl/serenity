@@ -36,6 +36,10 @@ public:
     [[nodiscard]] Type type() const { return m_type; }
     [[nodiscard]] u32 index() const { return m_index; }
 
+    [[nodiscard]] Register as_register() const;
+
+    void offset_index_by(u32 offset) { m_index += offset; }
+
 private:
     Type m_type {};
     u32 m_index { 0 };

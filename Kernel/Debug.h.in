@@ -87,6 +87,10 @@
 #cmakedefine01 FORK_DEBUG
 #endif
 
+#ifndef FUSE_DEBUG
+#cmakedefine01 FUSE_DEBUG
+#endif
+
 #ifndef FUTEX_DEBUG
 #cmakedefine01 FUTEX_DEBUG
 #endif
@@ -105,6 +109,10 @@
 
 #ifndef ICMP_DEBUG
 #cmakedefine01 ICMP_DEBUG
+#endif
+
+#ifndef ICMPV6_DEBUG
+#cmakedefine01 ICMPV6_DEBUG
 #endif
 
 #ifndef INTEL_GRAPHICS_DEBUG
@@ -137,6 +145,10 @@
 
 #ifndef IPV4_DEBUG
 #cmakedefine01 IPV4_DEBUG
+#endif
+
+#ifndef IPV6_DEBUG
+#cmakedefine01 IPV6_DEBUG
 #endif
 
 #ifndef IPV4_SOCKET_DEBUG
@@ -349,4 +361,12 @@
 
 #ifndef WAITQUEUE_DEBUG
 #cmakedefine01 WAITQUEUE_DEBUG
+#endif
+
+#ifndef XHCI_DEBUG
+#cmakedefine01 XHCI_DEBUG
+#endif
+
+#ifndef USB_MASS_STORAGE_DEBUG
+#cmakedefine01 USB_MASS_STORAGE_DEBUG
 #endif

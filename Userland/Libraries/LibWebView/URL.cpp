@@ -5,11 +5,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/LexicalPath.h>
 #include <AK/String.h>
 #include <LibCore/System.h>
 #include <LibFileSystem/FileSystem.h>
-#include <LibUnicode/URL.h>
 #include <LibWebView/URL.h>
 
 #if defined(ENABLE_PUBLIC_SUFFIX)
@@ -17,51 +15,6 @@
 #endif
 
 namespace WebView {
-
-static Optional<URL::URL> create_url_with_url_or_path(String const& url_or_path)
-{
-    auto url = Unicode::create_unicode_url(url_or_path);
-    if (!url.is_error() && url.value().is_valid())
-        return url.release_value();
-
-    auto path = LexicalPath::canonicalized_path(url_or_path.to_byte_string());
-    auto url_from_path = URL::create_with_file_scheme(path);
-    if (url_from_path.is_valid())
-        return url_from_path;
-
-    return {};
-}
-
-static Optional<URL::URL> query_public_suffix_list(StringView url_string)
-{
-    auto out = MUST(String::from_utf8(url_string));
-    if (!out.starts_with_bytes("about:"sv) && !out.contains("://"sv))
-        out = MUST(String::formatted("https://{}"sv, out));
-
-    auto maybe_url = create_url_with_url_or_path(out);
-    if (!maybe_url.has_value())
-        return {};
-
-    auto url = maybe_url.release_value();
-
-    if (url.host().has<URL::IPv4Address>() || url.host().has<URL::IPv6Address>())
-        return url;
-
-    if (url.scheme() != "http"sv && url.scheme() != "https"sv)
-        return url;
-
-    if (url.host().has<String>()) {
-        auto const& host = url.host().get<String>();
-
-        if (auto public_suffix = get_public_suffix(host); public_suffix.has_value())
-            return url;
-
-        if (host.ends_with_bytes(".local"sv) || host.ends_with_bytes("localhost"sv))
-            return url;
-    }
-
-    return {};
-}
 
 bool is_public_suffix([[maybe_unused]] StringView host)
 {
@@ -83,8 +36,8 @@ Optional<String> get_public_suffix([[maybe_unused]] StringView host)
 
 Optional<URL::URL> sanitize_url(StringView url, Optional<StringView> search_engine, AppendTLD append_tld)
 {
-    if (FileSystem::exists(url)) {
-        auto path = FileSystem::real_path(url);
+    if (FileSystem::exists(url.trim_whitespace())) {
+        auto path = FileSystem::real_path(url.trim_whitespace());
         if (path.is_error())
             return {};
 
@@ -108,11 +61,15 @@ Optional<URL::URL> sanitize_url(StringView url, Optional<StringView> search_engi
         }
     }
 
-    auto result = query_public_suffix_list(url);
-    if (!result.has_value())
+    ByteString url_with_scheme = url;
+    if (!(url_with_scheme.starts_with("about:"sv) || url_with_scheme.contains("://"sv) || url_with_scheme.starts_with("data:"sv)))
+        url_with_scheme = ByteString::formatted("https://{}"sv, url_with_scheme);
+
+    auto result = URL::create_with_url_or_path(url_with_scheme);
+    if (!result.is_valid())
         return format_search_engine();
 
-    return result.release_value();
+    return result;
 }
 
 static URLParts break_file_url_into_parts(URL::URL const& url, StringView url_string)

@@ -17,7 +17,7 @@ namespace Web::Crypto {
 
 // https://w3c.github.io/webcrypto/#key-algorithm-dictionary
 class KeyAlgorithm : public JS::Object {
-    JS_OBJECT(KeyAlgorithm, Object);
+    JS_OBJECT(KeyAlgorithm, JS::Object);
     JS_DECLARE_ALLOCATOR(KeyAlgorithm);
 
 public:
@@ -33,12 +33,13 @@ protected:
     KeyAlgorithm(JS::Realm&);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Visitor&) override;
 
 private:
     JS_DECLARE_NATIVE_FUNCTION(name_getter);
 
     String m_name;
-    JS::Realm& m_realm;
+    JS::NonnullGCPtr<JS::Realm> m_realm;
 };
 
 // https://w3c.github.io/webcrypto/#RsaKeyAlgorithm-dictionary
@@ -94,6 +95,30 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(hash_getter);
 
     HashAlgorithmIdentifier m_hash;
+};
+
+// https://w3c.github.io/webcrypto/#EcKeyAlgorithm-dictionary
+class EcKeyAlgorithm : public KeyAlgorithm {
+    JS_OBJECT(EcKeyAlgorithm, KeyAlgorithm);
+    JS_DECLARE_ALLOCATOR(EcKeyAlgorithm);
+
+public:
+    static JS::NonnullGCPtr<EcKeyAlgorithm> create(JS::Realm&);
+
+    virtual ~EcKeyAlgorithm() override = default;
+
+    NamedCurve named_curve() const { return m_named_curve; }
+    void set_named_curve(NamedCurve named_curve) { m_named_curve = named_curve; }
+
+protected:
+    EcKeyAlgorithm(JS::Realm&);
+
+    virtual void initialize(JS::Realm&) override;
+
+private:
+    JS_DECLARE_NATIVE_FUNCTION(named_curve_getter);
+
+    NamedCurve m_named_curve;
 };
 
 }

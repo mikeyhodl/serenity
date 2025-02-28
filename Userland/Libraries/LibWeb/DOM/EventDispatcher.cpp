@@ -19,41 +19,16 @@
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/DOM/Slottable.h>
 #include <LibWeb/DOM/Text.h>
+#include <LibWeb/DOM/Utils.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/HTMLSlotElement.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Window.h>
+#include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
 namespace Web::DOM {
-
-// FIXME: This shouldn't be here, as retargeting is not only used by the event dispatcher.
-//        When moving this function, it needs to be generalized. https://dom.spec.whatwg.org/#retarget
-static EventTarget* retarget(EventTarget* left, EventTarget* right)
-{
-    // To retarget an object A against an object B, repeat these steps until they return an object:
-    for (;;) {
-        // 1. If one of the following is true then return A.
-        // - A is not a node
-        if (!is<Node>(left))
-            return left;
-
-        // - A’s root is not a shadow root
-        auto* left_node = verify_cast<Node>(left);
-        auto& left_root = left_node->root();
-        if (!is<ShadowRoot>(left_root))
-            return left;
-
-        // - B is a node and A’s root is a shadow-including inclusive ancestor of B
-        if (is<Node>(right) && left_root.is_shadow_including_inclusive_ancestor_of(verify_cast<Node>(*right)))
-            return left;
-
-        // 2. Set A to A’s root’s host.
-        auto& left_shadow_root = verify_cast<ShadowRoot>(left_root);
-        left = left_shadow_root.host();
-    }
-}
 
 // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
 bool EventDispatcher::inner_invoke(Event& event, Vector<JS::Handle<DOM::DOMEventListener>>& listeners, Event::Phase phase, bool invocation_target_in_shadow_tree)
@@ -109,7 +84,9 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<JS::Handle<DOM::DOMEvent
         if (listener->passive)
             event.set_in_passive_listener(true);
 
-        // 10. Call a user object’s operation with listener’s callback, "handleEvent", « event », and event’s currentTarget attribute value. If this throws an exception, then:
+        // FIXME: 10. If global is a Window object, then record timing info for event listener given event and listener.
+
+        // 11. Call a user object’s operation with listener’s callback, "handleEvent", « event », and event’s currentTarget attribute value.
         // FIXME: These should be wrapped for us in call_user_object_operation, but it currently doesn't do that.
         auto* this_value = event.current_target().ptr();
         auto* wrapped_event = &event;
@@ -117,24 +94,26 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<JS::Handle<DOM::DOMEvent
 
         // If this throws an exception, then:
         if (result.is_error()) {
-            // 1. Report the exception.
-            HTML::report_exception(result, realm);
+            // 1. Report exception for listener’s callback’s corresponding JavaScript object’s associated realm’s global object.
+            auto* window_or_worker = dynamic_cast<HTML::WindowOrWorkerGlobalScopeMixin*>(&global);
+            VERIFY(window_or_worker);
+            window_or_worker->report_an_exception(*result.release_error().value());
 
             // FIXME: 2. Set legacyOutputDidListenersThrowFlag if given. (Only used by IndexedDB currently)
         }
 
-        // 11. Unset event’s in passive listener flag.
+        // 12. Unset event’s in passive listener flag.
         event.set_in_passive_listener(false);
 
-        // 12. If global is a Window object, then set global’s current event to currentEvent.
+        // 13. If global is a Window object, then set global’s current event to currentEvent.
         if (is<HTML::Window>(global)) {
             auto& window = verify_cast<HTML::Window>(global);
             window.set_current_event(current_event);
         }
 
-        // 13. If event’s stop immediate propagation flag is set, then return found.
+        // 14. If event’s stop immediate propagation flag is set, then break.
         if (event.should_stop_immediate_propagation())
-            return found;
+            break;
     }
 
     // 3. Return found.

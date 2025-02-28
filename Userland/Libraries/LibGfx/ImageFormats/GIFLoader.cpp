@@ -14,7 +14,7 @@
 #include <AK/Memory.h>
 #include <AK/MemoryStream.h>
 #include <AK/Try.h>
-#include <LibCompress/LZWDecoder.h>
+#include <LibCompress/Lzw.h>
 #include <LibGfx/ImageFormats/GIFLoader.h>
 #include <string.h>
 
@@ -33,7 +33,7 @@ struct GIFImageDescriptor {
     bool interlaced { false };
     Color color_map[256];
     u8 lzw_min_code_size { 0 };
-    Vector<u8> lzw_encoded_bytes;
+    ByteBuffer lzw_encoded_bytes;
 
     // Fields from optional graphic control extension block
     enum DisposalMethod : u8 {
@@ -184,7 +184,7 @@ static ErrorOr<void> decode_frame(GIFLoadingContext& context, size_t frame_index
         if (image->lzw_min_code_size > 8)
             return Error::from_string_literal("LZW minimum code size is greater than 8");
 
-        auto decoded_stream = TRY(Compress::LZWDecoder<LittleEndianInputBitStream>::decode_all(image->lzw_encoded_bytes, image->lzw_min_code_size));
+        auto decoded_stream = TRY(Compress::LzwDecompressor<LittleEndianInputBitStream>::decompress_all(image->lzw_encoded_bytes, image->lzw_min_code_size));
 
         auto const& color_map = image->use_global_color_map ? context.logical_screen.color_map : image->color_map;
 
@@ -303,6 +303,8 @@ static ErrorOr<void> load_gif_frame_descriptors(GIFLoadingContext& context)
                 current_image->duration = duration;
 
                 current_image->transparency_index = sub_block[3];
+
+                dbgln_if(GIF_DEBUG, "Graphic control: disposal_method={}, user_input={}, transparent={}, duration={}", (int)current_image->disposal_method, current_image->user_input, current_image->transparent, current_image->duration);
             }
 
             if (extension_type == 0xFF) {
@@ -318,6 +320,8 @@ static ErrorOr<void> load_gif_frame_descriptors(GIFLoadingContext& context)
 
                 u16 loops = sub_block[12] + (sub_block[13] << 8);
                 context.loops = loops;
+
+                dbgln_if(GIF_DEBUG, "Application extension: loops={}", context.loops);
             }
 
             continue;
@@ -337,6 +341,8 @@ static ErrorOr<void> load_gif_frame_descriptors(GIFLoadingContext& context)
             image->use_global_color_map = !(packed_fields & 0x80);
             image->interlaced = (packed_fields & 0x40) != 0;
 
+            dbgln_if(GIF_DEBUG, "Image descriptor: x={}, y={}, width={}, height={}, use_global_color_map={}, local_map_size_exponent={}, interlaced={}", image->x, image->y, image->width, image->height, image->use_global_color_map, (packed_fields & 7) + 1, image->interlaced);
+
             if (!image->use_global_color_map) {
                 size_t local_color_table_size = AK::exp2<size_t>((packed_fields & 7) + 1);
 
@@ -350,19 +356,15 @@ static ErrorOr<void> load_gif_frame_descriptors(GIFLoadingContext& context)
 
             image->lzw_min_code_size = TRY(context.stream.read_value<u8>());
 
-            u8 lzw_encoded_bytes_expected = 0;
-
             for (;;) {
-                lzw_encoded_bytes_expected = TRY(context.stream.read_value<u8>());
+                auto const lzw_encoded_bytes_expected = TRY(context.stream.read_value<u8>());
+
+                // Block terminator
                 if (lzw_encoded_bytes_expected == 0)
                     break;
 
-                Array<u8, 256> buffer;
-                TRY(context.stream.read_until_filled(buffer.span().trim(lzw_encoded_bytes_expected)));
-
-                for (int i = 0; i < lzw_encoded_bytes_expected; ++i) {
-                    image->lzw_encoded_bytes.append(buffer[i]);
-                }
+                auto const lzw_subblock = TRY(image->lzw_encoded_bytes.get_bytes_for_writing(lzw_encoded_bytes_expected));
+                TRY(context.stream.read_until_filled(lzw_subblock));
             }
 
             current_image = make<GIFImageDescriptor>();

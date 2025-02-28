@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGRectElementPrototype.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/AttributeParser.h>
 #include <LibWeb/SVG/SVGAnimatedLength.h>
@@ -26,9 +27,9 @@ void SVGRectElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGRectElement);
 }
 
-void SVGRectElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void SVGRectElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGGeometryElement::attribute_changed(name, value);
+    SVGGeometryElement::attribute_changed(name, old_value, value);
 
     if (name == SVG::AttributeNames::x) {
         m_x = AttributeParser::parse_coordinate(value.value_or(String {}));
@@ -104,6 +105,10 @@ Gfx::Path SVGRectElement::get_path(CSSPixelSize)
     //    using the same parameters as previously.
     if (rx > 0 && ry > 0)
         path.elliptical_arc_to({ x + rx, y }, corner_radii, x_axis_rotation, large_arc_flag, sweep_flag);
+
+    // Spec bug: the path needs to be closed independent of if rx and ry are greater than zero,
+    // https://github.com/w3c/svgwg/issues/753#issuecomment-567199686
+    path.close();
 
     return path;
 }

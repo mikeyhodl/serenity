@@ -5,7 +5,7 @@
  */
 
 #include <Kernel/Devices/GPU/VirtIO/Console.h>
-#include <Kernel/Devices/TTY/ConsoleManagement.h>
+#include <Kernel/Devices/TTY/VirtualConsole.h>
 #include <Kernel/Tasks/WorkQueue.h>
 
 namespace Kernel::Graphics::VirtIOGPU {
@@ -36,7 +36,7 @@ void Console::set_resolution(size_t width, size_t height, size_t pitch)
     // Just to start cleanly, we clean the entire framebuffer
     memset(framebuffer_data(), 0, pitch * height);
 
-    ConsoleManagement::the().resolution_was_changed();
+    VirtualConsole::resolution_was_changed();
 }
 
 void Console::set_cursor(size_t x, size_t y)
@@ -73,7 +73,8 @@ void Console::enqueue_refresh_timer()
             MUST(g_io_work->try_queue([this]() {
                 {
                     MutexLocker locker(m_parent_display_connector->m_flushing_lock);
-                    MUST(m_parent_display_connector->flush_first_surface());
+                    if (auto result = m_parent_display_connector->flush_first_surface(); result.is_error())
+                        dbgln("VirtIOGPU::Console: Failed to flush display: {}", result.error());
                 }
                 m_dirty = false;
             }));

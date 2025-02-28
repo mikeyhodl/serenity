@@ -38,7 +38,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool xz = false;
     bool no_auto_compress = false;
     StringView archive_file;
-    bool dereference;
+    bool dereference = false;
     StringView directory;
     Vector<ByteString> paths;
 
@@ -48,9 +48,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(list, "List contents", "list", 't');
     args_parser.add_option(verbose, "Print paths", "verbose", 'v');
     args_parser.add_option(gzip, "Compress or decompress file using gzip", "gzip", 'z');
-    args_parser.add_option(lzma, "Compress or decompress file using lzma", "lzma", 0);
+    args_parser.add_option(lzma, "Compress or decompress file using lzma", "lzma");
     args_parser.add_option(xz, "Compress or decompress file using xz", "xz", 'J');
-    args_parser.add_option(no_auto_compress, "Do not use the archive suffix to select the compression algorithm", "no-auto-compress", 0);
+    args_parser.add_option(no_auto_compress, "Do not use the archive suffix to select the compression algorithm", "no-auto-compress");
     args_parser.add_option(directory, "Directory to extract to/create from", "directory", 'C', "DIRECTORY");
     args_parser.add_option(archive_file, "Archive file", "file", 'f', "FILE");
     args_parser.add_option(dereference, "Follow symlinks", "dereference", 'h');
@@ -72,10 +72,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
 
     if (list || extract) {
+        NonnullOwnPtr<Stream> input_stream = TRY(Core::InputBufferedFile::create(TRY(Core::File::open_file_or_standard_stream(archive_file, Core::File::OpenMode::Read))));
+
         if (!directory.is_empty())
             TRY(Core::System::chdir(directory));
-
-        NonnullOwnPtr<Stream> input_stream = TRY(Core::InputBufferedFile::create(TRY(Core::File::open_file_or_standard_stream(archive_file, Core::File::OpenMode::Read))));
 
         if (gzip)
             input_stream = make<Compress::GzipDecompressor>(move(input_stream));
@@ -92,12 +92,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         HashMap<ByteString, ByteString> local_overrides;
 
         auto get_override = [&](StringView key) -> Optional<ByteString> {
-            Optional<ByteString> maybe_local = local_overrides.get(key);
+            Optional<ByteString> maybe_local = local_overrides.get(key).copy();
 
             if (maybe_local.has_value())
                 return maybe_local;
 
-            Optional<ByteString> maybe_global = global_overrides.get(key);
+            Optional<ByteString> maybe_global = global_overrides.get(key).copy();
 
             if (maybe_global.has_value())
                 return maybe_global;

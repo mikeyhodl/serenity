@@ -17,11 +17,14 @@
 #include <LibGfx/StandardCursor.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/ActivateTab.h>
+#include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/HTML/ColorPickerUpdateState.h>
 #include <LibWeb/HTML/FileFilter.h>
 #include <LibWeb/HTML/SelectItem.h>
+#include <LibWeb/Page/EventResult.h>
 #include <LibWeb/Page/InputEvent.h>
 #include <LibWebView/Forward.h>
+#include <LibWebView/PageInfo.h>
 #include <LibWebView/WebContentClient.h>
 
 namespace WebView {
@@ -36,6 +39,7 @@ public:
         String custom_properties_json;
         String node_box_sizing_json;
         String aria_properties_state_json;
+        String fonts_json;
     };
 
     void set_url(Badge<WebContentClient>, URL::URL url) { m_url = move(url); }
@@ -48,6 +52,8 @@ public:
     void load(URL::URL const&);
     void load_html(StringView);
     void load_empty_document();
+    void reload();
+    void traverse_the_history_by_delta(int delta);
 
     void zoom_in();
     void zoom_out();
@@ -56,13 +62,23 @@ public:
     float device_pixel_ratio() const { return m_device_pixel_ratio; }
 
     void enqueue_input_event(Web::InputEvent);
-    void did_finish_handling_input_event(Badge<WebContentClient>, bool event_was_accepted);
+    void did_finish_handling_input_event(Badge<WebContentClient>, Web::EventResult event_result);
 
     void set_preferred_color_scheme(Web::CSS::PreferredColorScheme);
+    void set_preferred_contrast(Web::CSS::PreferredContrast);
+    void set_preferred_motion(Web::CSS::PreferredMotion);
+
+    void set_preferred_languages(Vector<String>);
+
+    void set_enable_do_not_track(bool);
 
     ByteString selected_text();
     Optional<String> selected_text_with_whitespace_collapsed();
     void select_all();
+    void find_in_page(String const& query, CaseSensitivity = CaseSensitivity::CaseInsensitive);
+    void find_in_page_next_match();
+    void find_in_page_previous_match();
+    void paste(String const&);
 
     void get_source();
 
@@ -82,6 +98,9 @@ public:
     void remove_dom_node(i32 node_id);
     void get_dom_node_html(i32 node_id);
 
+    void list_style_sheets();
+    void request_style_sheet_source(Web::CSS::StyleSheetIdentifier const&);
+
     void debug_request(ByteString const& request, ByteString const& argument = {});
 
     void run_javascript(StringView);
@@ -93,12 +112,20 @@ public:
     void prompt_closed(Optional<String> response);
     void color_picker_update(Optional<Color> picked_color, Web::HTML::ColorPickerUpdateState state);
     void file_picker_closed(Vector<Web::HTML::SelectedFile> selected_files);
-    void select_dropdown_closed(Optional<String> value);
+    void select_dropdown_closed(Optional<u32> const& selected_item_id);
 
     void toggle_media_play_state();
     void toggle_media_mute_state();
     void toggle_media_loop_state();
     void toggle_media_controls_state();
+
+    Web::HTML::MuteState page_mute_state() const { return m_mute_state; }
+    void toggle_page_mute_state();
+
+    void did_change_audio_play_state(Badge<WebContentClient>, Web::HTML::AudioPlayState);
+    Web::HTML::AudioPlayState audio_play_state() const { return m_audio_play_state; }
+
+    void did_update_navigation_buttons_state(Badge<WebContentClient>, bool back_enabled, bool forward_enabled) const;
 
     enum class ScreenshotType {
         Visible,
@@ -107,6 +134,9 @@ public:
     NonnullRefPtr<Core::Promise<LexicalPath>> take_screenshot(ScreenshotType);
     NonnullRefPtr<Core::Promise<LexicalPath>> take_dom_node_screenshot(i32);
     virtual void did_receive_screenshot(Badge<WebContentClient>, Gfx::ShareableBitmap const&);
+
+    NonnullRefPtr<Core::Promise<String>> request_internal_page_info(PageInfoType);
+    void did_receive_internal_page_info(Badge<WebContentClient>, PageInfoType, String const&);
 
     ErrorOr<LexicalPath> dump_gc_graph();
 
@@ -123,25 +153,26 @@ public:
     Function<void()> on_activate_tab;
     Function<void()> on_close;
     Function<void(Gfx::IntPoint screen_position)> on_context_menu_request;
-    Function<void(const URL::URL&, Gfx::IntPoint screen_position)> on_link_context_menu_request;
-    Function<void(const URL::URL&, Gfx::IntPoint screen_position, Gfx::ShareableBitmap const&)> on_image_context_menu_request;
+    Function<void(URL::URL const&, Gfx::IntPoint screen_position)> on_link_context_menu_request;
+    Function<void(URL::URL const&, Gfx::IntPoint screen_position, Gfx::ShareableBitmap const&)> on_image_context_menu_request;
     Function<void(Gfx::IntPoint screen_position, Web::Page::MediaContextMenu const&)> on_media_context_menu_request;
-    Function<void(const URL::URL&)> on_link_hover;
+    Function<void(URL::URL const&)> on_link_hover;
     Function<void()> on_link_unhover;
-    Function<void(const URL::URL&, ByteString const& target, unsigned modifiers)> on_link_click;
-    Function<void(const URL::URL&, ByteString const& target, unsigned modifiers)> on_link_middle_click;
+    Function<void(URL::URL const&, ByteString const& target, unsigned modifiers)> on_link_click;
+    Function<void(URL::URL const&, ByteString const& target, unsigned modifiers)> on_link_middle_click;
     Function<void(ByteString const&)> on_title_change;
-    Function<void(const URL::URL&, bool)> on_load_start;
-    Function<void(const URL::URL&)> on_load_finish;
+    Function<void(URL::URL const&)> on_url_change;
+    Function<void(URL::URL const&, bool)> on_load_start;
+    Function<void(URL::URL const&)> on_load_finish;
     Function<void(ByteString const& path, i32)> on_request_file;
     Function<void()> on_navigate_back;
     Function<void()> on_navigate_forward;
     Function<void()> on_refresh;
     Function<void(Gfx::Bitmap const&)> on_favicon_change;
-    Function<void(i32, i32)> on_scroll_by_delta;
-    Function<void(Gfx::IntPoint)> on_scroll_to_point;
     Function<void(Gfx::StandardCursor)> on_cursor_change;
-    Function<void(Gfx::IntPoint, ByteString const&)> on_enter_tooltip_area;
+    Function<void(Gfx::IntPoint, ByteString const&)> on_request_tooltip_override;
+    Function<void()> on_stop_tooltip_override;
+    Function<void(ByteString const&)> on_enter_tooltip_area;
     Function<void()> on_leave_tooltip_area;
     Function<void(String const& message)> on_request_alert;
     Function<void(String const& message)> on_request_confirm;
@@ -149,10 +180,13 @@ public:
     Function<void(String const& message)> on_request_set_prompt_text;
     Function<void()> on_request_accept_dialog;
     Function<void()> on_request_dismiss_dialog;
-    Function<void(const URL::URL&, ByteString const&)> on_received_source;
+    Function<void(URL::URL const&, URL::URL const&, String const&)> on_received_source;
     Function<void(ByteString const&)> on_received_dom_tree;
     Function<void(Optional<DOMNodeProperties>)> on_received_dom_node_properties;
     Function<void(ByteString const&)> on_received_accessibility_tree;
+    Function<void(Vector<Web::CSS::StyleSheetIdentifier>)> on_received_style_sheet_list;
+    Function<void(Web::CSS::StyleSheetIdentifier const&)> on_inspector_requested_style_sheet_source;
+    Function<void(Web::CSS::StyleSheetIdentifier const&, URL::URL const&, String const&)> on_received_style_sheet_source;
     Function<void(i32 node_id)> on_received_hovered_node_id;
     Function<void(Optional<i32> const& node_id)> on_finshed_editing_dom_node;
     Function<void(String const&)> on_received_dom_node_html;
@@ -160,8 +194,8 @@ public:
     Function<void(i32 start_index, Vector<ByteString> const& message_types, Vector<ByteString> const& messages)> on_received_console_messages;
     Function<Vector<Web::Cookie::Cookie>(URL::URL const& url)> on_get_all_cookies;
     Function<Optional<Web::Cookie::Cookie>(URL::URL const& url, String const& name)> on_get_named_cookie;
-    Function<String(const URL::URL& url, Web::Cookie::Source source)> on_get_cookie;
-    Function<void(const URL::URL& url, Web::Cookie::ParsedCookie const& cookie, Web::Cookie::Source source)> on_set_cookie;
+    Function<String(URL::URL const& url, Web::Cookie::Source source)> on_get_cookie;
+    Function<void(URL::URL const& url, Web::Cookie::ParsedCookie const& cookie, Web::Cookie::Source source)> on_set_cookie;
     Function<void(Web::Cookie::Cookie const& cookie)> on_update_cookie;
     Function<void(i32 count_waiting)> on_resource_status_change;
     Function<void()> on_restore_window;
@@ -174,9 +208,13 @@ public:
     Function<void(Web::HTML::FileFilter const& accepted_file_types, Web::HTML::AllowMultipleFiles)> on_request_file_picker;
     Function<void(Gfx::IntPoint content_position, i32 minimum_width, Vector<Web::HTML::SelectItem> items)> on_request_select_dropdown;
     Function<void(Web::KeyEvent const&)> on_finish_handling_key_event;
-    Function<void()> on_text_test_finish;
+    Function<void(Web::DragEvent const&)> on_finish_handling_drag_event;
+    Function<void(String const&)> on_text_test_finish;
+    Function<void(size_t current_match_index, Optional<size_t> const& total_match_count)> on_find_in_page;
     Function<void(Gfx::Color)> on_theme_color_change;
     Function<void(String const&, String const&, String const&)> on_insert_clipboard_entry;
+    Function<void(Web::HTML::AudioPlayState)> on_audio_play_state_changed;
+    Function<void(bool, bool)> on_navigation_buttons_state_changed;
     Function<void()> on_inspector_loaded;
     Function<void(i32, Optional<Web::CSS::Selector::PseudoElement::Type> const&)> on_inspector_selected_dom_node;
     Function<void(i32, String const&)> on_inspector_set_dom_node_text;
@@ -185,9 +223,10 @@ public:
     Function<void(i32, size_t, Vector<Attribute> const&)> on_inspector_replaced_dom_node_attribute;
     Function<void(i32, Gfx::IntPoint, String const&, Optional<String> const&, Optional<size_t> const&)> on_inspector_requested_dom_tree_context_menu;
     Function<void(String const&)> on_inspector_executed_console_script;
-    Function<SocketPair()> on_request_worker_agent;
+    Function<void(String const&)> on_inspector_exported_inspector_html;
+    Function<IPC::File()> on_request_worker_agent;
 
-    virtual Web::DevicePixelRect viewport_rect() const = 0;
+    virtual Web::DevicePixelSize viewport_size() const = 0;
     virtual Gfx::IntPoint to_content_position(Gfx::IntPoint widget_position) const = 0;
     virtual Gfx::IntPoint to_widget_position(Gfx::IntPoint content_position) const = 0;
 
@@ -251,6 +290,12 @@ protected:
     RefPtr<Core::Timer> m_repeated_crash_timer;
 
     RefPtr<Core::Promise<LexicalPath>> m_pending_screenshot;
+    RefPtr<Core::Promise<String>> m_pending_info_request;
+
+    Web::HTML::AudioPlayState m_audio_play_state { Web::HTML::AudioPlayState::Paused };
+    size_t m_number_of_elements_playing_audio { 0 };
+
+    Web::HTML::MuteState m_mute_state { Web::HTML::MuteState::Unmuted };
 };
 
 }

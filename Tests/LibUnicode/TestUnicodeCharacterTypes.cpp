@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2021-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -313,14 +313,6 @@ TEST_CASE(script)
         EXPECT(!Unicode::code_point_has_script(code_point, script_greek));
     }
 
-    for (u32 code_point = 0x400; code_point <= 0x481; ++code_point) {
-        EXPECT(Unicode::code_point_has_script(code_point, script_cyrillic));
-        EXPECT(Unicode::code_point_has_script_extension(code_point, script_cyrillic));
-
-        EXPECT(!Unicode::code_point_has_script(code_point, script_latin));
-        EXPECT(!Unicode::code_point_has_script(code_point, script_greek));
-    }
-
     for (u32 code_point = 0x1f80; code_point <= 0x1fb4; ++code_point) {
         EXPECT(Unicode::code_point_has_script(code_point, script_greek));
         EXPECT(Unicode::code_point_has_script_extension(code_point, script_greek));
@@ -424,25 +416,13 @@ TEST_CASE(code_point_display_name)
 
 TEST_CASE(code_point_bidirectional_character_type)
 {
-    auto code_point_bidi_class = [](u32 code_point) {
-        auto bidi_class = Unicode::bidirectional_class(code_point);
-        VERIFY(bidi_class.has_value());
-        return bidi_class.release_value();
-    };
-
-    auto bidi_class_from_string = [](StringView name) {
-        auto result = Unicode::bidirectional_class_from_string(name);
-        VERIFY(result.has_value());
-        return result.release_value();
-    };
-
     // Left-to-right
-    EXPECT_EQ(code_point_bidi_class('A'), bidi_class_from_string("L"sv));
-    EXPECT_EQ(code_point_bidi_class('z'), bidi_class_from_string("L"sv));
+    EXPECT_EQ(Unicode::bidirectional_class('A'), Unicode::BidiClass::LeftToRight);
+    EXPECT_EQ(Unicode::bidirectional_class('z'), Unicode::BidiClass::LeftToRight);
     // European number
-    EXPECT_EQ(code_point_bidi_class('7'), bidi_class_from_string("EN"sv));
+    EXPECT_EQ(Unicode::bidirectional_class('7'), Unicode::BidiClass::EuropeanNumber);
     // Whitespace
-    EXPECT_EQ(code_point_bidi_class(' '), bidi_class_from_string("WS"sv));
+    EXPECT_EQ(Unicode::bidirectional_class(' '), Unicode::BidiClass::WhiteSpaceNeutral);
     // Arabic right-to-left (U+FEB4 ARABIC LETTER SEEN MEDIAL FORM)
-    EXPECT_EQ(code_point_bidi_class(0xFEB4), bidi_class_from_string("AL"sv));
+    EXPECT_EQ(Unicode::bidirectional_class(0xFEB4), Unicode::BidiClass::RightToLeftArabic);
 }

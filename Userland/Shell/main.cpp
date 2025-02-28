@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "Shell.h"
 #include <AK/LexicalPath.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/Event.h>
@@ -12,6 +11,7 @@
 #include <LibCore/System.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibMain/Main.h>
+#include <LibShell/Shell.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -85,7 +85,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             }
             (void)shell->highlight(editor);
         };
-        editor->on_tab_complete = [&](const Line::Editor&) {
+        editor->on_tab_complete = [&](Line::Editor const&) {
             return shell->complete();
         };
         editor->on_paste = [&](Utf32View data, Line::Editor& editor) {
@@ -174,11 +174,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     Core::ArgsParser parser;
     parser.add_option(command_to_run, "String to read commands from", "command-string", 'c', "command-string");
-    parser.add_option(skip_rc_files, "Skip running shellrc files", "skip-shellrc", 0);
+    parser.add_option(skip_rc_files, "Skip running shellrc files", "skip-shellrc");
     parser.add_option(format, "Format the given file into stdout and exit", "format", 0, "file");
     parser.add_option(should_format_live, "Enable live formatting", "live-formatting", 'f');
-    parser.add_option(keep_open, "Keep the shell open after running the specified command or file", "keep-open", 0);
-    parser.add_option(posix_mode, "Behave like a POSIX-compatible shell", "posix", 0);
+    parser.add_option(keep_open, "Keep the shell open after running the specified command or file", "keep-open");
+    parser.add_option(posix_mode, "Behave like a POSIX-compatible shell", "posix");
     parser.add_positional_argument(file_to_read_from, "File to read commands from", "file", Core::ArgsParser::Required::No);
     parser.add_positional_argument(script_args, "Extra arguments to pass to the script (via $* and co)", "argument", Core::ArgsParser::Required::No);
 

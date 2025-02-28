@@ -229,13 +229,23 @@ String Name::string_for_id(NameId id) const
     auto const platform_id = name_record.platform_id;
     auto const length = name_record.length;
     auto const offset = name_record.string_offset;
+    auto const name_bytes = m_string_data.slice(offset, length);
 
     if (platform_id == to_underlying(Platform::Windows)) {
         static auto& decoder = *TextCodec::decoder_for("utf-16be"sv);
-        return decoder.to_utf8(m_string_data.slice(offset, length)).release_value_but_fixme_should_propagate_errors();
+        return decoder.to_utf8(name_bytes).release_value_but_fixme_should_propagate_errors();
     }
 
-    return String::from_utf8(m_string_data.slice(offset, length)).release_value_but_fixme_should_propagate_errors();
+    auto maybe_name = String::from_utf8(name_bytes);
+    if (maybe_name.is_error()) {
+        static auto& decoder = *TextCodec::decoder_for("utf-16be"sv);
+        maybe_name = decoder.to_utf8(name_bytes);
+        if (!maybe_name.is_error())
+            return maybe_name.release_value_but_fixme_should_propagate_errors();
+        dbgln("OpenType::Name: Failed to decode name string as UTF-8 or UTF-16BE");
+        return String {};
+    }
+    return maybe_name.release_value();
 }
 
 ErrorOr<Kern> Kern::from_slice(ReadonlyBytes slice)
@@ -426,7 +436,8 @@ bool OS2::use_typographic_metrics() const
 Optional<i16> OS2::x_height() const
 {
     return m_data.visit(
-        []<typename T> requires(requires { T::sx_height; })(T * data)->Optional<i16> {
+        []<typename T>
+        requires(requires { T::sx_height; })(T * data) -> Optional<i16> {
             return data->sx_height;
         },
         [](auto*) { return Optional<i16>(); });

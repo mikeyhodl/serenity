@@ -6,12 +6,14 @@
 
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
+#include <LibWeb/Bindings/MutationObserverPrototype.h>
 #include <LibWeb/DOM/MutationObserver.h>
 #include <LibWeb/DOM/Node.h>
 
 namespace Web::DOM {
 
 JS_DEFINE_ALLOCATOR(MutationObserver);
+JS_DEFINE_ALLOCATOR(TransientRegisteredObserver);
 
 WebIDL::ExceptionOr<JS::NonnullGCPtr<MutationObserver>> MutationObserver::construct_impl(JS::Realm& realm, JS::GCPtr<WebIDL::CallbackType> callback)
 {
@@ -49,8 +51,7 @@ void MutationObserver::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_callback);
-    for (auto& record : m_record_queue)
-        visitor.visit(record);
+    visitor.visit(m_record_queue);
 }
 
 // https://dom.spec.whatwg.org/#dom-mutationobserver-observe

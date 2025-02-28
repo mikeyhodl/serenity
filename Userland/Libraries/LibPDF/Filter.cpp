@@ -7,10 +7,11 @@
 #include <AK/BitStream.h>
 #include <AK/Hex.h>
 #include <LibCompress/Deflate.h>
-#include <LibCompress/LZWDecoder.h>
+#include <LibCompress/Lzw.h>
 #include <LibCompress/PackBitsDecoder.h>
 #include <LibGfx/ImageFormats/CCITTDecoder.h>
 #include <LibGfx/ImageFormats/JBIG2Loader.h>
+#include <LibGfx/ImageFormats/JPEG2000Loader.h>
 #include <LibGfx/ImageFormats/JPEGLoader.h>
 #include <LibGfx/ImageFormats/PNGLoader.h>
 #include <LibPDF/CommonNames.h>
@@ -262,7 +263,7 @@ PDFErrorOr<ByteBuffer> Filter::decode_lzw(ReadonlyBytes bytes, RefPtr<DictObject
     if (decode_parms && decode_parms->contains(CommonNames::EarlyChange))
         early_change = decode_parms->get_value(CommonNames::EarlyChange).get<int>();
 
-    auto decoded = TRY(Compress::LZWDecoder<BigEndianInputBitStream>::decode_all(bytes, 8, -early_change));
+    auto decoded = TRY(Compress::LzwDecompressor<BigEndianInputBitStream>::decompress_all(bytes, 8, -early_change));
     return handle_lzw_and_flate_parameters(move(decoded), decode_parms);
 }
 
@@ -313,20 +314,20 @@ PDFErrorOr<ByteBuffer> Filter::decode_ccitt(ReadonlyBytes bytes, RefPtr<DictObje
             damaged_rows_before_error = decode_parms->get_value(CommonNames::DamagedRowsBeforeError).get<int>();
     }
 
-    // FIXME: This parameter seems crucial when reading its description, but we still
-    //        achieve to decode images that have it. Figure out what to do with it.
-    (void)end_of_block;
-
-    if (require_end_of_line || (encoded_byte_align && k != 0) || damaged_rows_before_error > 0)
+    if (require_end_of_line || damaged_rows_before_error > 0)
         return Error::rendering_unsupported_error("Unimplemented option for the CCITTFaxDecode Filter");
 
     ByteBuffer decoded {};
     if (k < 0) {
-        decoded = TRY(Gfx::CCITT::decode_ccitt_group4(bytes, columns, rows));
+        Gfx::CCITT::Group4Options options {
+            .has_end_of_block = end_of_block ? Gfx::CCITT::Group4Options::HasEndOfBlock::Yes : Gfx::CCITT::Group4Options::HasEndOfBlock::No,
+            .encoded_byte_aligned = encoded_byte_align ? Gfx::CCITT::EncodedByteAligned::Yes : Gfx::CCITT::EncodedByteAligned::No,
+        };
+        decoded = TRY(Gfx::CCITT::decode_ccitt_group4(bytes, columns, rows, options));
     } else if (k == 0) {
         Gfx::CCITT::Group3Options options {
             .require_end_of_line = require_end_of_line ? Gfx::CCITT::Group3Options::RequireEndOfLine::Yes : Gfx::CCITT::Group3Options::RequireEndOfLine::No,
-            .encoded_byte_aligned = encoded_byte_align ? Gfx::CCITT::Group3Options::EncodedByteAligned::Yes : Gfx::CCITT::Group3Options::EncodedByteAligned::No,
+            .encoded_byte_aligned = encoded_byte_align ? Gfx::CCITT::EncodedByteAligned::Yes : Gfx::CCITT::EncodedByteAligned::No,
         };
 
         decoded = TRY(Gfx::CCITT::decode_ccitt_group3(bytes, columns, rows, options));
@@ -364,10 +365,10 @@ PDFErrorOr<ByteBuffer> Filter::decode_jbig2(Document* document, ReadonlyBytes by
 
 PDFErrorOr<ByteBuffer> Filter::decode_dct(ReadonlyBytes bytes)
 {
-    if (!Gfx::JPEGImageDecoderPlugin::sniff({ bytes.data(), bytes.size() }))
+    if (!Gfx::JPEGImageDecoderPlugin::sniff(bytes))
         return AK::Error::from_string_literal("Not a JPEG image!");
 
-    auto decoder = TRY(Gfx::JPEGImageDecoderPlugin::create_with_options({ bytes.data(), bytes.size() }, { .cmyk = Gfx::JPEGDecoderOptions::CMYK::PDF }));
+    auto decoder = TRY(Gfx::JPEGImageDecoderPlugin::create_with_options(bytes, { .cmyk = Gfx::JPEGDecoderOptions::CMYK::PDF }));
     auto internal_format = decoder->natural_frame_format();
 
     if (internal_format == Gfx::NaturalFrameFormat::CMYK) {
@@ -398,9 +399,40 @@ PDFErrorOr<ByteBuffer> Filter::decode_dct(ReadonlyBytes bytes)
     return buffer;
 }
 
-PDFErrorOr<ByteBuffer> Filter::decode_jpx(ReadonlyBytes)
+PDFErrorOr<ByteBuffer> Filter::decode_jpx(ReadonlyBytes bytes)
 {
-    return Error::rendering_unsupported_error("JPX Filter is not supported");
+    if (!Gfx::JPEG2000ImageDecoderPlugin::sniff(bytes))
+        return AK::Error::from_string_literal("Not a JPEG2000 image!");
+
+    auto decoder = TRY(Gfx::JPEG2000ImageDecoderPlugin::create(bytes));
+    auto internal_format = decoder->natural_frame_format();
+
+    if (internal_format == Gfx::NaturalFrameFormat::CMYK) {
+        auto bitmap = TRY(decoder->cmyk_frame());
+        // FIXME: Could give CMYKBitmap a method to steal its internal ByteBuffer.
+        auto size = bitmap->size().width() * bitmap->size().height() * 4;
+        auto buffer = TRY(ByteBuffer::create_uninitialized(size));
+        buffer.overwrite(0, bitmap->scanline(0), size);
+        return buffer;
+    }
+
+    auto bitmap = TRY(decoder->frame(0)).image;
+    auto size = bitmap->size().width() * bitmap->size().height() * (internal_format == Gfx::NaturalFrameFormat::Grayscale ? 1 : 3);
+    ByteBuffer buffer;
+    TRY(buffer.try_ensure_capacity(size));
+
+    for (auto& pixel : *bitmap) {
+        Color color = Color::from_argb(pixel);
+        if (internal_format == Gfx::NaturalFrameFormat::Grayscale) {
+            // Either channel is fine, they're all the same.
+            buffer.append(color.red());
+        } else {
+            buffer.append(color.red());
+            buffer.append(color.green());
+            buffer.append(color.blue());
+        }
+    }
+    return buffer;
 }
 
 PDFErrorOr<ByteBuffer> Filter::decode_crypt(ReadonlyBytes)

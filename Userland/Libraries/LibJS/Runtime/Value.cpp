@@ -257,6 +257,15 @@ Array& Value::as_array()
     return static_cast<Array&>(as_object());
 }
 
+// 20.5.8.2 IsError ( argument ), https://tc39.es/proposal-is-error/#sec-iserror
+bool Value::is_error() const
+{
+    // 1. If argument is not an Object, return false.
+    // 2. If argument has an [[ErrorData]] internal slot, return true.
+    // 3. Return false.
+    return is_object() && is<Error>(as_object());
+}
+
 // 7.2.3 IsCallable ( argument ), https://tc39.es/ecma262/#sec-iscallable
 bool Value::is_function() const
 {
@@ -313,42 +322,42 @@ ThrowCompletionOr<bool> Value::is_regexp(VM& vm) const
 }
 
 // 13.5.3 The typeof Operator, https://tc39.es/ecma262/#sec-typeof-operator
-StringView Value::typeof() const
+NonnullGCPtr<PrimitiveString> Value::typeof_(VM& vm) const
 {
     // 9. If val is a Number, return "number".
     if (is_number())
-        return "number"sv;
+        return *vm.typeof_strings.number;
 
     switch (m_value.tag) {
     // 4. If val is undefined, return "undefined".
     case UNDEFINED_TAG:
-        return "undefined"sv;
+        return *vm.typeof_strings.undefined;
     // 5. If val is null, return "object".
     case NULL_TAG:
-        return "object"sv;
+        return *vm.typeof_strings.object;
     // 6. If val is a String, return "string".
     case STRING_TAG:
-        return "string"sv;
+        return *vm.typeof_strings.string;
     // 7. If val is a Symbol, return "symbol".
     case SYMBOL_TAG:
-        return "symbol"sv;
+        return *vm.typeof_strings.symbol;
     // 8. If val is a Boolean, return "boolean".
     case BOOLEAN_TAG:
-        return "boolean"sv;
+        return *vm.typeof_strings.boolean;
     // 10. If val is a BigInt, return "bigint".
     case BIGINT_TAG:
-        return "bigint"sv;
+        return *vm.typeof_strings.bigint;
     // 11. Assert: val is an Object.
     case OBJECT_TAG:
         // B.3.6.3 Changes to the typeof Operator, https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot-typeof
         // 12. If val has an [[IsHTMLDDA]] internal slot, return "undefined".
         if (as_object().is_htmldda())
-            return "undefined"sv;
+            return *vm.typeof_strings.undefined;
         // 13. If val has a [[Call]] internal slot, return "function".
         if (is_function())
-            return "function"sv;
+            return *vm.typeof_strings.function;
         // 14. Return "object".
-        return "object"sv;
+        return *vm.typeof_strings.object;
     default:
         VERIFY_NOT_REACHED();
     }
@@ -367,7 +376,7 @@ String Value::to_string_without_side_effects() const
     case BOOLEAN_TAG:
         return as_bool() ? "true"_string : "false"_string;
     case INT32_TAG:
-        return String::number(as_i32()).release_value();
+        return String::number(as_i32());
     case STRING_TAG:
         return as_string().utf8_string();
     case SYMBOL_TAG:
@@ -418,7 +427,7 @@ ThrowCompletionOr<String> Value::to_string(VM& vm) const
         return as_bool() ? "true"_string : "false"_string;
     // 7. If argument is a Number, return Number::toString(argument, 10).
     case INT32_TAG:
-        return TRY_OR_THROW_OOM(vm, String::number(as_i32()));
+        return String::number(as_i32());
     // 8. If argument is a BigInt, return BigInt::toString(argument, 10).
     case BIGINT_TAG:
         return TRY_OR_THROW_OOM(vm, as_bigint().big_integer().to_base(10));
@@ -451,6 +460,11 @@ ThrowCompletionOr<Utf16String> Value::to_utf16_string(VM& vm) const
 
     auto utf8_string = TRY(to_string(vm));
     return Utf16String::create(utf8_string.bytes_as_string_view());
+}
+
+ThrowCompletionOr<String> Value::to_well_formed_string(VM& vm) const
+{
+    return ::JS::to_well_formed_string(TRY(to_utf16_string(vm)));
 }
 
 // 7.1.2 ToBoolean ( argument ), https://tc39.es/ecma262/#sec-toboolean

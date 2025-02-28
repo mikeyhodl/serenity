@@ -10,34 +10,7 @@
 #include <LibCore/ArgsParser.h>
 #include <LibMain/Main.h>
 
-ErrorOr<void> generate_header_file(JsonObject& functions_data, Core::File& file);
-ErrorOr<void> generate_implementation_file(JsonObject& functions_data, Core::File& file);
-
-ErrorOr<int> serenity_main(Main::Arguments arguments)
-{
-    StringView generated_header_path;
-    StringView generated_implementation_path;
-    StringView identifiers_json_path;
-
-    Core::ArgsParser args_parser;
-    args_parser.add_option(generated_header_path, "Path to the MathFunctions header file to generate", "generated-header-path", 'h', "generated-header-path");
-    args_parser.add_option(generated_implementation_path, "Path to the MathFunctions implementation file to generate", "generated-implementation-path", 'c', "generated-implementation-path");
-    args_parser.add_option(identifiers_json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
-    args_parser.parse(arguments);
-
-    auto json = TRY(read_entire_file_as_json(identifiers_json_path));
-    VERIFY(json.is_object());
-    auto math_functions_data = json.as_object();
-
-    auto generated_header_file = TRY(Core::File::open(generated_header_path, Core::File::OpenMode::Write));
-    auto generated_implementation_file = TRY(Core::File::open(generated_implementation_path, Core::File::OpenMode::Write));
-
-    TRY(generate_header_file(math_functions_data, *generated_header_file));
-    TRY(generate_implementation_file(math_functions_data, *generated_implementation_file));
-
-    return 0;
-}
-
+namespace {
 ErrorOr<void> generate_header_file(JsonObject& functions_data, Core::File& file)
 {
     StringBuilder builder;
@@ -117,35 +90,35 @@ ErrorOr<void> generate_implementation_file(JsonObject& functions_data, Core::Fil
 #include <LibWeb/CSS/MathFunctions.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/Enums.h>
-#include <LibWeb/CSS/StyleValues/CalculatedStyleValue.h>
+#include <LibWeb/CSS/StyleValues/CSSMathValue.h>
 
 namespace Web::CSS::Parser {
 
 static Optional<RoundingStrategy> parse_rounding_strategy(Vector<ComponentValue> const& tokens)
 {
     auto stream = TokenStream { tokens };
-    stream.skip_whitespace();
+    stream.discard_whitespace();
     if (!stream.has_next_token())
         return {};
 
-    auto& ident = stream.next_token();
+    auto& ident = stream.consume_a_token();
     if (!ident.is(Token::Type::Ident))
         return {};
 
-    stream.skip_whitespace();
+    stream.discard_whitespace();
     if (stream.has_next_token())
         return {};
 
-    auto maybe_identifier = value_id_from_string(ident.token().ident());
-    if (!maybe_identifier.has_value())
+    auto maybe_keyword = keyword_from_string(ident.token().ident());
+    if (!maybe_keyword.has_value())
         return {};
 
-    return value_id_to_rounding_strategy(maybe_identifier.value());
+    return keyword_to_rounding_strategy(maybe_keyword.value());
 }
 
 OwnPtr<CalculationNode> Parser::parse_math_function(PropertyID property_id, Function const& function)
 {
-    TokenStream stream { function.values() };
+    TokenStream stream { function.value };
     auto arguments = parse_a_comma_separated_list_of_component_values(stream);
 )~~~");
 
@@ -156,7 +129,7 @@ OwnPtr<CalculationNode> Parser::parse_math_function(PropertyID property_id, Func
         auto function_generator = generator.fork();
         function_generator.set("name:lowercase", name);
         function_generator.set("name:titlecase", title_casify(name));
-        function_generator.appendln("    if (function.name().equals_ignoring_ascii_case(\"@name:lowercase@\"sv)) {");
+        function_generator.appendln("    if (function.name.equals_ignoring_ascii_case(\"@name:lowercase@\"sv)) {");
         if (function_data.get_bool("is-variadic"sv).value_or(false)) {
             // Variadic function
             function_generator.append(R"~~~(
@@ -215,8 +188,8 @@ OwnPtr<CalculationNode> Parser::parse_math_function(PropertyID property_id, Func
                 if (parameter.get_bool("required"sv) == true)
                     min_argument_count++;
             });
-            function_generator.set("min_argument_count", MUST(String::number(min_argument_count)));
-            function_generator.set("max_argument_count", MUST(String::number(max_argument_count)));
+            function_generator.set("min_argument_count", String::number(min_argument_count));
+            function_generator.set("max_argument_count", String::number(max_argument_count));
 
             function_generator.append(R"~~~(
         if (arguments.size() < @min_argument_count@ || arguments.size() > @max_argument_count@) {
@@ -236,7 +209,7 @@ OwnPtr<CalculationNode> Parser::parse_math_function(PropertyID property_id, Func
 
                 auto parameter_generator = function_generator.fork();
                 parameter_generator.set("parameter_name", parameter.get_byte_string("name"sv).value());
-                parameter_generator.set("parameter_index", MUST(String::number(parameter_index)));
+                parameter_generator.set("parameter_index", String::number(parameter_index));
 
                 bool parameter_is_calculation;
                 if (parameter_type_string == "<rounding-strategy>") {
@@ -346,7 +319,7 @@ OwnPtr<CalculationNode> Parser::parse_math_function(PropertyID property_id, Func
                 auto parameter_type_string = parameter.get_byte_string("type"sv).value();
 
                 auto parameter_generator = function_generator.fork();
-                parameter_generator.set("parameter_index"sv, MUST(String::number(parameter_index)));
+                parameter_generator.set("parameter_index"sv, String::number(parameter_index));
 
                 if (parameter_type_string == "<rounding-strategy>"sv) {
                     parameter_generator.set("release_value"sv, ""_string);
@@ -377,4 +350,30 @@ OwnPtr<CalculationNode> Parser::parse_math_function(PropertyID property_id, Func
 
     TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
+}
+} // end anonymous namespace
+
+ErrorOr<int> serenity_main(Main::Arguments arguments)
+{
+    StringView generated_header_path;
+    StringView generated_implementation_path;
+    StringView json_path;
+
+    Core::ArgsParser args_parser;
+    args_parser.add_option(generated_header_path, "Path to the MathFunctions header file to generate", "generated-header-path", 'h', "generated-header-path");
+    args_parser.add_option(generated_implementation_path, "Path to the MathFunctions implementation file to generate", "generated-implementation-path", 'c', "generated-implementation-path");
+    args_parser.add_option(json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
+    args_parser.parse(arguments);
+
+    auto json = TRY(read_entire_file_as_json(json_path));
+    VERIFY(json.is_object());
+    auto math_functions_data = json.as_object();
+
+    auto generated_header_file = TRY(Core::File::open(generated_header_path, Core::File::OpenMode::Write));
+    auto generated_implementation_file = TRY(Core::File::open(generated_implementation_path, Core::File::OpenMode::Write));
+
+    TRY(generate_header_file(math_functions_data, *generated_header_file));
+    TRY(generate_implementation_file(math_functions_data, *generated_implementation_file));
+
+    return 0;
 }

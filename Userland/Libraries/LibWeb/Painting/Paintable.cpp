@@ -17,8 +17,6 @@ Paintable::Paintable(Layout::Node const& layout_node)
     , m_browsing_context(const_cast<HTML::BrowsingContext&>(layout_node.browsing_context()))
 {
     auto& computed_values = layout_node.computed_values();
-    m_visible = computed_values.visibility() == CSS::Visibility::Visible && computed_values.opacity() != 0;
-
     if (layout_node.is_grid_item() && computed_values.z_index().has_value()) {
         // https://www.w3.org/TR/css-grid-2/#z-order
         // grid items with z_index should behave as if position were "relative"
@@ -46,6 +44,12 @@ void Paintable::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_browsing_context);
     if (m_containing_block.has_value())
         visitor.visit(m_containing_block.value());
+}
+
+bool Paintable::is_visible() const
+{
+    auto const& computed_values = this->computed_values();
+    return computed_values.visibility() == CSS::Visibility::Visible && computed_values.opacity() != 0;
 }
 
 void Paintable::set_dom_node(JS::GCPtr<DOM::Node> dom_node)
@@ -168,6 +172,71 @@ CSSPixelPoint Paintable::box_type_agnostic_position() const
     }
 
     return position;
+}
+
+Gfx::AffineTransform Paintable::compute_combined_css_transform() const
+{
+    Gfx::AffineTransform combined_transform;
+    if (is_paintable_box()) {
+        auto const& paintable_box = static_cast<PaintableBox const&>(*this);
+        auto affine_transform = Gfx::extract_2d_affine_transform(paintable_box.transform());
+        combined_transform = combined_transform.multiply(affine_transform);
+    }
+    for (auto const* ancestor = this->containing_block(); ancestor; ancestor = ancestor->containing_block()) {
+        auto affine_transform = Gfx::extract_2d_affine_transform(ancestor->transform());
+        combined_transform = combined_transform.multiply(affine_transform);
+    }
+    return combined_transform;
+}
+
+Painting::BorderRadiiData normalize_border_radii_data(Layout::Node const& node, CSSPixelRect const& rect, CSS::BorderRadiusData const& top_left_radius, CSS::BorderRadiusData const& top_right_radius, CSS::BorderRadiusData const& bottom_right_radius, CSS::BorderRadiusData const& bottom_left_radius)
+{
+    Painting::BorderRadiusData bottom_left_radius_px {};
+    Painting::BorderRadiusData bottom_right_radius_px {};
+    Painting::BorderRadiusData top_left_radius_px {};
+    Painting::BorderRadiusData top_right_radius_px {};
+
+    bottom_left_radius_px.horizontal_radius = bottom_left_radius.horizontal_radius.to_px(node, rect.width());
+    bottom_right_radius_px.horizontal_radius = bottom_right_radius.horizontal_radius.to_px(node, rect.width());
+    top_left_radius_px.horizontal_radius = top_left_radius.horizontal_radius.to_px(node, rect.width());
+    top_right_radius_px.horizontal_radius = top_right_radius.horizontal_radius.to_px(node, rect.width());
+
+    bottom_left_radius_px.vertical_radius = bottom_left_radius.vertical_radius.to_px(node, rect.height());
+    bottom_right_radius_px.vertical_radius = bottom_right_radius.vertical_radius.to_px(node, rect.height());
+    top_left_radius_px.vertical_radius = top_left_radius.vertical_radius.to_px(node, rect.height());
+    top_right_radius_px.vertical_radius = top_right_radius.vertical_radius.to_px(node, rect.height());
+
+    // Scale overlapping curves according to https://www.w3.org/TR/css-backgrounds-3/#corner-overlap
+    // Let f = min(Li/Si), where i ∈ {top, right, bottom, left},
+    // Si is the sum of the two corresponding radii of the corners on side i,
+    // and Ltop = Lbottom = the width of the box, and Lleft = Lright = the height of the box.
+    auto l_top = rect.width();
+    auto l_bottom = l_top;
+    auto l_left = rect.height();
+    auto l_right = l_left;
+    auto s_top = (top_left_radius_px.horizontal_radius + top_right_radius_px.horizontal_radius);
+    auto s_right = (top_right_radius_px.vertical_radius + bottom_right_radius_px.vertical_radius);
+    auto s_bottom = (bottom_left_radius_px.horizontal_radius + bottom_right_radius_px.horizontal_radius);
+    auto s_left = (top_left_radius_px.vertical_radius + bottom_left_radius_px.vertical_radius);
+    CSSPixelFraction f = 1;
+    f = (s_top != 0) ? min(f, l_top / s_top) : f;
+    f = (s_right != 0) ? min(f, l_right / s_right) : f;
+    f = (s_bottom != 0) ? min(f, l_bottom / s_bottom) : f;
+    f = (s_left != 0) ? min(f, l_left / s_left) : f;
+
+    // If f < 1, then all corner radii are reduced by multiplying them by f.
+    if (f < 1) {
+        top_left_radius_px.horizontal_radius *= f;
+        top_left_radius_px.vertical_radius *= f;
+        top_right_radius_px.horizontal_radius *= f;
+        top_right_radius_px.vertical_radius *= f;
+        bottom_right_radius_px.horizontal_radius *= f;
+        bottom_right_radius_px.vertical_radius *= f;
+        bottom_left_radius_px.horizontal_radius *= f;
+        bottom_left_radius_px.vertical_radius *= f;
+    }
+
+    return Painting::BorderRadiiData { top_left_radius_px, top_right_radius_px, bottom_right_radius_px, bottom_left_radius_px };
 }
 
 }

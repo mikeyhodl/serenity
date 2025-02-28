@@ -11,7 +11,8 @@
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/EthernetFrameHeader.h>
-#include <Kernel/Net/IPv4.h>
+#include <Kernel/Net/IP/IP.h>
+#include <Kernel/Net/IP/IPv4.h>
 #include <Kernel/Net/NetworkAdapter.h>
 #include <Kernel/Net/NetworkingManagement.h>
 #include <Kernel/Net/Routing.h>
@@ -157,7 +158,7 @@ ErrorOr<NonnullRefPtr<TCPSocket>> TCPSocket::try_create_client(IPv4Address const
         client->set_local_port(new_local_port);
         client->set_peer_address(new_peer_address);
         client->set_peer_port(new_peer_port);
-        client->set_bound(true);
+        client->set_bound();
         client->set_direction(Direction::Incoming);
         client->set_originator(*this);
 
@@ -275,7 +276,7 @@ ErrorOr<void> TCPSocket::send_tcp_packet(u16 flags, UserOrKernelBuffer const* pa
     if (!packet)
         return set_so_error(ENOMEM);
     routing_decision.adapter->fill_in_ipv4_header(*packet, local_address(),
-        routing_decision.next_hop, peer_address(), IPv4Protocol::TCP,
+        routing_decision.next_hop, peer_address(), TransportProtocol::TCP,
         buffer_size - ipv4_payload_offset, type_of_service(), ttl());
     memset(packet->buffer->data() + ipv4_payload_offset, 0, sizeof(TCPPacket));
     auto& tcp_packet = *(TCPPacket*)(packet->buffer->data() + ipv4_payload_offset);
@@ -431,7 +432,7 @@ NetworkOrdered<u16> TCPSocket::compute_tcp_checksum(IPv4Address const& source, I
     packet_size += payload_size;
     VERIFY(!packet_size.has_overflow());
 
-    PseudoHeader pseudo_header { .header = { source, destination, 0, (u8)IPv4Protocol::TCP, packet_size.value() } };
+    PseudoHeader pseudo_header { .header = { source, destination, 0, (u8)TransportProtocol::TCP, packet_size.value() } };
 
     u32 checksum = 0;
     auto* raw_pseudo_header = pseudo_header.raw;
@@ -733,7 +734,7 @@ void TCPSocket::retransmit_packets()
             packet.tx_counter++;
 
             if constexpr (TCP_SOCKET_DEBUG) {
-                auto& tcp_packet = *(const TCPPacket*)(packet.buffer->buffer->data() + packet.ipv4_payload_offset);
+                auto& tcp_packet = *(TCPPacket const*)(packet.buffer->buffer->data() + packet.ipv4_payload_offset);
                 dbgln("Sending TCP packet from {}:{} to {}:{} with ({}{}{}{}) seq_no={}, ack_no={}, tx_counter={}",
                     local_address(), local_port(),
                     peer_address(), peer_port(),
@@ -758,7 +759,7 @@ void TCPSocket::retransmit_packets()
 
             routing_decision.adapter->fill_in_ipv4_header(*packet.buffer,
                 local_address(), routing_decision.next_hop, peer_address(),
-                IPv4Protocol::TCP, packet_buffer.size() - ipv4_payload_offset, type_of_service(), ttl());
+                TransportProtocol::TCP, packet_buffer.size() - ipv4_payload_offset, type_of_service(), ttl());
             routing_decision.adapter->send_packet(packet_buffer);
             m_packets_out++;
             m_bytes_out += packet_buffer.size();

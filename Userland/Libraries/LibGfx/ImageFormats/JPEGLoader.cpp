@@ -889,24 +889,14 @@ static inline bool is_supported_marker(Marker const marker)
     return false;
 }
 
-static inline ErrorOr<Marker> read_marker_at_cursor(JPEGStream& stream)
+static inline ErrorOr<Marker> read_until_marker(JPEGStream& stream)
 {
     u16 marker = TRY(stream.read_u16());
 
-    if (marker == 0xFFFF) {
-        u8 next { 0xFF };
+    while (!is_supported_marker(marker))
+        marker = marker << 8 | TRY(stream.read_u8());
 
-        while (next == 0xFF)
-            next = TRY(stream.read_u8());
-
-        marker = 0xFF00 | next;
-    }
-
-    if (is_supported_marker(marker))
-        return marker;
-
-    dbgln_if(JPEG_DEBUG, "Unsupported marker: {:#04x} around offset {:#x}", marker, stream.byte_offset());
-    return Error::from_string_literal("Reached an unsupported marker");
+    return marker;
 }
 
 static ErrorOr<u16> read_effective_chunk_size(JPEGStream& stream)
@@ -965,7 +955,7 @@ static ErrorOr<void> read_start_of_scan(JPEGStream& stream, JPEGLoadingContext& 
         StringBuilder builder;
         TRY(builder.try_append("Components in scan: "sv));
         for (auto const& scan_component : current_scan.components) {
-            TRY(builder.try_append(TRY(String::number(scan_component.component.id))));
+            TRY(builder.try_append(String::number(scan_component.component.id)));
             TRY(builder.try_append(' '));
         }
         dbgln(builder.string_view());
@@ -1331,6 +1321,11 @@ static ErrorOr<void> read_start_of_frame(JPEGStream& stream, JPEGLoadingContext&
 
         dbgln_if(JPEG_DEBUG, "Component subsampling: {}, {}", component.sampling_factors.horizontal, component.sampling_factors.vertical);
 
+        if (component.sampling_factors.horizontal == 0 || component.sampling_factors.horizontal > 4
+            || component.sampling_factors.vertical == 0 || component.sampling_factors.vertical > 4) {
+            return Error::from_string_literal("Invalid subsampling factor values");
+        }
+
         if (i == 0) {
             // By convention, downsampling is applied only on chroma components. So we should
             //  hope to see the maximum sampling factor in the luma component.
@@ -1432,6 +1427,8 @@ static void dequantize(JPEGLoadingContext& context, Vector<Macroblock>& macroblo
 
 static void inverse_dct_8x8(i16* block_component)
 {
+    // Does a 2-D IDCT by doing two 1-D IDCTs as described in https://unix4lyfe.org/dct/
+    // The 1-D DCT idea is described at https://unix4lyfe.org/dct-1d/, read aan.cc from bottom to top.
     static float const m0 = 2.0f * AK::cos(1.0f / 16.0f * 2.0f * AK::Pi<float>);
     static float const m1 = 2.0f * AK::cos(2.0f / 16.0f * 2.0f * AK::Pi<float>);
     static float const m3 = 2.0f * AK::cos(2.0f / 16.0f * 2.0f * AK::Pi<float>);
@@ -1874,13 +1871,13 @@ static ErrorOr<void> handle_miscellaneous_or_table(JPEGStream& stream, JPEGLoadi
 
 static ErrorOr<void> parse_header(JPEGStream& stream, JPEGLoadingContext& context)
 {
-    auto marker = TRY(read_marker_at_cursor(stream));
+    auto marker = TRY(read_until_marker(stream));
     if (marker != JPEG_SOI) {
         dbgln_if(JPEG_DEBUG, "SOI not found: {:x}!", marker);
         return Error::from_string_literal("SOI not found");
     }
     for (;;) {
-        marker = TRY(read_marker_at_cursor(stream));
+        marker = TRY(read_until_marker(stream));
 
         if (is_miscellaneous_or_table_marker(marker)) {
             TRY(handle_miscellaneous_or_table(stream, context, marker));
@@ -1948,7 +1945,7 @@ static ErrorOr<Vector<Macroblock>> construct_macroblocks(JPEGLoadingContext& con
     Vector<Macroblock> macroblocks;
     TRY(macroblocks.try_resize(context.mblock_meta.padded_total));
 
-    Marker marker = TRY(read_marker_at_cursor(context.stream));
+    Marker marker = TRY(read_until_marker(context.stream));
     while (true) {
         if (is_miscellaneous_or_table_marker(marker)) {
             TRY(handle_miscellaneous_or_table(context.stream, context, marker));
@@ -1962,7 +1959,7 @@ static ErrorOr<Vector<Macroblock>> construct_macroblocks(JPEGLoadingContext& con
             return Error::from_string_literal("Unexpected marker");
         }
 
-        marker = TRY(read_marker_at_cursor(context.stream));
+        marker = TRY(read_until_marker(context.stream));
     }
 }
 

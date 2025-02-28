@@ -31,10 +31,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-namespace {
-constexpr u32 ctrl(char c) { return c & 0x3f; }
-}
-
 namespace Line {
 
 Configuration Configuration::from_config(StringView libname)
@@ -387,7 +383,13 @@ void Editor::insert(ByteString const& string)
 
 void Editor::insert(StringView string_view)
 {
-    for (auto ch : Utf8View { string_view })
+    auto view = Utf8View { string_view };
+    insert(view);
+}
+
+void Editor::insert(Utf8View& view)
+{
+    for (auto ch : view)
         insert(ch);
 }
 
@@ -690,6 +692,9 @@ ErrorOr<void> Editor::resized()
 
 ErrorOr<void> Editor::handle_resize_event(bool reset_origin)
 {
+    if (!m_initialized || !m_is_editing)
+        return {};
+
     m_has_origin_reset_scheduled = false;
     if (reset_origin && !set_origin(false)) {
         m_has_origin_reset_scheduled = true;
@@ -843,6 +848,9 @@ ErrorOr<void> Editor::try_update_once()
 
 void Editor::handle_interrupt_event()
 {
+    if (!m_initialized || !m_is_editing)
+        return;
+
     m_was_interrupted = false;
     m_previous_interrupt_was_handled_as_interrupt = false;
 
@@ -1209,7 +1217,7 @@ ErrorOr<void> Editor::handle_read_event()
             m_chars_touched_in_the_middle++;
 
             for (auto& view : completion_result.insert)
-                insert(view.as_string());
+                insert(view);
 
             auto stderr_stream = TRY(Core::File::standard_error());
             TRY(reposition_cursor(*stderr_stream));
@@ -1384,8 +1392,7 @@ ErrorOr<void> Editor::refresh_display()
             if (output_stream.used_buffer_size() == 0)
                 return;
 
-            auto buffer = ByteBuffer::create_uninitialized(output_stream.used_buffer_size()).release_value_but_fixme_should_propagate_errors();
-            output_stream.read_until_filled(buffer).release_value_but_fixme_should_propagate_errors();
+            auto buffer = output_stream.read_until_eof().release_value_but_fixme_should_propagate_errors();
             fwrite(buffer.data(), sizeof(char), buffer.size(), stderr);
         }
     };
@@ -1646,7 +1653,7 @@ ErrorOr<void> Editor::reposition_cursor(Stream& stream, bool to_end)
 
 ErrorOr<void> VT::move_absolute(u32 row, u32 col, Stream& stream)
 {
-    return stream.write_until_depleted(ByteString::formatted("\033[{};{}H", row, col).bytes());
+    return stream.write_until_depleted(ByteString::formatted("\033[{};{}H", row, col));
 }
 
 ErrorOr<void> VT::move_relative(int row, int col, Stream& stream)
@@ -1663,9 +1670,9 @@ ErrorOr<void> VT::move_relative(int row, int col, Stream& stream)
         col = -col;
 
     if (row > 0)
-        TRY(stream.write_until_depleted(ByteString::formatted("\033[{}{}", row, x_op).bytes()));
+        TRY(stream.write_until_depleted(ByteString::formatted("\033[{}{}", row, x_op)));
     if (col > 0)
-        TRY(stream.write_until_depleted(ByteString::formatted("\033[{}{}", col, y_op).bytes()));
+        TRY(stream.write_until_depleted(ByteString::formatted("\033[{}{}", col, y_op)));
 
     return {};
 }
@@ -1812,10 +1819,9 @@ ErrorOr<void> VT::apply_style(Style const& style, Stream& stream, bool is_starti
             style.italic() ? 3 : 23,
             style.background().to_vt_escape(),
             style.foreground().to_vt_escape(),
-            style.hyperlink().to_vt_escape(true))
-                                            .bytes()));
+            style.hyperlink().to_vt_escape(true))));
     } else {
-        TRY(stream.write_until_depleted(style.hyperlink().to_vt_escape(false).bytes()));
+        TRY(stream.write_until_depleted(style.hyperlink().to_vt_escape(false)));
     }
 
     return {};
@@ -1824,16 +1830,16 @@ ErrorOr<void> VT::apply_style(Style const& style, Stream& stream, bool is_starti
 ErrorOr<void> VT::clear_lines(size_t count_above, size_t count_below, Stream& stream)
 {
     if (count_below + count_above == 0) {
-        TRY(stream.write_until_depleted("\033[2K"sv.bytes()));
+        TRY(stream.write_until_depleted("\033[2K"sv));
     } else {
         // Go down count_below lines.
         if (count_below > 0)
-            TRY(stream.write_until_depleted(ByteString::formatted("\033[{}B", count_below).bytes()));
+            TRY(stream.write_until_depleted(ByteString::formatted("\033[{}B", count_below)));
         // Then clear lines going upwards.
         for (size_t i = count_below + count_above; i > 0; --i) {
-            TRY(stream.write_until_depleted("\033[2K"sv.bytes()));
+            TRY(stream.write_until_depleted("\033[2K"sv));
             if (i != 1)
-                TRY(stream.write_until_depleted("\033[A"sv.bytes()));
+                TRY(stream.write_until_depleted("\033[A"sv));
         }
     }
 
@@ -1842,17 +1848,17 @@ ErrorOr<void> VT::clear_lines(size_t count_above, size_t count_below, Stream& st
 
 ErrorOr<void> VT::save_cursor(Stream& stream)
 {
-    return stream.write_until_depleted("\033[s"sv.bytes());
+    return stream.write_until_depleted("\033[s"sv);
 }
 
 ErrorOr<void> VT::restore_cursor(Stream& stream)
 {
-    return stream.write_until_depleted("\033[u"sv.bytes());
+    return stream.write_until_depleted("\033[u"sv);
 }
 
 ErrorOr<void> VT::clear_to_end_of_line(Stream& stream)
 {
-    return stream.write_until_depleted("\033[K"sv.bytes());
+    return stream.write_until_depleted("\033[K"sv);
 }
 
 enum VTState {
@@ -2106,7 +2112,7 @@ Result<Vector<size_t, 2>, Editor::Error> Editor::vt_dsr()
     if (m_input_error.has_value())
         return m_input_error.value();
 
-    fputs("\033[6n", stderr);
+    fputs("\033[6n\n", stderr);
     fflush(stderr);
 
     // Parse the DSR response

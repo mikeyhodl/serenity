@@ -8,14 +8,13 @@ project(ladybird
 
 include(GNUInstallDirs)
 
-if (ANDROID OR IOS)
+if (IOS)
     set(BUILD_SHARED_LIBS OFF)
 endif()
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
+# FIXME: The rpath steps from lagom_install_rules.cmake do not produce a working binary
+#        in the build directory on macOS.
+#        We need to copy the libs into the build directory bundle as the install rules do.
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
 # See slide 100 of the following ppt :^)
@@ -56,15 +55,12 @@ if (HAIKU)
 endif()
 
 # Lagom
-# FIXME: PROJECT_IS_TOP_LEVEL with CMake 3.21+
-set(LADYBIRD_IS_TOP_LEVEL FALSE)
 set(LADYBIRD_CUSTOM_TARGET_SUFFIX "-ladybird")
-if ("${CMAKE_BINARY_DIR}" STREQUAL "${PROJECT_BINARY_DIR}")
-    set(LADYBIRD_IS_TOP_LEVEL TRUE)
+if (PROJECT_IS_TOP_LEVEL)
     set(LADYBIRD_CUSTOM_TARGET_SUFFIX "")
 endif()
 
-if (LADYBIRD_IS_TOP_LEVEL)
+if (PROJECT_IS_TOP_LEVEL)
     get_filename_component(
         SERENITY_SOURCE_DIR "${ladybird_SOURCE_DIR}/.."
         ABSOLUTE
@@ -83,15 +79,10 @@ add_compile_options(-DAK_DONT_REPLACE_STD)
 add_compile_options(-Wno-expansion-to-defined)
 add_compile_options(-Wno-user-defined-literals)
 
-if (ANDROID OR APPLE)
+if (APPLE)
     serenity_option(ENABLE_QT OFF CACHE BOOL "Build ladybird application using Qt GUI")
 else()
     serenity_option(ENABLE_QT ON CACHE BOOL "Build ladybird application using Qt GUI")
-endif()
-
-if (ANDROID AND ENABLE_QT)
-    message(STATUS "Disabling Qt for Android")
-    set(ENABLE_QT OFF CACHE BOOL "" FORCE)
 endif()
 
 if (ENABLE_QT)
@@ -114,16 +105,20 @@ set(LADYBIRD_HEADERS
 if (ENABLE_QT)
     qt_add_executable(ladybird ${SOURCES})
     target_sources(ladybird PRIVATE
+        Qt/Application.cpp
         Qt/AutoComplete.cpp
         Qt/BrowserWindow.cpp
         Qt/EventLoopImplementationQt.cpp
         Qt/EventLoopImplementationQtEventTarget.cpp
+        Qt/FindInPageWidget.cpp
         Qt/Icon.cpp
         Qt/InspectorWidget.cpp
         Qt/LocationEdit.cpp
         Qt/Settings.cpp
         Qt/SettingsDialog.cpp
         Qt/Tab.cpp
+        Qt/TabBar.cpp
+        Qt/TaskManagerWindow.cpp
         Qt/TVGIconEngine.cpp
         Qt/StringUtils.cpp
         Qt/WebContentView.cpp
@@ -136,6 +131,7 @@ elseif (APPLE)
         ${SOURCES}
         AppKit/main.mm
         AppKit/Application/Application.mm
+        AppKit/Application/ApplicationBridge.cpp
         AppKit/Application/ApplicationDelegate.mm
         AppKit/Application/EventLoopImplementation.mm
         AppKit/UI/Event.mm
@@ -144,8 +140,11 @@ elseif (APPLE)
         AppKit/UI/LadybirdWebView.mm
         AppKit/UI/LadybirdWebViewBridge.cpp
         AppKit/UI/Palette.mm
+        AppKit/UI/SearchPanel.mm
         AppKit/UI/Tab.mm
         AppKit/UI/TabController.mm
+        AppKit/UI/TaskManager.mm
+        AppKit/UI/TaskManagerController.mm
         AppKit/Utilities/Conversions.mm
     )
     target_include_directories(ladybird PRIVATE AppKit)
@@ -154,28 +153,22 @@ elseif (APPLE)
         -fobjc-arc
         -Wno-deprecated-anon-enum-enum-conversion # Required for CGImageCreate
     )
-elseif(ANDROID)
-    add_library(ladybird SHARED
-        ${SOURCES}
-        Android/src/main/cpp/LadybirdActivity.cpp
-        Android/src/main/cpp/WebViewImplementationNative.cpp
-        Android/src/main/cpp/WebViewImplementationNativeJNI.cpp
-        Android/src/main/cpp/ALooperEventLoopImplementation.cpp
-        Android/src/main/cpp/TimerExecutorService.cpp
-        Android/src/main/cpp/JNIHelpers.cpp
-    )
-    target_link_libraries(ladybird PRIVATE LibArchive jnigraphics android)
 else()
     # TODO: Check for other GUI frameworks here when we move them in-tree
     #       For now, we can export a static library of common files for chromes to link to
     add_library(ladybird STATIC ${SOURCES})
 endif()
 
+if (APPLE)
+    target_sources(ladybird PRIVATE MachPortServer.cpp)
+    target_link_libraries(ladybird PRIVATE LibThreading)
+endif()
+
 target_sources(ladybird PUBLIC FILE_SET ladybird TYPE HEADERS
     BASE_DIRS ${SERENITY_SOURCE_DIR}
     FILES ${LADYBIRD_HEADERS}
 )
-target_link_libraries(ladybird PRIVATE AK LibCore LibFileSystem LibGfx LibImageDecoderClient LibIPC LibJS LibMain LibWeb LibWebView LibProtocol LibURL)
+target_link_libraries(ladybird PRIVATE AK LibCore LibFileSystem LibGfx LibImageDecoderClient LibIPC LibJS LibMain LibSQL LibWeb LibWebView LibProtocol LibURL)
 
 target_include_directories(ladybird PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(ladybird PRIVATE ${SERENITY_SOURCE_DIR}/Userland/)
@@ -204,11 +197,7 @@ add_executable(headless-browser
 
 target_include_directories(headless-browser PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(headless-browser PRIVATE ${SERENITY_SOURCE_DIR}/Userland/)
-target_link_libraries(headless-browser PRIVATE AK LibCore LibWeb LibWebView LibWebSocket LibCrypto LibFileSystem LibGemini LibHTTP LibImageDecoderClient LibJS LibGfx LibMain LibTLS LibIPC LibDiff LibProtocol LibURL)
-
-if (ANDROID)
-    include(cmake/AndroidExtras.cmake)
-endif()
+target_link_libraries(headless-browser PRIVATE AK LibCore LibWeb LibWebView LibWebSocket LibCrypto LibFileSystem LibGemini LibHTTP LibImageDecoderClient LibJS LibGfx LibMain LibSQL LibTLS LibIPC LibDiff LibProtocol LibURL)
 
 add_custom_target(run${LADYBIRD_CUSTOM_TARGET_SUFFIX}
     COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SERENITY_SOURCE_DIR}" "$<TARGET_FILE:ladybird>" $ENV{LAGOM_ARGS}

@@ -992,8 +992,7 @@ void MainWidget::update_preview()
 
 void MainWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -1010,7 +1009,7 @@ void MainWidget::drop_event(GUI::DropEvent& event)
         if (!request_close())
             return;
 
-        auto file_path = urls.first().serialize_path();
+        auto file_path = URL::percent_decode(urls.first().serialize_path());
         auto result = FileSystemAccessClient::Client::the().request_file_read_only_approved(window(), file_path);
         if (result.is_error())
             return;

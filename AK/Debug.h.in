@@ -78,6 +78,14 @@
 #    cmakedefine01 CSS_TOKENIZER_DEBUG
 #endif
 
+#ifndef CSS_TRANSITIONS_DEBUG
+#    cmakedefine01 CSS_TRANSITIONS_DEBUG
+#endif
+
+#ifndef DEVICETREE_DEBUG
+#    cmakedefine01 DEVICETREE_DEBUG
+#endif
+
 #ifndef DDS_DEBUG
 #    cmakedefine01 DDS_DEBUG
 #endif
@@ -246,6 +254,10 @@
 #    cmakedefine01 JPEG_DEBUG
 #endif
 
+#ifndef JPEG2000_DEBUG
+#    cmakedefine01 JPEG2000_DEBUG
+#endif
+
 #ifndef JS_BYTECODE_DEBUG
 #    cmakedefine01 JS_BYTECODE_DEBUG
 #endif
@@ -292,6 +304,10 @@
 
 #ifndef LZW_DEBUG
 #    cmakedefine01 LZW_DEBUG
+#endif
+
+#ifndef MACH_PORT_DEBUG
+#    cmakedefine01 MACH_PORT_DEBUG
 #endif
 
 #ifndef MALLOC_DEBUG
@@ -440,6 +456,10 @@
 
 #ifndef SQLSERVER_DEBUG
 #    cmakedefine01 SQLSERVER_DEBUG
+#endif
+
+#ifndef STYLE_INVALIDATION_DEBUG
+#    cmakedefine01 STYLE_INVALIDATION_DEBUG
 #endif
 
 #ifndef SYNTAX_HIGHLIGHTING_DEBUG

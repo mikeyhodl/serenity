@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGStopElementPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/StyleProperties.h>
 #include <LibWeb/SVG/AttributeNames.h>
@@ -20,9 +21,9 @@ SVGStopElement::SVGStopElement(DOM::Document& document, DOM::QualifiedName quali
 {
 }
 
-void SVGStopElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void SVGStopElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGElement::attribute_changed(name, value);
+    SVGElement::attribute_changed(name, old_value, value);
     if (name == SVG::AttributeNames::offset) {
         m_offset = AttributeParser::parse_number_percentage(value.value_or(String {}));
     }

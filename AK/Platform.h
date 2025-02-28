@@ -7,6 +7,10 @@
 
 #pragma once
 
+#if __has_include(<features.h>)
+#    include <features.h>
+#endif
+
 #ifndef USING_AK_GLOBALLY
 #    define USING_AK_GLOBALLY 1
 #endif
@@ -51,6 +55,10 @@
 #    define AK_COMPILER_CLANG
 #elif defined(__GNUC__)
 #    define AK_COMPILER_GCC
+#endif
+
+#if defined(AK_COMPILER_CLANG) && defined(__apple_build_version__)
+#    define AK_COMPILER_APPLE_CLANG
 #endif
 
 #if defined(__GLIBC__)
@@ -111,20 +119,12 @@
 #    define AK_OS_GNU_HURD
 #endif
 
-#if defined(_WIN32) || defined(_WIN64)
-#    define AK_OS_WINDOWS
+#if defined(__MACH__)
+#    define AK_OS_MACH
 #endif
 
-#if defined(__ANDROID__)
-#    define STR(x) __STR(x)
-#    define __STR(x) #x
-#    if __ANDROID_API__ < 30
-#        pragma message "Invalid android API " STR(__ANDROID_API__)
-#        error "Build configuration not tested on configured Android API version"
-#    endif
-#    undef STR
-#    undef __STR
-#    define AK_OS_ANDROID
+#if defined(_WIN32) || defined(_WIN64)
+#    define AK_OS_WINDOWS
 #endif
 
 #if defined(__EMSCRIPTEN__)
@@ -151,15 +151,25 @@
 #    define VALIDATE_IS_RISCV64() static_assert(false, "Trying to include riscv64 only header on non riscv64 platform");
 #endif
 
-#if !defined(AK_COMPILER_CLANG)
-#    define AK_HAS_CONDITIONALLY_TRIVIAL
-#endif
-
 // Apple Clang 14.0.3 (shipped in Xcode 14.3) has a bug that causes __builtin_subc{,l,ll}
 // to incorrectly return whether a borrow occurred on AArch64. See our writeup for the Qemu
 // issue also caused by it: https://gitlab.com/qemu-project/qemu/-/issues/1659#note_1408275831
 #if ARCH(AARCH64) && defined(__apple_build_version__) && __clang_major__ == 14
 #    define AK_BUILTIN_SUBC_BROKEN
+#endif
+
+#if defined(AK_COMPILER_CLANG) && __clang_major__ < 19
+#    define AK_COROUTINE_DESTRUCTION_BROKEN
+#endif
+
+#ifdef AK_COMPILER_GCC
+// FIXME: Undefine once https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115851 is fixed.
+#    define AK_COROUTINE_STATEMENT_EXPRS_BROKEN
+#endif
+
+#if defined(AK_COMPILER_GCC) && __GNUC__ < 15
+// Workaround for https://gcc.gnu.org/bugzilla/show_bug.cgi?id=112341 . See AK/Coroutine.h for more details.
+#    define AK_COROUTINE_TYPE_DEDUCTION_BROKEN
 #endif
 
 #ifdef ALWAYS_INLINE
@@ -182,10 +192,23 @@
 #endif
 #define RETURNS_NONNULL __attribute__((returns_nonnull))
 
+#ifdef NO_SANITIZE_COVERAGE
+#    undef NO_SANITIZE_COVERAGE
+#endif
+#if defined(AK_COMPILER_CLANG)
+#    define NO_SANITIZE_COVERAGE __attribute__((no_sanitize("coverage")))
+#else
+#    define NO_SANITIZE_COVERAGE __attribute__((no_sanitize_coverage))
+#endif
+
 #ifdef NO_SANITIZE_ADDRESS
 #    undef NO_SANITIZE_ADDRESS
 #endif
-#define NO_SANITIZE_ADDRESS __attribute__((no_sanitize_address))
+#if defined(AK_COMPILER_CLANG)
+#    define NO_SANITIZE_ADDRESS __attribute__((no_sanitize("address")))
+#else
+#    define NO_SANITIZE_ADDRESS __attribute__((no_sanitize_address))
+#endif
 
 #ifdef NAKED
 #    undef NAKED
@@ -218,9 +241,13 @@
 #    define HAS_ADDRESS_SANITIZER
 #    define ASAN_POISON_MEMORY_REGION(addr, size) __asan_poison_memory_region(addr, size)
 #    define ASAN_UNPOISON_MEMORY_REGION(addr, size) __asan_unpoison_memory_region(addr, size)
+#    define LSAN_REGISTER_ROOT_REGION(base, size) __lsan_register_root_region(base, size)
+#    define LSAN_UNREGISTER_ROOT_REGION(base, size) __lsan_unregister_root_region(base, size)
 #else
 #    define ASAN_POISON_MEMORY_REGION(addr, size)
 #    define ASAN_UNPOISON_MEMORY_REGION(addr, size)
+#    define LSAN_REGISTER_ROOT_REGION(base, size)
+#    define LSAN_UNREGISTER_ROOT_REGION(base, size)
 #endif
 
 #ifndef AK_OS_SERENITY

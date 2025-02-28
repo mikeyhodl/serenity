@@ -14,12 +14,14 @@ set(FUZZER_TARGETS
     GIFLoader
     GzipDecompression
     GzipRoundtrip
+    HIDReportDescriptor
     HttpRequest
     ICCProfile
     ICOLoader
     ILBMLoader
     IMAPParser
     JBIG2Loader
+    JPEG2000Loader
     JPEGLoader
     Js
     JsonParser
@@ -88,18 +90,20 @@ set(FUZZER_DEPENDENCIES_Gemini LibGemini)
 set(FUZZER_DEPENDENCIES_GIFLoader LibGfx)
 set(FUZZER_DEPENDENCIES_GzipDecompression LibCompress)
 set(FUZZER_DEPENDENCIES_GzipRoundtrip LibCompress)
+set(FUZZER_DEPENDENCIES_HIDReportDescriptor LibHID)
 set(FUZZER_DEPENDENCIES_HttpRequest LibHTTP)
 set(FUZZER_DEPENDENCIES_ICCProfile LibGfx)
 set(FUZZER_DEPENDENCIES_ICOLoader LibGfx)
 set(FUZZER_DEPENDENCIES_ILBMLoader LibGfx)
 set(FUZZER_DEPENDENCIES_IMAPParser LibIMAP)
 set(FUZZER_DEPENDENCIES_JBIG2Loader LibGfx)
+set(FUZZER_DEPENDENCIES_JPEG2000Loader LibGfx)
 set(FUZZER_DEPENDENCIES_JPEGLoader LibGfx)
 set(FUZZER_DEPENDENCIES_Js LibJS)
 set(FUZZER_DEPENDENCIES_LzmaDecompression LibArchive LibCompress)
 set(FUZZER_DEPENDENCIES_LzmaRoundtrip LibCompress)
 set(FUZZER_DEPENDENCIES_Markdown LibMarkdown)
-set(FUZZER_DEPENDENCIES_MatroskaReader LibVideo)
+set(FUZZER_DEPENDENCIES_MatroskaReader LibMedia)
 set(FUZZER_DEPENDENCIES_MD5 LibCrypto)
 set(FUZZER_DEPENDENCIES_MP3Loader LibAudio)
 set(FUZZER_DEPENDENCIES_PAMLoader LibGfx)
@@ -131,7 +135,7 @@ set(FUZZER_DEPENDENCIES_TIFFLoader LibGfx)
 set(FUZZER_DEPENDENCIES_TTF LibGfx)
 set(FUZZER_DEPENDENCIES_TinyVGLoader LibGfx)
 set(FUZZER_DEPENDENCIES_URL LibURL)
-set(FUZZER_DEPENDENCIES_VP9Decoder LibVideo)
+set(FUZZER_DEPENDENCIES_VP9Decoder LibMedia)
 set(FUZZER_DEPENDENCIES_WasmParser LibWasm)
 set(FUZZER_DEPENDENCIES_WAVLoader LibAudio)
 set(FUZZER_DEPENDENCIES_WebPLoader LibGfx)

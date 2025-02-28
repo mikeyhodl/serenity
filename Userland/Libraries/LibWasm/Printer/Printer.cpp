@@ -28,7 +28,7 @@ Optional<OpCode> instruction_from_name(StringView name)
             Names::instructions_by_name.set(entry.value, entry.key);
     }
 
-    return Names::instructions_by_name.get(name);
+    return Names::instructions_by_name.get(name).copy();
 }
 
 void Printer::print_indent()
@@ -64,6 +64,8 @@ void Printer::print(Wasm::BlockType const& type)
 
 void Printer::print(Wasm::CodeSection const& section)
 {
+    if (section.functions().is_empty())
+        return;
     print_indent();
     print("(section code\n");
     {
@@ -97,6 +99,8 @@ void Printer::print(Wasm::CustomSection const& section)
 
 void Printer::print(Wasm::DataCountSection const& section)
 {
+    if (!section.count().has_value())
+        return;
     print_indent();
     print("(section data count\n");
     if (section.count().has_value()) {
@@ -110,6 +114,8 @@ void Printer::print(Wasm::DataCountSection const& section)
 
 void Printer::print(Wasm::DataSection const& section)
 {
+    if (section.data().is_empty())
+        return;
     print_indent();
     print("(section data\n");
     {
@@ -163,6 +169,8 @@ void Printer::print(Wasm::DataSection::Data const& data)
 
 void Printer::print(Wasm::ElementSection const& section)
 {
+    if (section.segments().is_empty())
+        return;
     print_indent();
     print("(section element\n");
     {
@@ -218,6 +226,8 @@ void Printer::print(Wasm::ElementSection::Element const& element)
 
 void Printer::print(Wasm::ExportSection const& section)
 {
+    if (section.entries().is_empty())
+        return;
     print_indent();
     print("(section export\n");
     {
@@ -282,6 +292,8 @@ void Printer::print(Wasm::CodeSection::Func const& func)
 
 void Printer::print(Wasm::FunctionSection const& section)
 {
+    if (section.types().is_empty())
+        return;
     print_indent();
     print("(section function\n");
     {
@@ -329,6 +341,8 @@ void Printer::print(Wasm::FunctionType const& type)
 
 void Printer::print(Wasm::GlobalSection const& section)
 {
+    if (section.entries().is_empty())
+        return;
     print_indent();
     print("(section global\n");
     {
@@ -384,6 +398,8 @@ void Printer::print(Wasm::GlobalType const& type)
 
 void Printer::print(Wasm::ImportSection const& section)
 {
+    if (section.imports().is_empty())
+        return;
     print_indent();
     print("(section import\n");
     {
@@ -493,6 +509,8 @@ void Printer::print(Wasm::Locals const& local)
 
 void Printer::print(Wasm::MemorySection const& section)
 {
+    if (section.memories().is_empty())
+        return;
     print_indent();
     print("(section memory\n");
     {
@@ -534,35 +552,20 @@ void Printer::print(Wasm::Module const& module)
     {
         TemporaryChange change { m_indent, m_indent + 1 };
         print("(module\n");
-        for (auto& section : module.sections())
-            section.visit([this](auto const& value) { print(value); });
-    }
-    print_indent();
-    print(")\n");
-}
-
-void Printer::print(Wasm::Module::Function const& func)
-{
-    print_indent();
-    print("(function\n");
-    {
-        TemporaryChange change { m_indent, m_indent + 1 };
-        {
-            print_indent();
-            print("(locals\n");
-            {
-                TemporaryChange change { m_indent, m_indent + 1 };
-                for (auto& locals : func.locals())
-                    print(locals);
-            }
-            print_indent();
-            print(")\n");
-        }
-        print_indent();
-        print("(body\n");
-        print(func.body());
-        print_indent();
-        print(")\n");
+        for (auto& custom_section : module.custom_sections())
+            print(custom_section);
+        print(module.type_section());
+        print(module.import_section());
+        print(module.function_section());
+        print(module.table_section());
+        print(module.memory_section());
+        print(module.global_section());
+        print(module.export_section());
+        print(module.start_section());
+        print(module.element_section());
+        print(module.code_section());
+        print(module.data_section());
+        print(module.data_count_section());
     }
     print_indent();
     print(")\n");
@@ -570,11 +573,13 @@ void Printer::print(Wasm::Module::Function const& func)
 
 void Printer::print(Wasm::StartSection const& section)
 {
+    if (!section.function().has_value())
+        return;
     print_indent();
     print("(section start\n");
     {
         TemporaryChange change { m_indent, m_indent + 1 };
-        print(section.function());
+        print(*section.function());
     }
     print_indent();
     print(")\n");
@@ -588,6 +593,8 @@ void Printer::print(Wasm::StartSection::StartFunction const& function)
 
 void Printer::print(Wasm::TableSection const& section)
 {
+    if (section.tables().is_empty())
+        return;
     print_indent();
     print("(section table\n");
     {
@@ -628,6 +635,8 @@ void Printer::print(Wasm::TableType const& type)
 
 void Printer::print(Wasm::TypeSection const& section)
 {
+    if (section.types().is_empty())
+        return;
     print_indent();
     print("(section type\n");
     {
@@ -645,24 +654,41 @@ void Printer::print(Wasm::ValueType const& type)
     print("(type {})\n", ValueType::kind_name(type.kind()));
 }
 
+void Printer::print(Wasm::Value const& value, Wasm::ValueType const& type)
+{
+    print_indent();
+    switch (type.kind()) {
+    case ValueType::I32:
+        print(ByteString::formatted("{}", value.to<i32>()));
+        break;
+    case ValueType::I64:
+        print(ByteString::formatted("{}", value.to<i64>()));
+        break;
+    case ValueType::F32:
+        print(ByteString::formatted("{}", value.to<f32>()));
+        break;
+    case ValueType::F64:
+        print(ByteString::formatted("{}", value.to<f64>()));
+        break;
+    case ValueType::V128:
+        print(ByteString::formatted("v128({:x})", value.value()));
+        break;
+    case ValueType::FunctionReference:
+    case ValueType::ExternReference:
+        print(ByteString::formatted("addr({})",
+            value.to<Reference>().ref().visit(
+                [](Wasm::Reference::Null const&) { return ByteString("null"); },
+                [](auto const& ref) { return ByteString::number(ref.address.value()); })));
+        break;
+    }
+    TemporaryChange<size_t> change { m_indent, 0 };
+}
+
 void Printer::print(Wasm::Value const& value)
 {
     print_indent();
-    print("{} ", value.value().visit([&]<typename T>(T const& value) {
-        if constexpr (IsSame<Wasm::Reference, T>) {
-            return ByteString::formatted(
-                "addr({})",
-                value.ref().visit(
-                    [](Wasm::Reference::Null const&) { return ByteString("null"); },
-                    [](auto const& ref) { return ByteString::number(ref.address.value()); }));
-        } else if constexpr (IsSame<u128, T>) {
-            return ByteString::formatted("v128({:x})", value);
-        } else {
-            return ByteString::formatted("{}", value);
-        }
-    }));
+    print("{:x}", value.value());
     TemporaryChange<size_t> change { m_indent, 0 };
-    print(value.type());
 }
 
 void Printer::print(Wasm::Reference const& value)

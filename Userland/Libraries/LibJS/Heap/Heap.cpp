@@ -10,6 +10,7 @@
 #include <AK/HashTable.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
+#include <AK/Platform.h>
 #include <AK/StackInfo.h>
 #include <AK/TemporaryChange.h>
 #include <LibCore/ElapsedTimer.h>
@@ -49,11 +50,7 @@ Heap::Heap(VM& vm)
     gc_perf_string_id = perf_register_string(gc_signpost_string.characters_without_null_termination(), gc_signpost_string.length());
 #endif
 
-    if constexpr (HeapBlock::min_possible_cell_size <= 16) {
-        m_size_based_cell_allocators.append(make<CellAllocator>(16));
-    }
-    static_assert(HeapBlock::min_possible_cell_size <= 24, "Heap Cell tracking uses too much data!");
-    m_size_based_cell_allocators.append(make<CellAllocator>(32));
+    static_assert(HeapBlock::min_possible_cell_size <= 32, "Heap Cell tracking uses too much data!");
     m_size_based_cell_allocators.append(make<CellAllocator>(64));
     m_size_based_cell_allocators.append(make<CellAllocator>(96));
     m_size_based_cell_allocators.append(make<CellAllocator>(128));
@@ -111,11 +108,10 @@ void Heap::find_min_and_max_block_addresses(FlatPtr& min_address, FlatPtr& max_a
 {
     min_address = explode_byte(0xff);
     max_address = 0;
-    for_each_block([&](auto& block) {
-        min_address = min(min_address, reinterpret_cast<FlatPtr>(&block));
-        max_address = max(max_address, reinterpret_cast<FlatPtr>(&block) + HeapBlockBase::block_size);
-        return IterationDecision::Continue;
-    });
+    for (auto& allocator : m_all_cell_allocators) {
+        min_address = min(min_address, allocator.min_block_address());
+        max_address = max(max_address, allocator.max_block_address() + HeapBlockBase::block_size);
+    }
 }
 
 template<typename Callback>
@@ -143,12 +139,14 @@ public:
             m_all_live_heap_blocks.set(&block);
             return IterationDecision::Continue;
         });
+        m_work_queue.ensure_capacity(roots.size());
 
-        for (auto* root : roots.keys()) {
-            visit(root);
-            auto& graph_node = m_graph.ensure(reinterpret_cast<FlatPtr>(root));
+        for (auto& [root, root_origin] : roots) {
+            auto& graph_node = m_graph.ensure(bit_cast<FlatPtr>(root));
             graph_node.class_name = root->class_name();
-            graph_node.root_origin = *roots.get(root);
+            graph_node.root_origin = root_origin;
+
+            m_work_queue.append(*root);
         }
     }
 
@@ -173,7 +171,7 @@ public:
 
         for_each_cell_among_possible_pointers(m_all_live_heap_blocks, possible_pointers, [&](Cell* cell, FlatPtr) {
             if (m_node_being_visited)
-                m_node_being_visited->edges.set(reinterpret_cast<FlatPtr>(&cell));
+                m_node_being_visited->edges.set(reinterpret_cast<FlatPtr>(cell));
 
             if (m_graph.get(reinterpret_cast<FlatPtr>(&cell)).has_value())
                 return;
@@ -184,10 +182,10 @@ public:
     void visit_all_cells()
     {
         while (!m_work_queue.is_empty()) {
-            auto ptr = reinterpret_cast<FlatPtr>(&m_work_queue.last());
-            m_node_being_visited = &m_graph.ensure(ptr);
-            m_node_being_visited->class_name = m_work_queue.last().class_name();
-            m_work_queue.take_last().visit_edges(*this);
+            auto cell = m_work_queue.take_last();
+            m_node_being_visited = &m_graph.ensure(bit_cast<FlatPtr>(cell.ptr()));
+            m_node_being_visited->class_name = cell->class_name();
+            cell->visit_edges(*this);
             m_node_being_visited = nullptr;
         }
     }
@@ -244,7 +242,7 @@ private:
     };
 
     GraphNode* m_node_being_visited { nullptr };
-    Vector<Cell&> m_work_queue;
+    Vector<NonnullGCPtr<Cell>> m_work_queue;
     HashMap<FlatPtr, GraphNode> m_graph;
 
     Heap& m_heap;
@@ -258,7 +256,6 @@ AK::JsonObject Heap::dump_graph()
     HashMap<Cell*, HeapRoot> roots;
     gather_roots(roots);
     GraphConstructorVisitor visitor(*this, roots);
-    vm().bytecode_interpreter().visit_edges(visitor);
     visitor.visit_all_cells();
     return visitor.dump();
 }
@@ -309,7 +306,7 @@ void Heap::gather_roots(HashMap<Cell*, HeapRoot>& roots)
 }
 
 #ifdef HAS_ADDRESS_SANITIZER
-__attribute__((no_sanitize("address"))) void Heap::gather_asan_fake_stack_roots(HashMap<FlatPtr, HeapRoot>& possible_pointers, FlatPtr addr, FlatPtr min_block_address, FlatPtr max_block_address)
+NO_SANITIZE_ADDRESS void Heap::gather_asan_fake_stack_roots(HashMap<FlatPtr, HeapRoot>& possible_pointers, FlatPtr addr, FlatPtr min_block_address, FlatPtr max_block_address)
 {
     void* begin = nullptr;
     void* end = nullptr;
@@ -330,13 +327,13 @@ void Heap::gather_asan_fake_stack_roots(HashMap<FlatPtr, HeapRoot>&, FlatPtr, Fl
 }
 #endif
 
-__attribute__((no_sanitize("address"))) void Heap::gather_conservative_roots(HashMap<Cell*, HeapRoot>& roots)
+NO_SANITIZE_ADDRESS void Heap::gather_conservative_roots(HashMap<Cell*, HeapRoot>& roots)
 {
     FlatPtr dummy;
 
     dbgln_if(HEAP_DEBUG, "gather_conservative_roots:");
 
-    jmp_buf buf;
+    jmp_buf buf {};
     setjmp(buf);
 
     HashMap<FlatPtr, HeapRoot> possible_pointers;
@@ -438,13 +435,13 @@ public:
     void mark_all_live_cells()
     {
         while (!m_work_queue.is_empty()) {
-            m_work_queue.take_last().visit_edges(*this);
+            m_work_queue.take_last()->visit_edges(*this);
         }
     }
 
 private:
     Heap& m_heap;
-    Vector<Cell&> m_work_queue;
+    Vector<NonnullGCPtr<Cell>> m_work_queue;
     HashTable<HeapBlock*> m_all_live_heap_blocks;
     FlatPtr m_min_block_address;
     FlatPtr m_max_block_address;
@@ -455,8 +452,6 @@ void Heap::mark_live_cells(HashMap<Cell*, HeapRoot> const& roots)
     dbgln_if(HEAP_DEBUG, "mark_live_cells:");
 
     MarkingVisitor visitor(*this, roots);
-
-    vm().bytecode_interpreter().visit_edges(visitor);
 
     visitor.mark_all_live_cells();
 

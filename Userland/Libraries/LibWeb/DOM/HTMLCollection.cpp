@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLCollectionPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
@@ -46,31 +47,61 @@ void HTMLCollection::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_root);
-    for (auto& element : m_cached_elements)
-        visitor.visit(element);
+    visitor.visit(m_cached_elements);
+    if (m_cached_name_to_element_mappings)
+        visitor.visit(*m_cached_name_to_element_mappings);
 }
 
-JS::MarkedVector<Element*> HTMLCollection::collect_matching_elements() const
+void HTMLCollection::update_name_to_element_mappings_if_needed() const
 {
-    if (m_cached_dom_tree_version != root()->document().dom_tree_version()) {
-        m_cached_elements.clear();
-        if (m_scope == Scope::Descendants) {
-            m_root->for_each_in_subtree_of_type<Element>([&](auto& element) {
-                if (m_filter(element))
-                    m_cached_elements.append(element);
-                return IterationDecision::Continue;
-            });
-        } else {
-            m_root->for_each_child_of_type<Element>([&](auto& element) {
-                if (m_filter(element))
-                    m_cached_elements.append(element);
-                return IterationDecision::Continue;
-            });
+    update_cache_if_needed();
+    if (m_cached_name_to_element_mappings)
+        return;
+    m_cached_name_to_element_mappings = make<OrderedHashMap<FlyString, JS::NonnullGCPtr<Element>>>();
+    for (auto const& element : m_cached_elements) {
+        // 1. If element has an ID which is not in result, append element’s ID to result.
+        if (auto const& id = element->id(); id.has_value()) {
+            if (!id.value().is_empty() && !m_cached_name_to_element_mappings->contains(id.value()))
+                m_cached_name_to_element_mappings->set(id.value(), element);
         }
-        m_cached_dom_tree_version = root()->document().dom_tree_version();
-    }
 
-    JS::MarkedVector<Element*> elements(heap());
+        // 2. If element is in the HTML namespace and has a name attribute whose value is neither the empty string nor is in result, append element’s name attribute value to result.
+        if (element->namespace_uri() == Namespace::HTML && element->name().has_value()) {
+            auto element_name = element->name().value();
+            if (!element_name.is_empty() && !m_cached_name_to_element_mappings->contains(element_name))
+                m_cached_name_to_element_mappings->set(move(element_name), element);
+        }
+    }
+}
+
+void HTMLCollection::update_cache_if_needed() const
+{
+    // Nothing to do, the DOM hasn't updated since we last built the cache.
+    if (m_cached_dom_tree_version == root()->document().dom_tree_version())
+        return;
+
+    m_cached_elements.clear();
+    m_cached_name_to_element_mappings = nullptr;
+    if (m_scope == Scope::Descendants) {
+        m_root->for_each_in_subtree_of_type<Element>([&](auto& element) {
+            if (m_filter(element))
+                m_cached_elements.append(element);
+            return TraversalDecision::Continue;
+        });
+    } else {
+        m_root->for_each_child_of_type<Element>([&](auto& element) {
+            if (m_filter(element))
+                m_cached_elements.append(element);
+            return IterationDecision::Continue;
+        });
+    }
+    m_cached_dom_tree_version = root()->document().dom_tree_version();
+}
+
+JS::MarkedVector<JS::NonnullGCPtr<Element>> HTMLCollection::collect_matching_elements() const
+{
+    update_cache_if_needed();
+    JS::MarkedVector<JS::NonnullGCPtr<Element>> elements(heap());
     for (auto& element : m_cached_elements)
         elements.append(element);
     return elements;
@@ -80,35 +111,38 @@ JS::MarkedVector<Element*> HTMLCollection::collect_matching_elements() const
 size_t HTMLCollection::length() const
 {
     // The length getter steps are to return the number of nodes represented by the collection.
-    return collect_matching_elements().size();
+    update_cache_if_needed();
+    return m_cached_elements.size();
 }
 
 // https://dom.spec.whatwg.org/#dom-htmlcollection-item
 Element* HTMLCollection::item(size_t index) const
 {
     // The item(index) method steps are to return the indexth element in the collection. If there is no indexth element in the collection, then the method must return null.
-    auto elements = collect_matching_elements();
-    if (index >= elements.size())
+    update_cache_if_needed();
+    if (index >= m_cached_elements.size())
         return nullptr;
-    return elements[index];
+    return m_cached_elements[index];
 }
 
 // https://dom.spec.whatwg.org/#dom-htmlcollection-nameditem-key
-Element* HTMLCollection::named_item(FlyString const& name) const
+Element* HTMLCollection::named_item(FlyString const& key) const
 {
     // 1. If key is the empty string, return null.
-    if (name.is_empty())
+    if (key.is_empty())
         return nullptr;
-    auto elements = collect_matching_elements();
-    // 2. Return the first element in the collection for which at least one of the following is true:
-    //      - it has an ID which is key;
-    if (auto it = elements.find_if([&](auto& entry) { return entry->id().has_value() && entry->id().value() == name; }); it != elements.end())
-        return *it;
-    //      - it is in the HTML namespace and has a name attribute whose value is key;
-    if (auto it = elements.find_if([&](auto& entry) { return entry->namespace_uri() == Namespace::HTML && entry->name() == name; }); it != elements.end())
-        return *it;
-    //    or null if there is no such element.
+
+    update_name_to_element_mappings_if_needed();
+    if (auto it = m_cached_name_to_element_mappings->get(key); it.has_value())
+        return it.value();
     return nullptr;
+}
+
+// https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-names
+bool HTMLCollection::is_supported_property_name(FlyString const& name) const
+{
+    update_name_to_element_mappings_if_needed();
+    return m_cached_name_to_element_mappings->contains(name);
 }
 
 // https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-names
@@ -118,52 +152,28 @@ Vector<FlyString> HTMLCollection::supported_property_names() const
     Vector<FlyString> result;
 
     // 2. For each element represented by the collection, in tree order:
-    auto elements = collect_matching_elements();
-
-    for (auto& element : elements) {
-        // 1. If element has an ID which is not in result, append element’s ID to result.
-        if (auto const& id = element->id(); id.has_value()) {
-            if (!result.contains_slow(id.value()))
-                result.append(id.value());
-        }
-
-        // 2. If element is in the HTML namespace and has a name attribute whose value is neither the empty string nor is in result, append element’s name attribute value to result.
-        if (element->namespace_uri() == Namespace::HTML && element->name().has_value()) {
-            auto name = element->name().value();
-            if (!name.is_empty() && !result.contains_slow(name))
-                result.append(move(name));
-        }
+    update_name_to_element_mappings_if_needed();
+    for (auto const& it : *m_cached_name_to_element_mappings) {
+        result.append(it.key);
     }
 
     // 3. Return result.
     return result;
 }
 
-// https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-indices%E2%91%A1
-bool HTMLCollection::is_supported_property_index(u32 index) const
-{
-    // The object’s supported property indices are the numbers in the range zero to one less than the number of elements represented by the collection.
-    // If there are no such elements, then there are no supported property indices.
-    auto elements = collect_matching_elements();
-    if (elements.is_empty())
-        return false;
-
-    return index < elements.size();
-}
-
-WebIDL::ExceptionOr<JS::Value> HTMLCollection::item_value(size_t index) const
+Optional<JS::Value> HTMLCollection::item_value(size_t index) const
 {
     auto* element = item(index);
     if (!element)
-        return JS::js_undefined();
-    return const_cast<Element*>(element);
+        return {};
+    return element;
 }
 
-WebIDL::ExceptionOr<JS::Value> HTMLCollection::named_item_value(FlyString const& index) const
+JS::Value HTMLCollection::named_item_value(FlyString const& name) const
 {
-    auto* element = named_item(index);
+    auto* element = named_item(name);
     if (!element)
         return JS::js_undefined();
-    return const_cast<Element*>(element);
+    return element;
 }
 }

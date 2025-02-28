@@ -8,8 +8,10 @@
 
 #include <AK/Vector.h>
 #include <LibWeb/HTML/Navigable.h>
+#include <LibWeb/HTML/NavigationType.h>
 #include <LibWeb/HTML/SessionHistoryTraversalQueue.h>
 #include <LibWeb/HTML/VisibilityState.h>
+#include <LibWeb/Page/Page.h>
 
 namespace Web::HTML {
 
@@ -49,7 +51,11 @@ public:
 
     HistoryStepResult apply_the_traverse_history_step(int, Optional<SourceSnapshotParams>, JS::GCPtr<Navigable>, UserNavigationInvolvement);
     HistoryStepResult apply_the_reload_history_step();
-    HistoryStepResult apply_the_push_or_replace_history_step(int step);
+    enum class SynchronousNavigation : bool {
+        Yes,
+        No,
+    };
+    HistoryStepResult apply_the_push_or_replace_history_step(int step, HistoryHandlingBehavior history_handling, SynchronousNavigation);
     HistoryStepResult update_for_navigable_creation_or_destruction();
 
     int get_the_used_step(int step) const;
@@ -64,26 +70,29 @@ public:
     void close_top_level_traversable();
     void destroy_top_level_traversable();
 
-    void append_session_history_traversal_steps(JS::SafeFunction<void()> steps)
+    void append_session_history_traversal_steps(JS::NonnullGCPtr<JS::HeapFunction<void()>> steps)
     {
-        m_session_history_traversal_queue.append(move(steps));
+        m_session_history_traversal_queue->append(steps);
     }
 
-    void append_session_history_synchronous_navigation_steps(JS::NonnullGCPtr<Navigable> target_navigable, JS::SafeFunction<void()> steps)
+    void append_session_history_synchronous_navigation_steps(JS::NonnullGCPtr<Navigable> target_navigable, JS::NonnullGCPtr<JS::HeapFunction<void()>> steps)
     {
-        m_session_history_traversal_queue.append_sync(move(steps), target_navigable);
+        m_session_history_traversal_queue->append_sync(steps, target_navigable);
     }
-
-    void process_session_history_traversal_queue()
-    {
-        m_session_history_traversal_queue.process();
-    }
-
-    Page& page() { return m_page; }
-    Page const& page() const { return m_page; }
 
     String window_handle() const { return m_window_handle; }
     void set_window_handle(String window_handle) { m_window_handle = move(window_handle); }
+
+    [[nodiscard]] JS::GCPtr<DOM::Node> currently_focused_area();
+
+    void paint(Web::DevicePixelRect const&, Gfx::Bitmap&, Web::PaintOptions);
+
+    enum class CheckIfUnloadingIsCanceledResult {
+        CanceledByBeforeUnload,
+        CanceledByNavigate,
+        Continue,
+    };
+    CheckIfUnloadingIsCanceledResult check_if_unloading_is_canceled(Vector<JS::Handle<Navigable>> navigables_that_need_before_unload);
 
 private:
     TraversableNavigable(JS::NonnullGCPtr<Page>);
@@ -96,9 +105,15 @@ private:
         bool check_for_cancelation,
         Optional<SourceSnapshotParams>,
         JS::GCPtr<Navigable> initiator_to_check,
-        Optional<UserNavigationInvolvement> user_involvement_for_navigate_events);
+        Optional<UserNavigationInvolvement> user_involvement_for_navigate_events,
+        Optional<Bindings::NavigationType> navigation_type,
+        SynchronousNavigation);
+
+    CheckIfUnloadingIsCanceledResult check_if_unloading_is_canceled(Vector<JS::Handle<Navigable>> navigables_that_need_before_unload, JS::GCPtr<TraversableNavigable> traversable, Optional<int> target_step, Optional<UserNavigationInvolvement> user_involvement_for_navigate_events);
 
     Vector<JS::NonnullGCPtr<SessionHistoryEntry>> get_session_history_entries_for_the_navigation_api(JS::NonnullGCPtr<Navigable>, int);
+
+    [[nodiscard]] bool can_go_forward() const;
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#tn-current-session-history-step
     int m_current_session_history_step { 0 };
@@ -114,9 +129,7 @@ private:
     // https://html.spec.whatwg.org/multipage/document-sequences.html#system-visibility-state
     VisibilityState m_system_visibility_state { VisibilityState::Visible };
 
-    SessionHistoryTraversalQueue m_session_history_traversal_queue;
-
-    JS::NonnullGCPtr<Page> m_page;
+    JS::NonnullGCPtr<SessionHistoryTraversalQueue> m_session_history_traversal_queue;
 
     String m_window_handle;
 };
@@ -127,6 +140,6 @@ struct BrowsingContextAndDocument {
 };
 
 WebIDL::ExceptionOr<BrowsingContextAndDocument> create_a_new_top_level_browsing_context_and_document(JS::NonnullGCPtr<Page> page);
-void finalize_a_same_document_navigation(JS::NonnullGCPtr<TraversableNavigable> traversable, JS::NonnullGCPtr<Navigable> target_navigable, JS::NonnullGCPtr<SessionHistoryEntry> target_entry, JS::GCPtr<SessionHistoryEntry> entry_to_replace);
+void finalize_a_same_document_navigation(JS::NonnullGCPtr<TraversableNavigable> traversable, JS::NonnullGCPtr<Navigable> target_navigable, JS::NonnullGCPtr<SessionHistoryEntry> target_entry, JS::GCPtr<SessionHistoryEntry> entry_to_replace, HistoryHandlingBehavior);
 
 }

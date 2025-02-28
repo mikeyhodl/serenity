@@ -4,23 +4,24 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-ENTRY(start)
+ENTRY(init)
 
-KERNEL_MAPPING_BASE = 0x2000000000;
+#define PF_X 0x1
+#define PF_W 0x2
+#define PF_R 0x4
 
-/* TODO: Add FLAGS to the program headers */
 PHDRS
 {
-    text PT_LOAD ;
-    data PT_LOAD ;
-    ksyms PT_LOAD ;
-    bss PT_LOAD ;
+    text PT_LOAD FLAGS(PF_R | PF_X);
+    data PT_LOAD FLAGS(PF_R | PF_W);
+    bss PT_LOAD FLAGS(PF_R | PF_W);
+    dynamic_segment PT_LOAD FLAGS(PF_R | PF_W);
+    dynamic PT_DYNAMIC FLAGS(PF_R | PF_W);
+    ksyms PT_LOAD FLAGS(PF_R | PF_W);
 }
 
 SECTIONS
 {
-    . = KERNEL_MAPPING_BASE;
-
     start_of_kernel_image = .;
 
     .text ALIGN(4K) :
@@ -81,13 +82,7 @@ SECTIONS
         end_of_ro_after_init = .;
     } :data
 
-    .ksyms ALIGN(4K) :
-    {
-        start_of_kernel_ksyms = .;
-        *(.kernel_symbols)
-        end_of_kernel_ksyms = .;
-    } :ksyms
-
+    /* The bss has to be in its own program header so the prekernel doesn't have to copy segments */
     .bss ALIGN(4K) (NOLOAD) :
     {
         start_of_bss = .;
@@ -97,6 +92,18 @@ SECTIONS
         . = ALIGN(4K);
         *(.heap)
     } :bss
+
+    .dynamic ALIGN(4K) :
+    {
+        *(.dynamic)
+    } :dynamic_segment :dynamic
+
+    .ksyms ALIGN(4K) :
+    {
+        start_of_kernel_ksyms = .;
+        *(.kernel_symbols)
+        end_of_kernel_ksyms = .;
+    } :ksyms
 
     . = ALIGN(4K);
     start_of_initial_stack = .;

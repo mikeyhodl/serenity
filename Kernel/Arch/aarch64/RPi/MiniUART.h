@@ -7,8 +7,9 @@
 #pragma once
 
 #include <Kernel/Devices/CharacterDevice.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Locking/Spinlock.h>
+#include <Kernel/Memory/TypedMapping.h>
 
 namespace Kernel::RPi {
 
@@ -17,10 +18,10 @@ struct MiniUARTRegisters;
 // Makes the secondary "mini UART" (UART1) available to the userspace.
 // See bcm2711-peripherals.pdf chapter "2.2. Mini UART".
 class MiniUART final : public CharacterDevice {
-    friend class Kernel::DeviceManagement;
+    friend class Kernel::Device;
 
 public:
-    static ErrorOr<NonnullLockRefPtr<MiniUART>> create();
+    static ErrorOr<NonnullRefPtr<MiniUART>> create();
 
     virtual ~MiniUART() override;
 
@@ -42,6 +43,6 @@ private:
 
     bool m_last_put_char_was_carriage_return { false };
     Spinlock<LockRank::None> m_serial_lock {};
-    MiniUARTRegisters volatile* m_registers;
+    Memory::TypedMapping<MiniUARTRegisters volatile> m_registers;
 };
 }

@@ -11,6 +11,7 @@
 #include <LibJS/Heap/Cell.h>
 #include <LibJS/Heap/GCPtr.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/TraversalDecision.h>
 
 namespace Web {
 
@@ -38,24 +39,6 @@ public:
         for (auto* node = previous_sibling(); node; node = node->previous_sibling())
             ++index;
         return index;
-    }
-
-    template<typename ChildType>
-    Optional<size_t> index_of_child(T const& search_child)
-    {
-        VERIFY(search_child.parent() == this);
-        size_t index = 0;
-        auto* child = first_child();
-        VERIFY(child);
-
-        do {
-            if (!is<ChildType>(child))
-                continue;
-            if (child == &search_child)
-                return index;
-            index++;
-        } while (child && (child = child->next_sibling()));
-        return {};
     }
 
     bool is_ancestor_of(TreeNode const&) const;
@@ -124,116 +107,120 @@ public:
     }
 
     template<typename Callback>
-    IterationDecision for_each_in_inclusive_subtree(Callback callback) const
+    TraversalDecision for_each_in_inclusive_subtree(Callback callback) const
     {
-        if (callback(static_cast<T const&>(*this)) == IterationDecision::Break)
-            return IterationDecision::Break;
+        if (auto decision = callback(static_cast<T const&>(*this)); decision != TraversalDecision::Continue)
+            return decision;
         for (auto* child = first_child(); child; child = child->next_sibling()) {
             if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename Callback>
-    IterationDecision for_each_in_inclusive_subtree(Callback callback)
+    TraversalDecision for_each_in_inclusive_subtree(Callback callback)
     {
-        if (callback(static_cast<T&>(*this)) == IterationDecision::Break)
-            return IterationDecision::Break;
+        if (auto decision = callback(static_cast<T&>(*this)); decision != TraversalDecision::Continue)
+            return decision;
         for (auto* child = first_child(); child; child = child->next_sibling()) {
-            if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->for_each_in_inclusive_subtree(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename U, typename Callback>
-    IterationDecision for_each_in_inclusive_subtree_of_type(Callback callback)
+    TraversalDecision for_each_in_inclusive_subtree_of_type(Callback callback)
     {
         if (is<U>(static_cast<T const&>(*this))) {
-            if (callback(static_cast<U&>(*this)) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (auto decision = callback(static_cast<U&>(*this)); decision != TraversalDecision::Continue)
+                return decision;
         }
         for (auto* child = first_child(); child; child = child->next_sibling()) {
-            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename U, typename Callback>
-    IterationDecision for_each_in_inclusive_subtree_of_type(Callback callback) const
+    TraversalDecision for_each_in_inclusive_subtree_of_type(Callback callback) const
     {
         if (is<U>(static_cast<T const&>(*this))) {
-            if (callback(static_cast<U const&>(*this)) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (auto decision = callback(static_cast<U const&>(*this)); decision != TraversalDecision::Continue)
+                return decision;
         }
         for (auto* child = first_child(); child; child = child->next_sibling()) {
-            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename Callback>
-    IterationDecision for_each_in_subtree(Callback callback) const
+    TraversalDecision for_each_in_subtree(Callback callback) const
     {
         for (auto* child = first_child(); child; child = child->next_sibling()) {
-            if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->for_each_in_inclusive_subtree(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename Callback>
-    IterationDecision for_each_in_subtree(Callback callback)
+    TraversalDecision for_each_in_subtree(Callback callback)
     {
         for (auto* child = first_child(); child; child = child->next_sibling()) {
-            if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->for_each_in_inclusive_subtree(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename U, typename Callback>
-    IterationDecision for_each_in_subtree_of_type(Callback callback)
+    TraversalDecision for_each_in_subtree_of_type(Callback callback)
     {
         for (auto* child = first_child(); child; child = child->next_sibling()) {
-            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename U, typename Callback>
-    IterationDecision for_each_in_subtree_of_type(Callback callback) const
+    TraversalDecision for_each_in_subtree_of_type(Callback callback) const
     {
         for (auto* child = first_child(); child; child = child->next_sibling()) {
-            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->template for_each_in_inclusive_subtree_of_type<U>(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename Callback>
     void for_each_child(Callback callback) const
     {
-        return const_cast<TreeNode*>(this)->template for_each_child(move(callback));
+        return const_cast<TreeNode*>(this)->for_each_child(move(callback));
     }
 
     template<typename Callback>
     void for_each_child(Callback callback)
     {
-        for (auto* node = first_child(); node; node = node->next_sibling())
-            callback(*node);
+        for (auto* node = first_child(); node; node = node->next_sibling()) {
+            if (callback(*node) == IterationDecision::Break)
+                return;
+        }
     }
 
     template<typename U, typename Callback>
     void for_each_child_of_type(Callback callback)
     {
         for (auto* node = first_child(); node; node = node->next_sibling()) {
-            if (is<U>(node))
-                callback(verify_cast<U>(*node));
+            if (is<U>(node)) {
+                if (callback(verify_cast<U>(*node)) == IterationDecision::Break)
+                    return;
+            }
         }
     }
 

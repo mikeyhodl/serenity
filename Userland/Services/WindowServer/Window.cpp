@@ -209,7 +209,7 @@ void Window::handle_mouse_event(MouseEvent const& event)
 
     switch (event.type()) {
     case Event::MouseMove:
-        m_client->async_mouse_move(m_window_id, event.position(), (u32)event.button(), event.buttons(), event.modifiers(), event.wheel_delta_x(), event.wheel_delta_y(), event.wheel_raw_delta_x(), event.wheel_raw_delta_y(), event.is_drag(), event.mime_types());
+        m_client->async_mouse_move(m_window_id, event.position(), (u32)event.button(), event.buttons(), event.modifiers(), event.wheel_delta_x(), event.wheel_delta_y(), event.wheel_raw_delta_x(), event.wheel_raw_delta_y());
         break;
     case Event::MouseDown:
         m_client->async_mouse_down(m_window_id, event.position(), (u32)event.button(), event.buttons(), event.modifiers(), event.wheel_delta_x(), event.wheel_delta_y(), event.wheel_raw_delta_x(), event.wheel_raw_delta_y());
@@ -293,7 +293,6 @@ void Window::set_minimizable(bool minimizable)
         return;
     m_minimizable = minimizable;
     update_window_menu_items();
-    // TODO: Hide/show (or alternatively change enabled state of) window minimize button dynamically depending on value of m_minimizable
 }
 
 void Window::set_closeable(bool closeable)
@@ -443,7 +442,6 @@ void Window::set_resizable(bool resizable)
         return;
     m_resizable = resizable;
     update_window_menu_items();
-    // TODO: Hide/show (or alternatively change enabled state of) window maximize button dynamically depending on value of is_resizable()
 }
 
 void Window::event(Core::Event& event)

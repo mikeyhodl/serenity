@@ -5,13 +5,19 @@
  */
 
 #include <LibGfx/Bitmap.h>
+#include <LibWeb/Bindings/HTMLObjectElementPrototype.h>
 #include <LibWeb/CSS/StyleComputer.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
+#include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/DocumentLoading.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/DecodedImageData.h>
 #include <LibWeb/HTML/HTMLMediaElement.h>
 #include <LibWeb/HTML/HTMLObjectElement.h>
 #include <LibWeb/HTML/ImageRequest.h>
+#include <LibWeb/HTML/Numbers.h>
+#include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/PotentialCORSRequest.h>
 #include <LibWeb/Layout/ImageBox.h>
 #include <LibWeb/Loader/ResourceLoader.h>
@@ -45,7 +51,7 @@ void HTMLObjectElement::initialize(JS::Realm& realm)
 void HTMLObjectElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_image_request);
+    visitor.visit(m_resource_request);
 }
 
 void HTMLObjectElement::form_associated_element_attribute_changed(FlyString const& name, Optional<String> const&)
@@ -67,11 +73,67 @@ void HTMLObjectElement::form_associated_element_attribute_changed(FlyString cons
     }
 }
 
+void HTMLObjectElement::form_associated_element_was_removed(DOM::Node*)
+{
+    destroy_the_child_navigable();
+}
+
+void HTMLObjectElement::apply_presentational_hints(CSS::StyleProperties& style) const
+{
+    for_each_attribute([&](auto& name, auto& value) {
+        if (name == HTML::AttributeNames::align) {
+            if (value.equals_ignoring_ascii_case("center"sv))
+                style.set_property(CSS::PropertyID::TextAlign, CSS::CSSKeywordValue::create(CSS::Keyword::Center));
+            else if (value.equals_ignoring_ascii_case("middle"sv))
+                style.set_property(CSS::PropertyID::TextAlign, CSS::CSSKeywordValue::create(CSS::Keyword::Middle));
+        } else if (name == HTML::AttributeNames::border) {
+            if (auto parsed_value = parse_non_negative_integer(value); parsed_value.has_value() && *parsed_value > 0) {
+                auto width_style_value = CSS::LengthStyleValue::create(CSS::Length::make_px(*parsed_value));
+                style.set_property(CSS::PropertyID::BorderTopWidth, width_style_value);
+                style.set_property(CSS::PropertyID::BorderRightWidth, width_style_value);
+                style.set_property(CSS::PropertyID::BorderBottomWidth, width_style_value);
+                style.set_property(CSS::PropertyID::BorderLeftWidth, width_style_value);
+
+                auto border_style_value = CSS::CSSKeywordValue::create(CSS::Keyword::Solid);
+                style.set_property(CSS::PropertyID::BorderTopStyle, border_style_value);
+                style.set_property(CSS::PropertyID::BorderRightStyle, border_style_value);
+                style.set_property(CSS::PropertyID::BorderBottomStyle, border_style_value);
+                style.set_property(CSS::PropertyID::BorderLeftStyle, border_style_value);
+            }
+        }
+        // https://html.spec.whatwg.org/multipage/rendering.html#attributes-for-embedded-content-and-images:maps-to-the-dimension-property-3
+        else if (name == HTML::AttributeNames::height) {
+            if (auto parsed_value = parse_dimension_value(value)) {
+                style.set_property(CSS::PropertyID::Height, *parsed_value);
+            }
+        }
+        // https://html.spec.whatwg.org/multipage/rendering.html#attributes-for-embedded-content-and-images:maps-to-the-dimension-property
+        else if (name == HTML::AttributeNames::hspace) {
+            if (auto parsed_value = parse_dimension_value(value)) {
+                style.set_property(CSS::PropertyID::MarginLeft, *parsed_value);
+                style.set_property(CSS::PropertyID::MarginRight, *parsed_value);
+            }
+        } else if (name == HTML::AttributeNames::vspace) {
+            if (auto parsed_value = parse_dimension_value(value)) {
+                style.set_property(CSS::PropertyID::MarginTop, *parsed_value);
+                style.set_property(CSS::PropertyID::MarginBottom, *parsed_value);
+            }
+        } else if (name == HTML::AttributeNames::width) {
+            if (auto parsed_value = parse_dimension_value(value)) {
+                style.set_property(CSS::PropertyID::Width, *parsed_value);
+            }
+        }
+    });
+}
+
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-object-data
 String HTMLObjectElement::data() const
 {
-    auto data = get_attribute_value(HTML::AttributeNames::data);
-    return MUST(document().parse_url(data).to_string());
+    auto data = get_attribute(HTML::AttributeNames::data);
+    if (!data.has_value())
+        return {};
+
+    return MUST(document().parse_url(*data).to_string());
 }
 
 JS::GCPtr<Layout::Node> HTMLObjectElement::create_layout_node(NonnullRefPtr<CSS::StyleProperties> style)
@@ -176,29 +238,30 @@ void HTMLObjectElement::resource_did_load()
 
     // 4. Run the appropriate set of steps from the following list:
     // * If the resource has associated Content-Type metadata
-    if (auto it = resource()->response_headers().find("Content-Type"sv); it != resource()->response_headers().end()) {
+    if (auto maybe_content_type = resource()->response_headers().get("Content-Type"sv); maybe_content_type.has_value()) {
+        auto& content_type = maybe_content_type.value();
+
         // 1. Let binary be false.
         bool binary = false;
 
         // 2. If the type specified in the resource's Content-Type metadata is "text/plain", and the result of applying the rules for distinguishing if a resource is text or binary to the resource is that the resource is not text/plain, then set binary to true.
-        if (it->value == "text/plain"sv) {
-            auto supplied_type = MimeSniff::MimeType::parse(it->value).release_value_but_fixme_should_propagate_errors();
+        if (content_type == "text/plain"sv) {
+            auto supplied_type = MimeSniff::MimeType::parse(content_type);
             auto computed_type = MimeSniff::Resource::sniff(resource()->encoded_data(), MimeSniff::SniffingConfiguration {
                                                                                             .sniffing_context = MimeSniff::SniffingContext::TextOrBinary,
                                                                                             .supplied_type = move(supplied_type),
-                                                                                        })
-                                     .release_value_but_fixme_should_propagate_errors();
+                                                                                        });
             if (computed_type.essence() != "text/plain"sv)
                 binary = true;
         }
 
         // 3. If the type specified in the resource's Content-Type metadata is "application/octet-stream", then set binary to true.
-        if (it->value == "application/octet-stream"sv)
+        if (content_type == "application/octet-stream"sv)
             binary = true;
 
         // 4. If binary is false, then let the resource type be the type specified in the resource's Content-Type metadata, and jump to the step below labeled handler.
         if (!binary)
-            return run_object_representation_handler_steps(it->value);
+            return run_object_representation_handler_steps(content_type);
 
         // 5. If there is a type attribute present on the object element, and its value is not application/octet-stream, then run the following steps:
         if (auto type = this->type(); !type.is_empty() && (type != "application/octet-stream"sv)) {
@@ -233,15 +296,6 @@ void HTMLObjectElement::resource_did_load()
     run_object_representation_handler_steps(resource_type.has_value() ? resource_type->to_byte_string() : ByteString::empty());
 }
 
-static bool is_xml_mime_type(StringView resource_type)
-{
-    auto mime_type = MimeSniff::MimeType::parse(resource_type).release_value_but_fixme_should_propagate_errors();
-    if (!mime_type.has_value())
-        return false;
-
-    return mime_type->is_xml();
-}
-
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-object-element:plugin-11
 void HTMLObjectElement::run_object_representation_handler_steps(Optional<ByteString> resource_type)
 {
@@ -252,11 +306,19 @@ void HTMLObjectElement::run_object_representation_handler_steps(Optional<ByteStr
     //     If plugins are being sandboxed, then jump to the step below labeled fallback.
     //     Otherwise, the user agent should use the plugin that supports resource type and pass the content of the resource to that plugin. If the plugin reports an error, then jump to the step below labeled fallback.
 
+    if (!resource_type.has_value()) {
+        run_object_representation_fallback_steps();
+        return;
+    }
+    auto mime_type = MimeSniff::MimeType::parse(*resource_type);
+
     // * If the resource type is an XML MIME type, or if the resource type does not start with "image/"
-    if (resource_type.has_value() && (is_xml_mime_type(*resource_type) || !resource_type->starts_with("image/"sv))) {
+    if (mime_type.has_value() && can_load_document_with_type(*mime_type) && (mime_type->is_xml() || !mime_type->is_image())) {
         // If the object element's content navigable is null, then create a new child navigable for the element.
-        if (!m_content_navigable)
+        if (!m_content_navigable && in_a_document_tree()) {
             MUST(create_new_child_navigable());
+            set_content_navigable_initialized();
+        }
 
         // NOTE: Creating a new nested browsing context can fail if the document is not attached to a browsing context
         if (!m_content_navigable)
@@ -324,8 +386,8 @@ void HTMLObjectElement::load_image()
     // NOTE: This currently reloads the image instead of reusing the resource we've already downloaded.
     auto data = get_attribute_value(HTML::AttributeNames::data);
     auto url = document().parse_url(data);
-    m_image_request = HTML::SharedImageRequest::get_or_create(realm(), document().page(), url);
-    m_image_request->add_callbacks(
+    m_resource_request = HTML::SharedResourceRequest::get_or_create(realm(), document().page(), url);
+    m_resource_request->add_callbacks(
         [this] {
             run_object_representation_completed_steps(Representation::Image);
         },
@@ -333,10 +395,10 @@ void HTMLObjectElement::load_image()
             run_object_representation_fallback_steps();
         });
 
-    if (m_image_request->needs_fetching()) {
+    if (m_resource_request->needs_fetching()) {
         auto request = HTML::create_potential_CORS_request(vm(), url, Fetch::Infrastructure::Request::Destination::Image, HTML::CORSSettingAttribute::NoCORS);
         request->set_client(&document().relevant_settings_object());
-        m_image_request->fetch_image(realm(), request);
+        m_resource_request->fetch_resource(realm(), request);
     }
 }
 
@@ -351,8 +413,8 @@ void HTMLObjectElement::update_layout_and_child_objects(Representation represent
     }
 
     m_representation = representation;
-    invalidate_style();
-    document().invalidate_layout();
+    invalidate_style(DOM::StyleInvalidationReason::HTMLObjectElementUpdateLayoutAndChildObjects);
+    document().invalidate_layout_tree();
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex
@@ -364,9 +426,9 @@ i32 HTMLObjectElement::default_tab_index_value() const
 
 JS::GCPtr<DecodedImageData> HTMLObjectElement::image_data() const
 {
-    if (!m_image_request)
+    if (!m_resource_request)
         return nullptr;
-    return m_image_request->image_data();
+    return m_resource_request->image_data();
 }
 
 bool HTMLObjectElement::is_image_available() const

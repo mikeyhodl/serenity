@@ -10,14 +10,12 @@
 #include <AK/Format.h>
 #include <AK/Forward.h>
 #include <AK/Math.h>
-#include <AK/SIMD.h>
 #include <AK/StdLibExtras.h>
 #include <LibIPC/Forward.h>
 #include <math.h>
 
 namespace Gfx {
 
-enum class ColorRole;
 typedef u32 ARGB32;
 
 struct HSV {
@@ -40,7 +38,7 @@ struct Oklab {
 
 class Color {
 public:
-    enum NamedColor {
+    enum class NamedColor {
         Transparent,
         Black,
         White,
@@ -65,6 +63,8 @@ public:
         MidMagenta,
         LightBlue,
     };
+
+    using enum NamedColor;
 
     constexpr Color() = default;
     constexpr Color(NamedColor);
@@ -164,6 +164,9 @@ public:
         u8 a_u8 = clamp(lroundf(a * 255.0f), 0, 255);
         return Color(r_u8, g_u8, b_u8, a_u8);
     }
+
+    static Color from_lab(float L, float a, float b, float alpha = 1.0f);
+    static Color from_xyz50(float x, float y, float z, float alpha = 1.0f);
 
     // https://bottosson.github.io/posts/oklab/
     static constexpr Color from_oklab(float L, float a, float b, float alpha = 1.0f)
@@ -316,7 +319,7 @@ public:
 
     constexpr u8 luminosity() const
     {
-        return (red() * 0.2126f + green() * 0.7152f + blue() * 0.0722f);
+        return round_to<u8>(red() * 0.2126f + green() * 0.7152f + blue() * 0.0722f);
     }
 
     constexpr float contrast_ratio(Color other)
@@ -405,7 +408,12 @@ public:
         return m_value == other.m_value;
     }
 
-    String to_string() const;
+    enum class HTMLCompatibleSerialization {
+        No,
+        Yes,
+    };
+
+    [[nodiscard]] String to_string(HTMLCompatibleSerialization = HTMLCompatibleSerialization::No) const;
     String to_string_without_alpha() const;
 
     ByteString to_byte_string() const;
@@ -620,6 +628,15 @@ constexpr Color::Color(NamedColor named)
 using Gfx::Color;
 
 namespace AK {
+
+template<>
+class Traits<Color> : public DefaultTraits<Color> {
+public:
+    static unsigned hash(Color const& color)
+    {
+        return int_hash(color.value());
+    }
+};
 
 template<>
 struct Formatter<Gfx::Color> : public Formatter<StringView> {

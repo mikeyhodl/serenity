@@ -151,13 +151,6 @@ ALWAYS_INLINE void ProcessorBase<T>::disable_interrupts()
 }
 
 template<typename T>
-ALWAYS_INLINE bool ProcessorBase<T>::is_kernel_mode()
-{
-    // FIXME: Implement this correctly.
-    return true;
-}
-
-template<typename T>
 ALWAYS_INLINE bool ProcessorBase<T>::current_in_scheduler()
 {
     return current().m_in_scheduler;
@@ -176,12 +169,6 @@ ALWAYS_INLINE bool ProcessorBase<T>::has_nx() const
 }
 
 template<typename T>
-ALWAYS_INLINE bool ProcessorBase<T>::has_pat() const
-{
-    return false;
-}
-
-template<typename T>
 ALWAYS_INLINE FlatPtr ProcessorBase<T>::current_in_irq()
 {
     return current().m_in_irq;
@@ -196,7 +183,14 @@ ALWAYS_INLINE Thread* ProcessorBase<T>::current_thread()
 template<typename T>
 ALWAYS_INLINE void ProcessorBase<T>::pause()
 {
-    TODO_RISCV64();
+    // PAUSE is a HINT defined by the Zihintpause extension.
+    // We don't have to check if that extension is supported, since HINTs effectively behave like NOPs if they are not implemented.
+    asm volatile(R"(
+        .option push
+        .option arch, +zihintpause
+            pause
+        .option pop
+    )" :);
 }
 
 template<typename T>
@@ -207,9 +201,9 @@ ALWAYS_INLINE void ProcessorBase<T>::wait_check()
 }
 
 template<typename T>
-ALWAYS_INLINE u64 ProcessorBase<T>::read_cpu_counter()
+ALWAYS_INLINE Optional<u64> ProcessorBase<T>::read_cycle_count()
 {
-    TODO_RISCV64();
+    return RISCV64::CSR::read(RISCV64::CSR::Address::CYCLE);
 }
 
 }

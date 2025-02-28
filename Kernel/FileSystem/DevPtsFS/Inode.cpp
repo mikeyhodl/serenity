@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/FileSystem/DevPtsFS/Inode.h>
 #include <Kernel/FileSystem/RAMBackedFileType.h>
 
@@ -108,11 +108,6 @@ ErrorOr<NonnullRefPtr<Inode>> DevPtsFSInode::create_child(StringView, mode_t, de
 }
 
 ErrorOr<void> DevPtsFSInode::remove_child(StringView)
-{
-    return EROFS;
-}
-
-ErrorOr<void> DevPtsFSInode::replace_child(StringView, Inode&)
 {
     return EROFS;
 }

@@ -9,9 +9,11 @@
 #include <AK/ByteString.h>
 #include <AK/Optional.h>
 #include <AK/Vector.h>
+#include <LibGfx/CornerRadius.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Line.h>
 #include <LibGfx/Point.h>
+#include <LibGfx/Quad.h>
 #include <LibGfx/Rect.h>
 
 namespace Gfx {
@@ -25,6 +27,7 @@ public:
         LineTo,
         QuadraticBezierCurveTo,
         CubicBezierCurveTo,
+        ClosePath,
     };
 
     ALWAYS_INLINE Command command() const { return m_command; }
@@ -56,6 +59,8 @@ public:
             return 2; // Control point + point.
         case Command::CubicBezierCurveTo:
             return 3; // Two control points + point.
+        case Command::ClosePath:
+            return 0;
         }
         VERIFY_NOT_REACHED();
     }
@@ -183,6 +188,15 @@ public:
         elliptical_arc_to(point, { radius, radius }, 0, large_arc, sweep);
     }
 
+    void rect(FloatRect const& rect)
+    {
+        return quad(rect);
+    }
+
+    void rounded_rect(FloatRect const& rect, CornerRadius top_left, CornerRadius top_right, CornerRadius bottom_right, CornerRadius bottom_left);
+
+    void quad(FloatQuad const& quad);
+
     void text(Utf8View, Font const&);
 
     FloatPoint last_point()
@@ -195,11 +209,40 @@ public:
     void close();
     void close_all_subpaths();
 
-    Path stroke_to_fill(float thickness) const;
+    enum class CapStyle {
+        Butt,
+        Round,
+        Square,
+    };
+
+    enum class JoinStyle {
+        Miter,
+        Round,
+        Bevel,
+    };
+
+    struct StrokeStyle {
+        float thickness { 1 };
+        CapStyle cap_style { CapStyle::Round };
+        JoinStyle join_style { JoinStyle::Round };
+
+        // Only used for JoinStyle::Miter.
+        // The miter limit ratio is the maximum allowed ratio of the miter length to the stroke width. If the ratio is exceeded, the join is converted to a bevel join.
+        // The minimum angle at which this happens is 2 * arcsin(1 / miter_limit).
+        // The default value of 10 matches the PDF and <canvas> default value, which corresponds to 11.48 degrees.
+        // (SVG uses a default of 4, which corresponds to 28.96 degrees.)
+        float miter_limit { 10 };
+
+        Vector<float> dash_pattern {};
+        float dash_offset { 0 };
+    };
+    Path stroke_to_fill(StrokeStyle const&) const;
 
     Path place_text_along(Utf8View text, Font const&) const;
 
     Path copy_transformed(AffineTransform const&) const;
+
+    void transform(AffineTransform const&);
 
     ReadonlySpan<FloatLine> split_lines() const
     {
@@ -210,18 +253,27 @@ public:
         return m_split_lines->lines;
     }
 
+    ReadonlySpan<size_t> split_lines_subbpath_end_indices() const
+    {
+        if (!m_split_lines.has_value()) {
+            const_cast<Path*>(this)->segmentize_path();
+            VERIFY(m_split_lines.has_value());
+        }
+        return m_split_lines->subpath_end_indices;
+    }
+
     Gfx::FloatRect const& bounding_box() const
     {
         (void)split_lines();
         return m_split_lines->bounding_box;
     }
 
-    void append_path(Path const& path)
-    {
-        m_commands.extend(path.m_commands);
-        m_points.extend(path.m_points);
-        invalidate_split_lines();
-    }
+    enum class AppendRelativeToLastPoint {
+        Yes,
+        No
+    };
+
+    void append_path(Path const& path, AppendRelativeToLastPoint = AppendRelativeToLastPoint::No);
 
     ByteString to_byte_string() const;
 
@@ -271,6 +323,7 @@ private:
     struct SplitLines {
         Vector<FloatLine> lines;
         Gfx::FloatRect bounding_box;
+        Vector<size_t> subpath_end_indices;
     };
 
     Optional<SplitLines> m_split_lines {};

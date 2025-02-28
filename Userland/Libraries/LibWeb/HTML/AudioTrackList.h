@@ -19,7 +19,7 @@ class AudioTrackList final : public DOM::EventTarget {
     JS_DECLARE_ALLOCATOR(AudioTrackList);
 
 public:
-    ErrorOr<void> add_track(Badge<HTMLMediaElement>, JS::NonnullGCPtr<AudioTrack>);
+    void add_track(Badge<HTMLMediaElement>, JS::NonnullGCPtr<AudioTrack>);
     void remove_all_tracks(Badge<HTMLMediaElement>);
 
     // https://html.spec.whatwg.org/multipage/media.html#dom-audiotracklist-length
@@ -49,10 +49,12 @@ public:
 private:
     explicit AudioTrackList(JS::Realm&);
 
+    virtual void visit_edges(Visitor&) override;
+
     virtual void initialize(JS::Realm&) override;
     virtual JS::ThrowCompletionOr<Optional<JS::PropertyDescriptor>> internal_get_own_property(JS::PropertyKey const& property_name) const override;
 
-    JS::MarkedVector<JS::NonnullGCPtr<AudioTrack>> m_audio_tracks;
+    Vector<JS::NonnullGCPtr<AudioTrack>> m_audio_tracks;
 };
 
 }

@@ -12,6 +12,8 @@
 #include <LibWeb/HTML/FormAssociatedElement.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/HTML/HTMLOptionsCollection.h>
+#include <LibWeb/HTML/SelectItem.h>
+#include <LibWeb/WebIDL/Types.h>
 
 namespace Web::HTML {
 
@@ -27,21 +29,31 @@ public:
 
     virtual void adjust_computed_style(CSS::StyleProperties&) override;
 
+    WebIDL::UnsignedLong size() const;
+    WebIDL::ExceptionOr<void> set_size(WebIDL::UnsignedLong);
+
     JS::GCPtr<HTMLOptionsCollection> const& options();
 
-    size_t length();
-    DOM::Element* item(size_t index);
-    DOM::Element* named_item(FlyString const& name);
+    WebIDL::UnsignedLong length();
+    WebIDL::ExceptionOr<void> set_length(WebIDL::UnsignedLong);
+    HTMLOptionElement* item(WebIDL::UnsignedLong index);
+    HTMLOptionElement* named_item(FlyString const& name);
     WebIDL::ExceptionOr<void> add(HTMLOptionOrOptGroupElement element, Optional<HTMLElementOrElementIndex> before = {});
+    void remove();
+    void remove(WebIDL::Long);
 
-    int selected_index() const;
-    void set_selected_index(int);
+    JS::NonnullGCPtr<DOM::HTMLCollection> selected_options();
+
+    WebIDL::Long selected_index() const;
+    void set_selected_index(WebIDL::Long);
 
     virtual String value() const override;
     WebIDL::ExceptionOr<void> set_value(String const&);
 
     bool is_open() const { return m_is_open; }
     void set_is_open(bool);
+
+    WebIDL::ExceptionOr<void> show_picker();
 
     Vector<JS::Handle<HTMLOptionElement>> list_of_options() const;
 
@@ -78,7 +90,9 @@ public:
     virtual void form_associated_element_was_inserted() override;
     virtual void form_associated_element_was_removed(DOM::Node*) override;
 
-    void did_select_value(Optional<String> value);
+    void did_select_item(Optional<u32> const& id);
+
+    void update_selectedness();
 
 private:
     HTMLSelectElement(DOM::Document&, DOM::QualifiedName);
@@ -91,11 +105,16 @@ private:
 
     virtual void computed_css_values_changed() override;
 
+    void show_the_picker_if_applicable();
+
     void create_shadow_tree_if_needed();
     void update_inner_text_element();
+    void queue_input_and_change_events();
 
     JS::GCPtr<HTMLOptionsCollection> m_options;
+    JS::GCPtr<DOM::HTMLCollection> m_selected_options;
     bool m_is_open { false };
+    Vector<SelectItem> m_select_items;
     JS::GCPtr<DOM::Element> m_inner_text_element;
     JS::GCPtr<DOM::Element> m_chevron_icon_element;
 };

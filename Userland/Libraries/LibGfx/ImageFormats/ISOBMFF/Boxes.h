@@ -11,7 +11,7 @@
 #include <AK/String.h>
 #include <AK/Traits.h>
 #include <AK/Vector.h>
-#include <LibVideo/DecoderError.h>
+#include <LibMedia/DecoderError.h>
 
 #include "BoxStream.h"
 #include "Enums.h"
@@ -26,12 +26,11 @@ struct BoxHeader {
     u64 contents_size { 0 };
 };
 
-ErrorOr<BoxHeader> read_box_header(Stream& stream);
+ErrorOr<BoxHeader> read_box_header(BoxStream& stream);
 
 struct Box {
     Box() = default;
     virtual ~Box() = default;
-    virtual ErrorOr<void> read_from_stream(BoxStream&) { return {}; }
     virtual BoxType box_type() const { return BoxType::None; }
     virtual void dump(String const& prepend = {}) const;
 };
@@ -39,7 +38,7 @@ struct Box {
 using BoxList = Vector<NonnullOwnPtr<Box>>;
 
 struct FullBox : public Box {
-    virtual ErrorOr<void> read_from_stream(BoxStream& stream) override;
+    ErrorOr<void> read_from_stream(BoxStream& stream);
     virtual void dump(String const& prepend = {}) const override;
 
     u8 version { 0 };
@@ -59,7 +58,7 @@ struct UnknownBox final : public Box {
     {
     }
     virtual ~UnknownBox() override = default;
-    virtual ErrorOr<void> read_from_stream(BoxStream&) override;
+    ErrorOr<void> read_from_stream(BoxStream&);
     virtual BoxType box_type() const override { return m_box_type; }
     virtual void dump(String const& prepend = {}) const override;
 
@@ -77,7 +76,7 @@ private:
     }                                                                            \
     BoxName() = default;                                                         \
     virtual ~BoxName() override = default;                                       \
-    virtual ErrorOr<void> read_from_stream(BoxStream& stream) override;          \
+    ErrorOr<void> read_from_stream(BoxStream& stream);                           \
     virtual BoxType box_type() const override                                    \
     {                                                                            \
         return BoxType::BoxName;                                                 \
@@ -85,12 +84,33 @@ private:
     virtual void dump(String const& prepend = {}) const override;
 
 // 4.3 File Type Box
-struct FileTypeBox final : public FullBox {
+struct FileTypeBox final : public Box {
     BOX_SUBTYPE(FileTypeBox);
 
     BrandIdentifier major_brand { BrandIdentifier::None };
     u32 minor_version;
     Vector<BrandIdentifier> compatible_brands;
+};
+
+// A box that contains other boxes.
+struct SuperBox : public Box {
+    SuperBox() = default;
+
+    using BoxCallback = Function<ErrorOr<Optional<NonnullOwnPtr<Box>>>(BoxType, BoxStream&)>;
+    ErrorOr<void> read_from_stream(BoxStream&, BoxCallback);
+    virtual void dump(String const& prepend = {}) const override;
+
+    BoxList const& child_boxes() const { return m_child_boxes; }
+
+private:
+    BoxList m_child_boxes;
+};
+
+struct UserExtensionBox final : public Box {
+    BOX_SUBTYPE(UserExtensionBox);
+
+    Array<u8, 16> uuid;
+    ByteBuffer data;
 };
 
 }

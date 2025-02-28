@@ -59,10 +59,10 @@ WebIDL::ExceptionOr<JS::GCPtr<JavaScriptModuleScript>> JavaScriptModuleScript::c
     // 8. If result is a list of errors, then:
     if (result.is_error()) {
         auto& parse_error = result.error().first();
-        dbgln("JavaScriptModuleScript: Failed to parse: {}", parse_error.to_byte_string());
+        dbgln("JavaScriptModuleScript: Failed to parse: {}", parse_error.to_string());
 
         // 1. Set script's parse error to result[0].
-        script->set_parse_error(JS::SyntaxError::create(settings_object.realm(), parse_error.to_string().release_value_but_fixme_should_propagate_errors()));
+        script->set_parse_error(JS::SyntaxError::create(settings_object.realm(), parse_error.to_string()));
 
         // 2. Return script.
         return script;
@@ -75,7 +75,7 @@ WebIDL::ExceptionOr<JS::GCPtr<JavaScriptModuleScript>> JavaScriptModuleScript::c
         for (auto const& attribute : requested.attributes) {
             if (attribute.key != "type"sv) {
                 // 1. Let error be a new SyntaxError exception.
-                auto error = JS::SyntaxError::create(settings_object.realm(), "Module request attributes must only contain a type attribute"_fly_string);
+                auto error = JS::SyntaxError::create(settings_object.realm(), "Module request attributes must only contain a type attribute"_string);
 
                 // 2. Set script's parse error to error.
                 script->set_parse_error(error);
@@ -148,7 +148,7 @@ JS::Promise* JavaScriptModuleScript::run(PreventErrorReporting)
         VERIFY(record);
 
         // NON-STANDARD: To ensure that LibJS can find the module on the stack, we push a new execution context.
-        auto module_execution_context = JS::ExecutionContext::create(heap());
+        auto module_execution_context = JS::ExecutionContext::create();
         module_execution_context->realm = &settings.realm();
         module_execution_context->script_or_module = JS::NonnullGCPtr<JS::Module> { *record };
         vm().push_execution_context(*module_execution_context);
@@ -161,7 +161,7 @@ JS::Promise* JavaScriptModuleScript::run(PreventErrorReporting)
         // then set evaluationPromise to a promise rejected with a new "QuotaExceededError" DOMException.
         if (elevation_promise_or_error.is_error()) {
             auto promise = JS::Promise::create(settings_object().realm());
-            promise->reject(WebIDL::QuotaExceededError::create(settings_object().realm(), "Failed to evaluate module script"_fly_string).ptr());
+            promise->reject(WebIDL::QuotaExceededError::create(settings_object().realm(), "Failed to evaluate module script"_string).ptr());
 
             evaluation_promise = promise;
         } else {

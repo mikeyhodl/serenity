@@ -20,12 +20,12 @@ public:
 
     static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_with_size(size_t, AllocationStrategy);
     static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_for_physical_range(PhysicalAddress paddr, size_t size);
-    static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_with_physical_pages(Span<NonnullRefPtr<PhysicalPage>>);
+    static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_with_physical_pages(Span<NonnullRefPtr<PhysicalRAMPage>>);
     static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_purgeable_with_size(size_t, AllocationStrategy);
-    static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_physically_contiguous_with_size(size_t);
+    static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_physically_contiguous_with_size(size_t, MemoryType memory_type_for_zero_fill);
     virtual ErrorOr<NonnullLockRefPtr<VMObject>> try_clone() override;
 
-    [[nodiscard]] NonnullRefPtr<PhysicalPage> allocate_committed_page(Badge<Region>);
+    [[nodiscard]] NonnullRefPtr<PhysicalRAMPage> allocate_committed_page(Badge<Region>);
     PageFaultResponse handle_cow_fault(size_t, VirtualAddress);
     size_t cow_pages() const;
     bool should_cow(size_t page_index, bool) const;
@@ -41,12 +41,12 @@ public:
 private:
     class SharedCommittedCowPages;
 
-    static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_with_shared_cow(AnonymousVMObject const&, NonnullLockRefPtr<SharedCommittedCowPages>, FixedArray<RefPtr<PhysicalPage>>&&);
+    static ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> try_create_with_shared_cow(AnonymousVMObject const&, NonnullLockRefPtr<SharedCommittedCowPages>, FixedArray<RefPtr<PhysicalRAMPage>>&&);
 
-    explicit AnonymousVMObject(FixedArray<RefPtr<PhysicalPage>>&&, AllocationStrategy, Optional<CommittedPhysicalPageSet>);
-    explicit AnonymousVMObject(PhysicalAddress, FixedArray<RefPtr<PhysicalPage>>&&);
-    explicit AnonymousVMObject(FixedArray<RefPtr<PhysicalPage>>&&);
-    explicit AnonymousVMObject(LockWeakPtr<AnonymousVMObject>, NonnullLockRefPtr<SharedCommittedCowPages>, FixedArray<RefPtr<PhysicalPage>>&&);
+    explicit AnonymousVMObject(FixedArray<RefPtr<PhysicalRAMPage>>&&, AllocationStrategy, Optional<CommittedPhysicalPageSet>);
+    explicit AnonymousVMObject(PhysicalAddress, FixedArray<RefPtr<PhysicalRAMPage>>&&);
+    explicit AnonymousVMObject(FixedArray<RefPtr<PhysicalRAMPage>>&&);
+    explicit AnonymousVMObject(LockWeakPtr<AnonymousVMObject>, NonnullLockRefPtr<SharedCommittedCowPages>, FixedArray<RefPtr<PhysicalRAMPage>>&&);
 
     virtual StringView class_name() const override { return "AnonymousVMObject"sv; }
 
@@ -58,6 +58,7 @@ private:
 
     ErrorOr<void> ensure_cow_map();
     ErrorOr<void> ensure_or_reset_cow_map();
+    void reset_cow_map();
 
     Optional<CommittedPhysicalPageSet> m_unused_committed_pages;
     Bitmap m_cow_map;
@@ -74,7 +75,7 @@ private:
 
         [[nodiscard]] bool is_empty() const { return m_committed_pages.is_empty(); }
 
-        [[nodiscard]] NonnullRefPtr<PhysicalPage> take_one();
+        [[nodiscard]] NonnullRefPtr<PhysicalRAMPage> take_one();
         void uncommit_one();
 
     private:

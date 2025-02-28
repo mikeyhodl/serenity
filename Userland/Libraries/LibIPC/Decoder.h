@@ -11,6 +11,7 @@
 #include <AK/Concepts.h>
 #include <AK/Forward.h>
 #include <AK/NumericLimits.h>
+#include <AK/Queue.h>
 #include <AK/StdLibExtras.h>
 #include <AK/String.h>
 #include <AK/Try.h>
@@ -22,6 +23,7 @@
 #include <LibIPC/File.h>
 #include <LibIPC/Forward.h>
 #include <LibIPC/Message.h>
+#include <LibURL/Origin.h>
 #include <LibURL/URL.h>
 
 namespace IPC {
@@ -35,9 +37,9 @@ inline ErrorOr<T> decode(Decoder&)
 
 class Decoder {
 public:
-    Decoder(Stream& stream, Core::LocalSocket& socket)
+    Decoder(Stream& stream, Queue<IPC::File>& files)
         : m_stream(stream)
-        , m_socket(socket)
+        , m_files(files)
     {
     }
 
@@ -60,11 +62,11 @@ public:
     ErrorOr<size_t> decode_size();
 
     Stream& stream() { return m_stream; }
-    Core::LocalSocket& socket() { return m_socket; }
+    Queue<IPC::File>& files() { return m_files; }
 
 private:
     Stream& m_stream;
-    Core::LocalSocket& m_socket;
+    Queue<IPC::File>& m_files;
 };
 
 template<Arithmetic T>
@@ -104,6 +106,9 @@ template<>
 ErrorOr<URL::URL> decode(Decoder&);
 
 template<>
+ErrorOr<URL::Origin> decode(Decoder&);
+
+template<>
 ErrorOr<File> decode(Decoder&);
 
 template<>
@@ -131,7 +136,7 @@ ErrorOr<T> decode(Decoder& decoder)
 
     for (size_t i = 0; i < size; ++i) {
         auto value = TRY(decoder.decode<typename T::ValueType>());
-        vector.template unchecked_append(move(value));
+        vector.unchecked_append(move(value));
     }
 
     return vector;

@@ -50,7 +50,7 @@ String HTMLHyperlinkElementUtils::origin() const
         return String {};
 
     // 3. Return the serialization of this element's url's origin.
-    return MUST(String::from_byte_string(m_url->serialize_origin()));
+    return MUST(String::from_byte_string(m_url->origin().serialize()));
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#dom-hyperlink-protocol
@@ -78,9 +78,7 @@ void HTMLHyperlinkElementUtils::set_protocol(StringView protocol)
         return;
 
     // 3. Basic URL parse the given value, followed by ":", with this element's url as url and scheme start state as state override.
-    auto result_url = URL::Parser::basic_parse(MUST(String::formatted("{}:", protocol)), {}, m_url, URL::Parser::State::SchemeStart);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(MUST(String::formatted("{}:", protocol)), {}, &m_url.value(), URL::Parser::State::SchemeStart);
 
     // 4. Update href.
     update_href();
@@ -97,7 +95,7 @@ String HTMLHyperlinkElementUtils::username() const
         return String {};
 
     // 3. Return this element's url's username.
-    return m_url->username().release_value();
+    return m_url->username();
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#dom-hyperlink-username
@@ -114,7 +112,7 @@ void HTMLHyperlinkElementUtils::set_username(StringView username)
         return;
 
     // 4. Set the username given this’s URL and the given value.
-    MUST(url->set_username(username));
+    url->set_username(username);
 
     // 5. Update href.
     update_href();
@@ -134,7 +132,7 @@ String HTMLHyperlinkElementUtils::password() const
         return String {};
 
     // 4. Return url's password.
-    return url->password().release_value();
+    return url->password();
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#dom-hyperlink-password
@@ -151,7 +149,7 @@ void HTMLHyperlinkElementUtils::set_password(StringView password)
         return;
 
     // 4. Set the password, given url and the given value.
-    MUST(url->set_password(password));
+    url->set_password(password);
 
     // 5. Update href.
     update_href();
@@ -192,9 +190,7 @@ void HTMLHyperlinkElementUtils::set_host(StringView host)
         return;
 
     // 4. Basic URL parse the given value, with url as url and host state as state override.
-    auto result_url = URL::Parser::basic_parse(host, {}, url, URL::Parser::State::Host);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(host, {}, &url.value(), URL::Parser::State::Host);
 
     // 5. Update href.
     update_href();
@@ -228,9 +224,7 @@ void HTMLHyperlinkElementUtils::set_hostname(StringView hostname)
         return;
 
     // 4. Basic URL parse the given value, with url as url and hostname state as state override.
-    auto result_url = URL::Parser::basic_parse(hostname, {}, m_url, URL::Parser::State::Hostname);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(hostname, {}, &url.value(), URL::Parser::State::Hostname);
 
     // 5. Update href.
     update_href();
@@ -250,7 +244,7 @@ String HTMLHyperlinkElementUtils::port() const
         return String {};
 
     // 4. Return url's port, serialized.
-    return MUST(String::number(url->port().value()));
+    return String::number(url->port().value());
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#dom-hyperlink-port
@@ -268,11 +262,10 @@ void HTMLHyperlinkElementUtils::set_port(StringView port)
     // 4. If the given value is the empty string, then set url's port to null.
     if (port.is_empty()) {
         m_url->set_port({});
-    } else {
-        // 5. Otherwise, basic URL parse the given value, with url as url and port state as state override.
-        auto result_url = URL::Parser::basic_parse(port, {}, m_url, URL::Parser::State::Port);
-        if (result_url.is_valid())
-            m_url = move(result_url);
+    }
+    // 5. Otherwise, basic URL parse the given value, with url as url and port state as state override.
+    else {
+        (void)URL::Parser::basic_parse(port, {}, &m_url.value(), URL::Parser::State::Port);
     }
 
     // 6. Update href.
@@ -291,10 +284,8 @@ String HTMLHyperlinkElementUtils::pathname() const
     if (!m_url.has_value())
         return String {};
 
-    // 4. If url's cannot-be-a-base-URL is true, then return url's path[0].
-    // 5. If url's path is empty, then return the empty string.
-    // 6. Return "/", followed by the strings in url's path (including empty strings), separated from each other by "/".
-    return MUST(String::from_byte_string(m_url->serialize_path()));
+    // 4. Return the result of URL path serializing url.
+    return m_url->serialize_path();
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#dom-hyperlink-pathname
@@ -310,13 +301,10 @@ void HTMLHyperlinkElementUtils::set_pathname(StringView pathname)
         return;
 
     // 4. Set url's path to the empty list.
-    auto url = m_url; // We copy the URL here to follow other browser's behavior of reverting the path change if the parse failed.
-    url->set_paths({});
+    m_url->set_paths({});
 
     // 5. Basic URL parse the given value, with url as url and path start state as state override.
-    auto result_url = URL::Parser::basic_parse(pathname, {}, move(url), URL::Parser::State::PathStart);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(pathname, {}, &m_url.value(), URL::Parser::State::PathStart);
 
     // 6. Update href.
     update_href();
@@ -357,13 +345,10 @@ void HTMLHyperlinkElementUtils::set_search(StringView search)
         auto input = search.substring_view(search.starts_with('?'));
 
         //    2. Set url's query to the empty string.
-        auto url_copy = m_url; // We copy the URL here to follow other browser's behavior of reverting the search change if the parse failed.
-        url_copy->set_query(String {});
+        m_url->set_query(String {});
 
         //    3. Basic URL parse input, with null, this element's node document's document's character encoding, url as url, and query state as state override.
-        auto result_url = URL::Parser::basic_parse(input, {}, move(url_copy), URL::Parser::State::Query);
-        if (result_url.is_valid())
-            m_url = move(result_url);
+        (void)URL::Parser::basic_parse(input, {}, &m_url.value(), URL::Parser::State::Query);
     }
 
     // 6. Update href.
@@ -405,13 +390,10 @@ void HTMLHyperlinkElementUtils::set_hash(StringView hash)
         auto input = hash.substring_view(hash.starts_with('#'));
 
         //    2. Set url's fragment to the empty string.
-        auto url_copy = m_url; // We copy the URL here to follow other browser's behavior of reverting the hash change if the parse failed.
-        url_copy->set_fragment(String {});
+        m_url->set_fragment(String {});
 
         //    3. Basic URL parse input, with url as url and fragment state as state override.
-        auto result_url = URL::Parser::basic_parse(input, {}, move(url_copy), URL::Parser::State::Fragment);
-        if (result_url.is_valid())
-            m_url = move(result_url);
+        (void)URL::Parser::basic_parse(input, {}, &m_url.value(), URL::Parser::State::Fragment);
     }
 
     // 6. Update href.
@@ -451,6 +433,7 @@ WebIDL::ExceptionOr<void> HTMLHyperlinkElementUtils::set_href(String href)
 void HTMLHyperlinkElementUtils::update_href()
 {
     // To update href, set the element's href content attribute's value to the element's url, serialized.
+    MUST(set_hyperlink_element_utils_href(MUST(String::from_byte_string(m_url->serialize()))));
 }
 
 bool HTMLHyperlinkElementUtils::cannot_navigate() const
@@ -504,7 +487,7 @@ void HTMLHyperlinkElementUtils::follow_the_hyperlink(Optional<String> hyperlink_
     if (!url.is_valid())
         return;
 
-    auto url_string = url.to_byte_string();
+    auto url_string = MUST(url.to_string());
 
     // 10. If hyperlinkSuffix is non-null, then append it to urlString.
     if (hyperlink_suffix.has_value()) {
@@ -512,15 +495,16 @@ void HTMLHyperlinkElementUtils::follow_the_hyperlink(Optional<String> hyperlink_
         url_builder.append(url_string);
         url_builder.append(*hyperlink_suffix);
 
-        url_string = url_builder.to_byte_string();
+        url_string = MUST(url_builder.to_string());
     }
 
-    // FIXME: 11. Let referrerPolicy be the current state of subject's referrerpolicy content attribute.
+    // 11. Let referrerPolicy be the current state of subject's referrerpolicy content attribute.
+    auto referrer_policy = ReferrerPolicy::from_string(hyperlink_element_utils_referrerpolicy().value_or({})).value_or(ReferrerPolicy::ReferrerPolicy::EmptyString);
+
     // FIXME: 12. If subject's link types includes the noreferrer keyword, then set referrerPolicy to "no-referrer".
-    auto const referrer_policy = ReferrerPolicy::ReferrerPolicy::EmptyString;
 
     // 13. Navigate targetNavigable to urlString using subject's node document, with referrerPolicy set to referrerPolicy and userInvolvement set to userInvolvement.
-    MUST(target_navigable->navigate({ .url = url, .source_document = hyperlink_element_utils_document(), .referrer_policy = referrer_policy, .user_involvement = user_involvement }));
+    MUST(target_navigable->navigate({ .url = url_string, .source_document = hyperlink_element_utils_document(), .referrer_policy = referrer_policy, .user_involvement = user_involvement }));
 }
 
 }

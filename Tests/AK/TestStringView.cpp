@@ -38,6 +38,13 @@ TEST_CASE(compare_views)
     EXPECT_EQ(view1, foo1);
     EXPECT_EQ(view1, foo2);
     EXPECT_EQ(view1, "foo");
+
+    ByteString empty = "";
+    auto empty_view = view1.substring_view(0, 0);
+    StringView default_view = {};
+    EXPECT_EQ(empty.view(), ""sv);
+    EXPECT_EQ(empty_view, ""sv);
+    EXPECT_EQ(default_view, ""sv);
 }
 
 TEST_CASE(string_view_literal_operator)
@@ -177,8 +184,6 @@ TEST_CASE(split_view)
 
     test_string_view = "ax_b_cxd"sv;
     Function<bool(char)> predicate = [](char ch) { return ch == 'x' || ch == '_'; };
-    EXPECT_EQ(test_string_view.split_view_if(predicate), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
-    EXPECT_EQ(test_string_view.split_view_if(predicate, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
     EXPECT_EQ(test_string_view.split_view_if(predicate), Vector({ "a"sv, "b"sv, "c"sv, "d"sv }));
     EXPECT_EQ(test_string_view.split_view_if(predicate, SplitBehavior::KeepEmpty), Vector({ "a"sv, ""sv, "b"sv, "c"sv, "d"sv }));
 

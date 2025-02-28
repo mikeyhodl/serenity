@@ -11,13 +11,13 @@
 #include <LibWeb/Animations/AnimationEffect.h>
 #include <LibWeb/Bindings/KeyframeEffectPrototype.h>
 #include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/CSS/CSSStyleValue.h>
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/CSS/Selector.h>
-#include <LibWeb/CSS/StyleValue.h>
 
 namespace Web::Animations {
 
-using EasingValue = Variant<String, NonnullRefPtr<CSS::StyleValue const>>;
+using EasingValue = Variant<String, NonnullRefPtr<CSS::CSSStyleValue const>>;
 
 // https://www.w3.org/TR/web-animations-1/#the-keyframeeffectoptions-dictionary
 struct KeyframeEffectOptions : public EffectTiming {
@@ -39,7 +39,7 @@ struct BasePropertyIndexedKeyframe {
 // https://www.w3.org/TR/web-animations-1/#dictdef-basekeyframe
 struct BaseKeyframe {
     using UnparsedProperties = HashMap<String, String>;
-    using ParsedProperties = HashMap<CSS::PropertyID, NonnullRefPtr<CSS::StyleValue const>>;
+    using ParsedProperties = HashMap<CSS::PropertyID, NonnullRefPtr<CSS::CSSStyleValue const>>;
 
     Optional<double> offset {};
     EasingValue easing { "linear"_string };
@@ -64,9 +64,9 @@ public:
     struct KeyFrameSet : public RefCounted<KeyFrameSet> {
         struct UseInitial { };
         struct ResolvedKeyFrame {
-            // These StyleValue properties can be unresolved, as they may be generated from a @keyframes rule, well
+            // These CSSStyleValue properties can be unresolved, as they may be generated from a @keyframes rule, well
             // before they are applied to an element
-            HashMap<CSS::PropertyID, Variant<UseInitial, NonnullRefPtr<CSS::StyleValue const>>> properties {};
+            HashMap<CSS::PropertyID, Variant<UseInitial, NonnullRefPtr<CSS::CSSStyleValue const>>> properties {};
         };
         RedBlackTree<u64, ResolvedKeyFrame> keyframes_by_key;
     };
@@ -88,7 +88,7 @@ public:
     void set_target(DOM::Element* target);
 
     // JS bindings
-    Optional<StringView> pseudo_element() const { return m_target_pseudo_selector->name(); }
+    Optional<String> pseudo_element() const;
     WebIDL::ExceptionOr<void> set_pseudo_element(Optional<String>);
 
     Optional<CSS::Selector::PseudoElement::Type> pseudo_element_type() const;
@@ -97,7 +97,7 @@ public:
     Bindings::CompositeOperation composite() const { return m_composite; }
     void set_composite(Bindings::CompositeOperation value) { m_composite = value; }
 
-    WebIDL::ExceptionOr<Vector<JS::Object*>> get_keyframes();
+    WebIDL::ExceptionOr<JS::MarkedVector<JS::Object*>> get_keyframes();
     WebIDL::ExceptionOr<void> set_keyframes(Optional<JS::Handle<JS::Object>> const&);
 
     KeyFrameSet const* key_frame_set() { return m_key_frame_set; }
@@ -106,6 +106,9 @@ public:
     virtual bool is_keyframe_effect() const override { return true; }
 
     virtual void update_style_properties() override;
+
+    Optional<CSS::AnimationPlayState> last_css_animation_play_state() const { return m_last_css_animation_play_state; }
+    void set_last_css_animation_play_state(CSS::AnimationPlayState state) { m_last_css_animation_play_state = state; }
 
 private:
     KeyframeEffect(JS::Realm&);
@@ -127,9 +130,11 @@ private:
     Vector<BaseKeyframe> m_keyframes {};
 
     // A cached version of m_keyframes suitable for returning from get_keyframes()
-    Vector<JS::Object*> m_keyframe_objects {};
+    Vector<JS::NonnullGCPtr<JS::Object>> m_keyframe_objects {};
 
     RefPtr<KeyFrameSet const> m_key_frame_set {};
+
+    Optional<CSS::AnimationPlayState> m_last_css_animation_play_state;
 };
 
 }

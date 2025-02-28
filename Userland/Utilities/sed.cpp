@@ -102,7 +102,8 @@ using SedErrorOr = ErrorOr<T, SedError>;
     F('x', 2)                  \
     F('y', 2)                  \
     F(':', 0)                  \
-    F('=', 1)
+    F('=', 1)                  \
+    F('#', 0)
 
 enum class AddressType {
     Unset,
@@ -220,9 +221,7 @@ template<typename ArgsT>
 struct FilepathArgument {
     static SedErrorOr<ArgsT> parse(GenericLexer& lexer)
     {
-        auto blanks = lexer.consume_while(is_ascii_blank);
-        if (blanks.is_empty())
-            return SedError::parsing_error(lexer, "expected one or more blank characters"sv);
+        lexer.consume_while(is_ascii_blank);
         auto filepath = lexer.consume_until(is_command_separator);
         if (filepath.is_empty())
             return SedError::parsing_error(lexer, "input filename expected, none found");
@@ -346,7 +345,42 @@ struct YArguments {
 
     static SedErrorOr<YArguments> parse(GenericLexer& lexer)
     {
-        return SedError::parsing_error(lexer, "not implemented"sv);
+        auto generic_error_message = "Incomplete transform command"sv;
+
+        if (lexer.is_eof())
+            return SedError::parsing_error(lexer, generic_error_message);
+
+        auto delimiter = lexer.consume();
+        if (delimiter == '\\' || delimiter == '\n')
+            return SedError::parsing_error(lexer, "\\n and \\ cannot be used as delimiters."sv);
+
+        auto characters = lexer.consume_until([is_escape_sequence = false, delimiter](char c) mutable {
+            if (c == delimiter && !is_escape_sequence)
+                return true;
+            is_escape_sequence = c == '\\' && !is_escape_sequence;
+            return false;
+        });
+
+        if (!lexer.consume_specific(delimiter))
+            return SedError::parsing_error(lexer, generic_error_message);
+
+        auto replacements = lexer.consume_until([is_escape_sequence = false, delimiter](char c) mutable {
+            if (c == delimiter && !is_escape_sequence)
+                return true;
+            is_escape_sequence = c == '\\' && !is_escape_sequence;
+            return false;
+        });
+
+        if (characters.length() != replacements.length())
+            return SedError::parsing_error(lexer, "Transform strings are not the same length.");
+
+        if (!lexer.consume_specific(delimiter))
+            return SedError::parsing_error(lexer, "The transform command was not properly terminated."sv);
+
+        return YArguments {
+            .characters = characters,
+            .replacements = replacements
+        };
     }
 };
 
@@ -372,6 +406,10 @@ struct Command {
 
     void enable_for(StringView pattern_space, size_t line_number, bool is_last_line)
     {
+        if (function == '#') {
+            m_is_enabled = false;
+            return;
+        }
         m_is_enabled = selects(pattern_space, line_number, is_last_line);
     }
 
@@ -527,6 +565,9 @@ static SedErrorOr<Command> parse_command(GenericLexer& lexer)
     case ':':
         command.arguments = TRY(ColonArguments::parse(lexer));
         break;
+    case '#':
+        lexer.consume_until('\n');
+        break;
     default: {
         auto padding = lexer.consume_until(is_command_separator);
         if (!padding.is_whitespace()) {
@@ -659,15 +700,15 @@ public:
         };
     }
 
-    ErrorOr<bool> has_next() const
+    bool has_next() const
     {
-        return m_file->can_read_line();
+        return !m_file->is_eof();
     }
 
     ErrorOr<StringView> next()
     {
-        VERIFY(TRY(has_next()));
-        m_current_line = TRY(m_file->read_line(m_buffer));
+        VERIFY(has_next());
+        m_current_line = TRY(m_file->read_line_with_resize(m_buffer));
         ++m_line_number;
         return m_current_line;
     }
@@ -700,6 +741,7 @@ private:
         , m_file(move(file))
         , m_output(move(output))
         , m_output_temp_file(move(temp_file))
+        , m_buffer(MUST(ByteBuffer::create_uninitialized(PAGE_SIZE)))
     {
     }
 
@@ -711,8 +753,7 @@ private:
     OwnPtr<FileSystem::TempFile> m_output_temp_file;
     size_t m_line_number { 0 };
     ByteString m_current_line;
-    constexpr static size_t MAX_SUPPORTED_LINE_SIZE = 4096;
-    Array<u8, MAX_SUPPORTED_LINE_SIZE> m_buffer;
+    ByteBuffer m_buffer;
 };
 
 static ErrorOr<void> write_pattern_space(File& output, StringBuilder& pattern_space)
@@ -724,12 +765,21 @@ static ErrorOr<void> write_pattern_space(File& output, StringBuilder& pattern_sp
 
 static void print_unambiguous(StringView pattern_space)
 {
-    // TODO: find out the terminal width, folding width should be less than that
-    // to make it clear that folding is happening
-    constexpr size_t fold_width = 70;
+    auto find_fold_width = []() -> size_t {
+        auto isatty = Core::System::isatty(STDOUT_FILENO);
+        if (!isatty.is_error() && isatty.release_value()) {
+            struct winsize ws;
+            if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+                return ws.ws_col;
+            }
+        }
+
+        return 70;
+    };
+    size_t fold_width = find_fold_width();
 
     AK::StringBuilder unambiguous_output;
-    auto folded_append = [&unambiguous_output, current_line_length = size_t { 0 }](auto const& value, size_t length) mutable {
+    auto folded_append = [&unambiguous_output, current_line_length = size_t { 0 }, fold_width](auto const& value, size_t length) mutable {
         if (current_line_length + length < fold_width) {
             current_line_length += length;
         } else {
@@ -763,7 +813,7 @@ static void print_unambiguous(StringView pattern_space)
     outln("{}$", unambiguous_output.string_view());
 }
 
-static ErrorOr<CycleDecision> apply(Command const& command, StringBuilder& pattern_space, StringBuilder& hold_space, File& input, File& stdout, bool suppress_default_output)
+static ErrorOr<CycleDecision> apply(Command const& command, StringBuilder& pattern_space, StringBuilder& hold_space, StringBuilder& read_command_file_contents, File& input, File& stdout, bool suppress_default_output)
 {
     auto cycle_decision = CycleDecision::None;
 
@@ -796,7 +846,7 @@ static ErrorOr<CycleDecision> apply(Command const& command, StringBuilder& patte
         if (!suppress_default_output)
             TRY(write_pattern_space(stdout, pattern_space));
         TRY(write_pattern_space(input, pattern_space));
-        if (TRY(input.has_next())) {
+        if (input.has_next()) {
             pattern_space.clear();
             pattern_space.append(TRY(input.next()));
         }
@@ -820,9 +870,37 @@ static ErrorOr<CycleDecision> apply(Command const& command, StringBuilder& patte
         auto replacement_made = result != pattern_space_sv;
         pattern_space.clear();
         pattern_space.append(result);
+        if (replacement_made && s_args.output_filepath.has_value()) {
+            auto output_file = TRY(Core::File::open(s_args.output_filepath.value(), Core::File::OpenMode::Write | Core::File::OpenMode::Append));
+            TRY(output_file->write_until_depleted(TRY(pattern_space.to_byte_buffer())));
+            TRY(output_file->write_value('\n'));
+        }
         if (replacement_made && s_args.print)
             TRY(write_pattern_space(stdout, pattern_space));
         TRY(write_pattern_space(input, pattern_space));
+        break;
+    }
+    case 'y': {
+        // FIXME: Escaping in the transform strings doesn't work properly
+        auto pattern_space_sv = pattern_space.string_view();
+        auto const& y_args = command.arguments->get<YArguments>();
+        VERIFY(y_args.characters.length() == y_args.replacements.length());
+
+        HashMap<char, char> replacement;
+        for (size_t i = 0; i < y_args.characters.length(); i++) {
+            TRY(replacement.try_set(y_args.characters[i], y_args.replacements[i]));
+        }
+
+        StringBuilder new_string;
+        for (size_t i = 0; i < pattern_space.length(); i++) {
+            if (replacement.contains(pattern_space_sv[i]))
+                new_string.append(replacement.get(pattern_space_sv[i]).value());
+            else
+                new_string.append(pattern_space_sv[i]);
+        }
+
+        pattern_space.clear();
+        pattern_space.append(new_string.to_byte_string());
         break;
     }
     case 'x':
@@ -833,6 +911,25 @@ static ErrorOr<CycleDecision> apply(Command const& command, StringBuilder& patte
         break;
     case '#':
         break;
+    case 'w': {
+        auto const& w_args = command.arguments->get<WArguments>();
+        auto output_file = TRY(Core::File::open(w_args.output_filepath, Core::File::OpenMode::Write | Core::File::OpenMode::Append));
+        TRY(output_file->write_until_depleted(TRY(pattern_space.to_byte_buffer())));
+        TRY(output_file->write_value('\n'));
+        break;
+    }
+    case 'r': {
+        auto const& r_args = command.arguments->get<RArguments>();
+        auto input_file_or_error = Core::File::open(r_args.input_filepath, Core::File::OpenMode::Read);
+        if (!input_file_or_error.is_error()) {
+            auto input_file = input_file_or_error.release_value();
+            auto file_contents = TRY(input_file->read_until_eof());
+
+            VERIFY(read_command_file_contents.is_empty());
+            read_command_file_contents.append(file_contents);
+        }
+        break;
+    }
     default:
         warnln("Command not implemented: {}", command.function);
         break;
@@ -847,17 +944,24 @@ static ErrorOr<void> run(Vector<File>& inputs, Script& script, bool suppress_def
 
     StringBuilder pattern_space;
     StringBuilder hold_space;
+    StringBuilder read_command_file_contents;
 
     // TODO: extend to multiple input files
     auto& input = inputs[0];
     auto stdout = TRY(File::create_from_stdout());
 
     // main loop
-    while (TRY(input.has_next())) {
+    while (input.has_next()) {
+        if (!read_command_file_contents.is_empty() && !suppress_default_output)
+            // FIXME: Should we use `out' instead?
+            outln("{}", read_command_file_contents.string_view());
+        read_command_file_contents.clear();
 
         // Avoid potential last, empty line
         auto line = TRY(input.next());
-        auto is_last_line = !TRY(input.has_next());
+        auto is_last_line = !input.has_next();
+        if (is_last_line && line.is_empty())
+            break;
 
         // TODO: "Reading from input shall be skipped if a <newline> was in the pattern space prior to a D command ending the previous cycle"
         pattern_space.append(line);
@@ -871,7 +975,7 @@ static ErrorOr<void> run(Vector<File>& inputs, Script& script, bool suppress_def
         for (auto& command : script.commands()) {
             if (!command.is_enabled())
                 continue;
-            auto command_cycle_decision = TRY(apply(command, pattern_space, hold_space, input, stdout, suppress_default_output));
+            auto command_cycle_decision = TRY(apply(command, pattern_space, hold_space, read_command_file_contents, input, stdout, suppress_default_output));
             if (command_cycle_decision == CycleDecision::Next || command_cycle_decision == CycleDecision::Quit) {
                 cycle_decision = command_cycle_decision;
                 break;
@@ -880,19 +984,20 @@ static ErrorOr<void> run(Vector<File>& inputs, Script& script, bool suppress_def
 
         if (cycle_decision == CycleDecision::Next)
             continue;
-        if (cycle_decision == CycleDecision::Quit)
-            break;
 
         if (!suppress_default_output)
             TRY(write_pattern_space(stdout, pattern_space));
         pattern_space.clear();
+
+        if (cycle_decision == CycleDecision::Quit)
+            break;
     }
     return {};
 }
 
 ErrorOr<int> serenity_main(Main::Arguments args)
 {
-    TRY(Core::System::pledge("stdio cpath rpath wpath fattr chown"));
+    TRY(Core::System::pledge("stdio cpath rpath wpath fattr chown tty"));
 
     bool suppress_default_output = false;
     bool edit_in_place = false;
@@ -938,7 +1043,7 @@ ErrorOr<int> serenity_main(Main::Arguments args)
 
     // We only need fattr and chown for in-place editing.
     if (!edit_in_place)
-        TRY(Core::System::pledge("stdio cpath rpath wpath"));
+        TRY(Core::System::pledge("stdio cpath rpath wpath tty"));
 
     if (script.commands().is_empty()) {
         if (pos_args.is_empty()) {
@@ -957,7 +1062,7 @@ ErrorOr<int> serenity_main(Main::Arguments args)
         TRY(paths_to_unveil.try_set(TRY(FileSystem::absolute_path(input_filename)), edit_in_place ? "rwc"_string : "r"_string));
     }
     for (auto const& output_filename : TRY(script.output_filenames())) {
-        TRY(paths_to_unveil.try_set(TRY(FileSystem::absolute_path(output_filename)), "w"_string));
+        TRY(paths_to_unveil.try_set(TRY(FileSystem::absolute_path(output_filename)), "rwc"_string));
     }
 
     Vector<File> inputs;

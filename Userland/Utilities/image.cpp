@@ -7,13 +7,17 @@
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <LibCore/MappedFile.h>
+#include <LibCore/MimeData.h>
 #include <LibGfx/ICC/Profile.h>
 #include <LibGfx/ImageFormats/BMPWriter.h>
+#include <LibGfx/ImageFormats/GIFWriter.h>
 #include <LibGfx/ImageFormats/ImageDecoder.h>
 #include <LibGfx/ImageFormats/JPEGWriter.h>
 #include <LibGfx/ImageFormats/PNGWriter.h>
 #include <LibGfx/ImageFormats/PortableFormatWriter.h>
 #include <LibGfx/ImageFormats/QOIWriter.h>
+#include <LibGfx/ImageFormats/WebPSharedLossless.h>
+#include <LibGfx/ImageFormats/WebPWriter.h>
 
 using AnyBitmap = Variant<RefPtr<Gfx::Bitmap>, RefPtr<Gfx::CMYKBitmap>>;
 struct LoadedImage {
@@ -45,7 +49,7 @@ static ErrorOr<LoadedImage> load_image(RefPtr<Gfx::ImageDecoder> const& decoder,
 static ErrorOr<void> invert_cmyk(LoadedImage& image)
 {
     if (!image.bitmap.has<RefPtr<Gfx::CMYKBitmap>>())
-        return Error::from_string_view("Can't --invert-cmyk with RGB bitmaps"sv);
+        return Error::from_string_literal("Can't --invert-cmyk with RGB bitmaps");
     auto& frame = image.bitmap.get<RefPtr<Gfx::CMYKBitmap>>();
 
     for (auto& pixel : *frame) {
@@ -60,7 +64,7 @@ static ErrorOr<void> invert_cmyk(LoadedImage& image)
 static ErrorOr<void> crop_image(LoadedImage& image, Gfx::IntRect const& rect)
 {
     if (!image.bitmap.has<RefPtr<Gfx::Bitmap>>())
-        return Error::from_string_view("Can't --crop CMYK bitmaps yet"sv);
+        return Error::from_string_literal("Can't --crop CMYK bitmaps yet");
     auto& frame = image.bitmap.get<RefPtr<Gfx::Bitmap>>();
     frame = TRY(frame->cropped(rect));
     return {};
@@ -69,17 +73,17 @@ static ErrorOr<void> crop_image(LoadedImage& image, Gfx::IntRect const& rect)
 static ErrorOr<void> move_alpha_to_rgb(LoadedImage& image)
 {
     if (!image.bitmap.has<RefPtr<Gfx::Bitmap>>())
-        return Error::from_string_view("Can't --move-alpha-to-rgb with CMYK bitmaps"sv);
+        return Error::from_string_literal("Can't --move-alpha-to-rgb with CMYK bitmaps");
     auto& frame = image.bitmap.get<RefPtr<Gfx::Bitmap>>();
 
     switch (frame->format()) {
     case Gfx::BitmapFormat::Invalid:
-        return Error::from_string_view("Can't --move-alpha-to-rgb with invalid bitmaps"sv);
+        return Error::from_string_literal("Can't --move-alpha-to-rgb with invalid bitmaps");
     case Gfx::BitmapFormat::RGBA8888:
         // No image decoder currently produces bitmaps with this format.
         // If that ever changes, preferrably fix the image decoder to use BGRA8888 instead :)
         // If there's a good reason for not doing that, implement support for this, I suppose.
-        return Error::from_string_view("--move-alpha-to-rgb not implemented for RGBA8888"sv);
+        return Error::from_string_literal("--move-alpha-to-rgb not implemented for RGBA8888");
     case Gfx::BitmapFormat::BGRA8888:
     case Gfx::BitmapFormat::BGRx8888:
         // FIXME: If BitmapFormat::Gray8 existed (and image encoders made use of it to write grayscale images), we could use it here.
@@ -94,17 +98,17 @@ static ErrorOr<void> move_alpha_to_rgb(LoadedImage& image)
 static ErrorOr<void> strip_alpha(LoadedImage& image)
 {
     if (!image.bitmap.has<RefPtr<Gfx::Bitmap>>())
-        return Error::from_string_view("Can't --strip-alpha with CMYK bitmaps"sv);
+        return Error::from_string_literal("Can't --strip-alpha with CMYK bitmaps");
     auto& frame = image.bitmap.get<RefPtr<Gfx::Bitmap>>();
 
     switch (frame->format()) {
     case Gfx::BitmapFormat::Invalid:
-        return Error::from_string_view("Can't --strip-alpha with invalid bitmaps"sv);
+        return Error::from_string_literal("Can't --strip-alpha with invalid bitmaps");
     case Gfx::BitmapFormat::RGBA8888:
         // No image decoder currently produces bitmaps with this format.
         // If that ever changes, preferrably fix the image decoder to use BGRA8888 instead :)
         // If there's a good reason for not doing that, implement support for this, I suppose.
-        return Error::from_string_view("--strip-alpha not implemented for RGBA8888"sv);
+        return Error::from_string_literal("--strip-alpha not implemented for RGBA8888");
     case Gfx::BitmapFormat::BGRA8888:
     case Gfx::BitmapFormat::BGRx8888:
         frame->strip_alpha_channel();
@@ -115,7 +119,7 @@ static ErrorOr<void> strip_alpha(LoadedImage& image)
 static ErrorOr<OwnPtr<Core::MappedFile>> convert_image_profile(LoadedImage& image, StringView convert_color_profile_path, OwnPtr<Core::MappedFile> maybe_source_icc_file)
 {
     if (!image.icc_data.has_value())
-        return Error::from_string_view("No source color space embedded in image. Pass one with --assign-color-profile."sv);
+        return Error::from_string_literal("No source color space embedded in image. Pass one with --assign-color-profile.");
 
     auto source_icc_file = move(maybe_source_icc_file);
     auto source_icc_data = image.icc_data.value();
@@ -126,11 +130,11 @@ static ErrorOr<OwnPtr<Core::MappedFile>> convert_image_profile(LoadedImage& imag
     auto destination_profile = TRY(Gfx::ICC::Profile::try_load_from_externally_owned_memory(icc_file->bytes()));
 
     if (destination_profile->data_color_space() != Gfx::ICC::ColorSpace::RGB)
-        return Error::from_string_view("Can only convert to RGB at the moment, but destination color space is not RGB"sv);
+        return Error::from_string_literal("Can only convert to RGB at the moment, but destination color space is not RGB");
 
     if (image.bitmap.has<RefPtr<Gfx::CMYKBitmap>>()) {
         if (source_profile->data_color_space() != Gfx::ICC::ColorSpace::CMYK)
-            return Error::from_string_view("Source image data is CMYK but source color space is not CMYK"sv);
+            return Error::from_string_literal("Source image data is CMYK but source color space is not CMYK");
 
         auto& cmyk_frame = image.bitmap.get<RefPtr<Gfx::CMYKBitmap>>();
         auto rgb_frame = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, cmyk_frame->size()));
@@ -147,7 +151,7 @@ static ErrorOr<OwnPtr<Core::MappedFile>> convert_image_profile(LoadedImage& imag
     return icc_file;
 }
 
-static ErrorOr<void> save_image(LoadedImage& image, StringView out_path, bool ppm_ascii, u8 jpeg_quality)
+static ErrorOr<void> save_image(LoadedImage& image, StringView out_path, bool ppm_ascii, u8 jpeg_quality, Optional<unsigned> webp_allowed_transforms, unsigned webp_color_cache_bits, Compress::ZlibCompressionLevel png_compression_level)
 {
     auto stream = [out_path]() -> ErrorOr<NonnullOwnPtr<Core::OutputBufferedFile>> {
         auto output_stream = TRY(Core::File::open(out_path, Core::File::OpenMode::Write));
@@ -167,8 +171,16 @@ static ErrorOr<void> save_image(LoadedImage& image, StringView out_path, bool pp
 
     auto& frame = image.bitmap.get<RefPtr<Gfx::Bitmap>>();
 
+    if (out_path.ends_with(".gif"sv, CaseSensitivity::CaseInsensitive)) {
+        TRY(Gfx::GIFWriter::encode(*TRY(stream()), *frame));
+        return {};
+    }
     if (out_path.ends_with(".jpg"sv, CaseSensitivity::CaseInsensitive) || out_path.ends_with(".jpeg"sv, CaseSensitivity::CaseInsensitive)) {
         TRY(Gfx::JPEGWriter::encode(*TRY(stream()), *frame, { .icc_data = image.icc_data, .quality = jpeg_quality }));
+        return {};
+    }
+    if (out_path.ends_with(".png"sv, CaseSensitivity::CaseInsensitive)) {
+        TRY(Gfx::PNGWriter::encode(*TRY(stream()), *frame, { .compression_level = png_compression_level, .icc_data = image.icc_data }));
         return {};
     }
     if (out_path.ends_with(".ppm"sv, CaseSensitivity::CaseInsensitive)) {
@@ -176,16 +188,26 @@ static ErrorOr<void> save_image(LoadedImage& image, StringView out_path, bool pp
         TRY(Gfx::PortableFormatWriter::encode(*TRY(stream()), *frame, { .format = format }));
         return {};
     }
+    if (out_path.ends_with(".webp"sv, CaseSensitivity::CaseInsensitive)) {
+        Gfx::WebPWriter::Options options;
+        options.icc_data = image.icc_data;
+        if (webp_allowed_transforms.has_value())
+            options.vp8l_options.allowed_transforms = webp_allowed_transforms.value();
+        if (webp_color_cache_bits == 0)
+            options.vp8l_options.color_cache_bits = {};
+        else
+            options.vp8l_options.color_cache_bits = webp_color_cache_bits;
+        TRY(Gfx::WebPWriter::encode(*TRY(stream()), *frame, options));
+        return {};
+    }
 
     ByteBuffer bytes;
     if (out_path.ends_with(".bmp"sv, CaseSensitivity::CaseInsensitive)) {
         bytes = TRY(Gfx::BMPWriter::encode(*frame, { .icc_data = image.icc_data }));
-    } else if (out_path.ends_with(".png"sv, CaseSensitivity::CaseInsensitive)) {
-        bytes = TRY(Gfx::PNGWriter::encode(*frame, { .icc_data = image.icc_data }));
     } else if (out_path.ends_with(".qoi"sv, CaseSensitivity::CaseInsensitive)) {
         bytes = TRY(Gfx::QOIWriter::encode(*frame));
     } else {
-        return Error::from_string_view("can only write .bmp, .jpg, .png, .ppm, and .qoi"sv);
+        return Error::from_string_literal("can only write .bmp, .gif, .jpg, .png, .ppm, .qoi, and .webp");
     }
     TRY(TRY(stream())->write_until_depleted(bytes));
 
@@ -204,8 +226,11 @@ struct Options {
     StringView assign_color_profile_path;
     StringView convert_color_profile_path;
     bool strip_color_profile = false;
+    Compress::ZlibCompressionLevel png_compression_level { Compress::ZlibCompressionLevel::Default };
     bool ppm_ascii = false;
     u8 quality = 75;
+    unsigned webp_color_cache_bits = 6;
+    Optional<unsigned> webp_allowed_transforms;
 };
 
 template<class T>
@@ -216,7 +241,7 @@ static ErrorOr<Vector<T>> parse_comma_separated_numbers(StringView rect_string)
     for (size_t i = 0; i < parts.size(); ++i) {
         auto part = parts[i].to_number<T>();
         if (!part.has_value())
-            return Error::from_string_view("comma-separated parts must be numbers"sv);
+            return Error::from_string_literal("comma-separated parts must be numbers");
         TRY(part_numbers.try_append(part.value()));
     }
     return part_numbers;
@@ -226,8 +251,26 @@ static ErrorOr<Gfx::IntRect> parse_rect_string(StringView rect_string)
 {
     auto numbers = TRY(parse_comma_separated_numbers<i32>(rect_string));
     if (numbers.size() != 4)
-        return Error::from_string_view("rect must have 4 comma-separated parts"sv);
+        return Error::from_string_literal("rect must have 4 comma-separated parts");
     return Gfx::IntRect { numbers[0], numbers[1], numbers[2], numbers[3] };
+}
+
+static ErrorOr<unsigned> parse_webp_allowed_transforms_string(StringView string)
+{
+    unsigned allowed_transforms = 0;
+    for (StringView part : string.split_view(',')) {
+        if (part == "predictor" || part == "p")
+            allowed_transforms |= 1 << Gfx::PREDICTOR_TRANSFORM;
+        else if (part == "color" || part == "c")
+            allowed_transforms |= 1 << Gfx::COLOR_TRANSFORM;
+        else if (part == "subtract-green" || part == "sg")
+            allowed_transforms |= 1 << Gfx::SUBTRACT_GREEN_TRANSFORM;
+        else if (part == "color-indexing" || part == "ci")
+            allowed_transforms |= 1 << Gfx::COLOR_INDEXING_TRANSFORM;
+        else
+            return Error::from_string_literal("unknown WebP transform; valid values: predictor, p, color, c, subtract-green, sg, color-indexing, ci");
+    }
+    return allowed_transforms;
 }
 
 static ErrorOr<Options> parse_options(Main::Arguments arguments)
@@ -246,15 +289,27 @@ static ErrorOr<Options> parse_options(Main::Arguments arguments)
     args_parser.add_option(options.assign_color_profile_path, "Load color profile from file and assign it to output image", "assign-color-profile", {}, "FILE");
     args_parser.add_option(options.convert_color_profile_path, "Load color profile from file and convert output image from current profile to loaded profile", "convert-to-color-profile", {}, "FILE");
     args_parser.add_option(options.strip_color_profile, "Do not write color profile to output", "strip-color-profile", {});
+    auto png_compression_level = static_cast<unsigned>(Compress::ZlibCompressionLevel::Default);
+    args_parser.add_option(png_compression_level, "PNG compression level, in [0, 3]. Higher values take longer and produce smaller outputs. Default: 2", "png-compression-level", {}, {});
     args_parser.add_option(options.ppm_ascii, "Convert to a PPM in ASCII", "ppm-ascii", {});
     args_parser.add_option(options.quality, "Quality used for the JPEG encoder, the default value is 75 on a scale from 0 to 100", "quality", {}, {});
+    args_parser.add_option(options.webp_color_cache_bits, "Size of the webp color cache (in [0, 11], higher values tend to be slower and produce smaller output, default: 6)", "webp-color-cache-bits", {}, {});
+    StringView webp_allowed_transforms = "default"sv;
+    args_parser.add_option(webp_allowed_transforms, "Comma-separated list of allowed transforms (predictor,p,color,c,subtract-green,sg,color-indexing,ci) for WebP output (default: all allowed)", "webp-allowed-transforms", {}, {});
     args_parser.parse(arguments);
 
     if (options.out_path.is_empty() ^ options.no_output)
-        return Error::from_string_view("exactly one of -o or --no-output is required"sv);
+        return Error::from_string_literal("exactly one of -o or --no-output is required");
 
     if (!crop_rect_string.is_empty())
         options.crop_rect = TRY(parse_rect_string(crop_rect_string));
+
+    if (png_compression_level > 3)
+        return Error::from_string_view("--png-compression-level must be in [0, 3]"sv);
+    options.png_compression_level = static_cast<Compress::ZlibCompressionLevel>(png_compression_level);
+
+    if (webp_allowed_transforms != "default"sv)
+        options.webp_allowed_transforms = TRY(parse_webp_allowed_transforms_string(webp_allowed_transforms));
 
     return options;
 }
@@ -264,9 +319,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     Options options = TRY(parse_options(arguments));
 
     auto file = TRY(Core::MappedFile::map(options.in_path));
-    auto decoder = TRY(Gfx::ImageDecoder::try_create_for_raw_bytes(file->bytes()));
+    auto guessed_mime_type = Core::guess_mime_type_based_on_filename(options.in_path);
+    auto decoder = TRY(Gfx::ImageDecoder::try_create_for_raw_bytes(file->bytes(), guessed_mime_type));
     if (!decoder)
-        return Error::from_string_view("Could not find decoder for input file"sv);
+        return Error::from_string_literal("Could not find decoder for input file");
 
     LoadedImage image = TRY(load_image(*decoder, options.frame_index));
 
@@ -297,7 +353,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     if (options.no_output)
         return 0;
 
-    TRY(save_image(image, options.out_path, options.ppm_ascii, options.quality));
+    TRY(save_image(image, options.out_path, options.ppm_ascii, options.quality, options.webp_allowed_transforms, options.webp_color_cache_bits, options.png_compression_level));
 
     return 0;
 }

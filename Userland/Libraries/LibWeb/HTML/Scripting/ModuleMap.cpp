@@ -17,8 +17,7 @@ void ModuleMap::visit_edges(Visitor& visitor)
         visitor.visit(it.value.module_script);
 
     for (auto const& it : m_callbacks)
-        for (auto const& callback : it.value)
-            visitor.visit(callback);
+        visitor.visit(it.value);
 }
 
 bool ModuleMap::is_fetching(URL::URL const& url, ByteString const& type) const
@@ -42,7 +41,7 @@ bool ModuleMap::is(URL::URL const& url, ByteString const& type, EntryType entry_
 
 Optional<ModuleMap::Entry> ModuleMap::get(URL::URL const& url, ByteString const& type) const
 {
-    return m_values.get({ url, type });
+    return m_values.get({ url, type }).copy();
 }
 
 AK::HashSetResult ModuleMap::set(URL::URL const& url, ByteString const& type, Entry entry)

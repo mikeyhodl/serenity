@@ -17,6 +17,7 @@
 #define _LINUX_EXT2_FS_H
 
 static constexpr size_t max_block_size = 4096;
+static constexpr size_t super_block_offset_on_device = 1024;
 
 #include "ext2_types.h" /* Changed from linux/types.h */
 
@@ -408,9 +409,14 @@ struct ext2_inode_large {
     __u32 i_crtime;       /* File creation time */
     __u32 i_crtime_extra; /* extra File creation time (nsec << 2 | epoch)*/
     __u32 i_version_hi;   /* high 32 bits for 64-bit version */
+    __u32 i_projid;       /* Project ID */
 };
 
 #define i_size_high i_dir_acl
+
+#define EXT4_EPOCH_BITS 2
+#define EXT4_EPOCH_MASK ((1 << EXT4_EPOCH_BITS) - 1)
+#define EXT4_NSEC_MASK (~0UL << EXT4_EPOCH_BITS)
 
 #if defined(__KERNEL__) || defined(__linux__)
 #    define i_reserved1 osd1.linux1.l_i_reserved1

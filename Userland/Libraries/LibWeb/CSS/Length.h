@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2024, Andreas Kling <andreas@ladybird.org>
  * Copyright (c) 2021-2023, Sam Atkins <atkinssj@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -155,6 +155,7 @@ public:
 
     Type type() const { return m_type; }
     double raw_value() const { return m_value; }
+    StringView unit_name() const;
 
     struct ResolutionContext {
         [[nodiscard]] static Length::ResolutionContext for_layout_node(Layout::Node const&);
@@ -177,11 +178,14 @@ public:
     {
         if (is_auto())
             return 0;
+        if (is_absolute())
+            return absolute_length_to_px();
         if (is_font_relative())
             return font_relative_length_to_px(font_metrics, root_font_metrics);
         if (is_viewport_relative())
             return viewport_relative_length_to_px(viewport_rect);
-        return absolute_length_to_px();
+
+        VERIFY_NOT_REACHED();
     }
 
     ALWAYS_INLINE CSSPixels absolute_length_to_px() const
@@ -222,9 +226,10 @@ public:
     Optional<Length> absolutize(CSSPixelRect const& viewport_rect, FontMetrics const& font_metrics, FontMetrics const& root_font_metrics) const;
     Length absolutized(CSSPixelRect const& viewport_rect, FontMetrics const& font_metrics, FontMetrics const& root_font_metrics) const;
 
-private:
-    char const* unit_name() const;
+    static Length resolve_calculated(NonnullRefPtr<CSSMathValue> const&, Layout::Node const&, Length const& reference_value);
+    static Length resolve_calculated(NonnullRefPtr<CSSMathValue> const&, Layout::Node const&, CSSPixels reference_value);
 
+private:
     [[nodiscard]] CSSPixels to_px_slow_case(Layout::Node const&) const;
 
     Type m_type;

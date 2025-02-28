@@ -116,7 +116,7 @@ ErrorOr<String> Move::to_long_algebraic() const
     return builder.to_string();
 }
 
-Move Move::from_algebraic(StringView algebraic, const Color turn, Board const& board)
+Move Move::from_algebraic(StringView algebraic, Color const turn, Board const& board)
 {
     auto move_string = algebraic;
     Move move({ 50, 50 }, { 50, 50 });
@@ -161,7 +161,7 @@ Move Move::from_algebraic(StringView algebraic, const Color turn, Board const& b
 
     Square::for_each([&](Square const& square) {
         if (!move_string.is_empty()) {
-            if (board.get_piece(square).type == move.piece.type && board.is_legal(Move(square, move.to), turn)) {
+            if (board.get_piece(square).type == move.piece.type && board.is_legal(Move(square, move.to, move.promote_to), turn)) {
                 if (move_string.length() >= 2) {
                     if (square == Square(move_string.substring_view(0, 2))) {
                         move.from = square;
@@ -294,7 +294,7 @@ ErrorOr<String> Board::to_fen() const
     int empty = 0;
     for (int rank = 0; rank < 8; rank++) {
         for (int file = 0; file < 8; file++) {
-            const Piece p(get_piece({ 7 - rank, file }));
+            Piece const p(get_piece({ 7 - rank, file }));
             if (p.type == Type::None) {
                 empty++;
                 continue;

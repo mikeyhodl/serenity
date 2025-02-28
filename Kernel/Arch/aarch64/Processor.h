@@ -154,13 +154,6 @@ ALWAYS_INLINE void ProcessorBase<T>::disable_interrupts()
 }
 
 template<typename T>
-ALWAYS_INLINE bool ProcessorBase<T>::is_kernel_mode()
-{
-    // FIXME: Implement this correctly.
-    return true;
-}
-
-template<typename T>
 ALWAYS_INLINE bool ProcessorBase<T>::current_in_scheduler()
 {
     return current().m_in_scheduler;
@@ -176,12 +169,6 @@ template<typename T>
 ALWAYS_INLINE bool ProcessorBase<T>::has_nx() const
 {
     return true;
-}
-
-template<typename T>
-ALWAYS_INLINE bool ProcessorBase<T>::has_pat() const
-{
-    return false;
 }
 
 template<typename T>
@@ -210,10 +197,11 @@ ALWAYS_INLINE void ProcessorBase<T>::wait_check()
 }
 
 template<typename T>
-ALWAYS_INLINE u64 ProcessorBase<T>::read_cpu_counter()
+ALWAYS_INLINE Optional<u64> ProcessorBase<T>::read_cycle_count()
 {
-    TODO_AARCH64();
-    return 0;
+    if (Processor::current().has_feature(CPUFeature::PMUv3))
+        return Aarch64::PMCCNTR_EL0::read().CCNT;
+    return {};
 }
 
 }

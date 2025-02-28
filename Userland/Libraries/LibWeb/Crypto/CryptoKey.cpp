@@ -7,6 +7,7 @@
 
 #include <AK/Memory.h>
 #include <LibJS/Runtime/Array.h>
+#include <LibWeb/Bindings/CryptoKeyPrototype.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Crypto/CryptoKey.h>
 
@@ -68,6 +69,15 @@ void CryptoKey::set_usages(Vector<Bindings::KeyUsage> usages)
     m_usages = JS::Array::create_from<Bindings::KeyUsage>(realm, m_key_usages.span(), [&](auto& key_usage) -> JS::Value {
         return JS::PrimitiveString::create(realm.vm(), Bindings::idl_enum_to_string(key_usage));
     });
+}
+
+String CryptoKey::algorithm_name() const
+{
+    if (m_algorithm_name.is_empty()) {
+        auto name = MUST(m_algorithm->get("name"));
+        m_algorithm_name = MUST(name.to_string(vm()));
+    }
+    return m_algorithm_name;
 }
 
 JS::NonnullGCPtr<CryptoKeyPair> CryptoKeyPair::create(JS::Realm& realm, JS::NonnullGCPtr<CryptoKey> public_key, JS::NonnullGCPtr<CryptoKey> private_key)

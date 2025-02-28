@@ -20,7 +20,7 @@ struct MessageEventInit : public DOM::EventInit {
     String origin {};
     String last_event_id {};
     Optional<MessageEventSource> source;
-    Vector<JS::Handle<JS::Object>> ports;
+    Vector<JS::Handle<MessagePort>> ports;
 };
 
 class MessageEvent : public DOM::Event {
@@ -39,6 +39,8 @@ public:
     String const& last_event_id() const { return m_last_event_id; }
     JS::NonnullGCPtr<JS::Object> ports() const;
     Variant<JS::Handle<WindowProxy>, JS::Handle<MessagePort>, Empty> source() const;
+
+    void init_message_event(String const& type, bool bubbles, bool cancelable, JS::Value data, String const& origin, String const& last_event_id, Optional<MessageEventSource> source, Vector<JS::Handle<MessagePort>> const& ports);
 
 private:
     virtual void initialize(JS::Realm&) override;

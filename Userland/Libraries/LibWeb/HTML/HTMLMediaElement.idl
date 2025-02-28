@@ -1,10 +1,21 @@
 #import <HTML/AudioTrackList.idl>
 #import <HTML/HTMLElement.idl>
 #import <HTML/MediaError.idl>
+#import <HTML/TextTrack.idl>
+#import <HTML/TextTrackList.idl>
 #import <HTML/TimeRanges.idl>
 #import <HTML/VideoTrackList.idl>
 #import <HTML/Scripting/Fetching.idl>
 
+// https://html.spec.whatwg.org/multipage/media.html#attr-media-preload
+[MissingValueDefault=metadata, InvalidValueDefault=metadata]
+enum Preload {
+    "auto",
+    "none",
+    "metadata"
+};
+
+// https://html.spec.whatwg.org/multipage/media.html#canplaytyperesult
 enum CanPlayTypeResult {
     "",
     "maybe",
@@ -19,8 +30,8 @@ interface HTMLMediaElement : HTMLElement {
     readonly attribute MediaError? error;
 
     // network state
-    [Reflect, CEReactions] attribute DOMString src;
-    // FIXME: attribute MediaProvider? srcObject;
+    [Reflect, CEReactions, URL] attribute USVString src;
+    [FIXME] attribute MediaProvider? srcObject;
     readonly attribute USVString currentSrc;
     [Reflect=crossorigin, CEReactions, Enumerated=CORSSettingsAttribute] attribute DOMString? crossOrigin;
     const unsigned short NETWORK_EMPTY = 0;
@@ -28,7 +39,7 @@ interface HTMLMediaElement : HTMLElement {
     const unsigned short NETWORK_LOADING = 2;
     const unsigned short NETWORK_NO_SOURCE = 3;
     readonly attribute unsigned short networkState;
-    // FIXME: [CEReactions] attribute DOMString preload;
+    [Reflect, CEReactions, Enumerated=Preload] attribute DOMString preload;
     readonly attribute TimeRanges buffered;
     undefined load();
     CanPlayTypeResult canPlayType(DOMString type);
@@ -46,13 +57,13 @@ interface HTMLMediaElement : HTMLElement {
     attribute double currentTime;
     undefined fastSeek(double time);
     readonly attribute unrestricted double duration;
-    // FIXME: object getStartDate();
+    [FIXME] object getStartDate();
     readonly attribute boolean paused;
-    // FIXME: attribute double defaultPlaybackRate;
-    // FIXME: attribute double playbackRate;
-    // FIXME: attribute boolean preservesPitch;
-    // FIXME: readonly attribute TimeRanges played;
-    // FIXME: readonly attribute TimeRanges seekable;
+    [FIXME] attribute double defaultPlaybackRate;
+    [FIXME] attribute double playbackRate;
+    [FIXME] attribute boolean preservesPitch;
+    [FIXME] readonly attribute TimeRanges played;
+    [FIXME] readonly attribute TimeRanges seekable;
     readonly attribute boolean ended;
     [Reflect, CEReactions] attribute boolean autoplay;
     [Reflect, CEReactions] attribute boolean loop;
@@ -68,7 +79,7 @@ interface HTMLMediaElement : HTMLElement {
     // tracks
     [SameObject] readonly attribute AudioTrackList audioTracks;
     [SameObject] readonly attribute VideoTrackList videoTracks;
-    // FIXME: [SameObject] readonly attribute TextTrackList textTracks;
-    // FIXME: TextTrack addTextTrack(TextTrackKind kind, optional DOMString label = "", optional DOMString language = "");
+    [SameObject] readonly attribute TextTrackList textTracks;
+    TextTrack addTextTrack(TextTrackKind kind, optional DOMString label = "", optional DOMString language = "");
 
 };

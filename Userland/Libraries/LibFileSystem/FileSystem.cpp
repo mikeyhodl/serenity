@@ -208,13 +208,10 @@ ErrorOr<void> copy_file(StringView destination_path, StringView source_path, str
     if (source_stat.st_size > 0)
         TRY(destination->truncate(source_stat.st_size));
 
-    while (true) {
-        auto bytes_read = TRY(source.read_until_eof());
-
-        if (bytes_read.is_empty())
-            break;
-
-        TRY(destination->write_until_depleted(bytes_read));
+    ByteBuffer buffer = TRY(ByteBuffer::create_uninitialized(1 * MiB));
+    while (!source.is_eof()) {
+        auto bytes = TRY(source.read_some(buffer));
+        TRY(destination->write_until_depleted(bytes));
     }
 
     auto my_umask = umask(0);
@@ -223,10 +220,14 @@ ErrorOr<void> copy_file(StringView destination_path, StringView source_path, str
     if (!has_flag(preserve_mode, PreserveMode::Permissions))
         my_umask |= 06000;
 
-    TRY(Core::System::fchmod(destination->fd(), source_stat.st_mode & ~my_umask));
+    if (auto result = Core::System::fchmod(destination->fd(), source_stat.st_mode & ~my_umask); result.is_error())
+        if (result.error().is_errno() && result.error().code() != ENOTSUP)
+            return result.release_error();
 
     if (has_flag(preserve_mode, PreserveMode::Ownership))
-        TRY(Core::System::fchown(destination->fd(), source_stat.st_uid, source_stat.st_gid));
+        if (auto result = Core::System::fchown(destination->fd(), source_stat.st_uid, source_stat.st_gid); result.is_error())
+            if (result.error().is_errno() && result.error().code() != ENOTSUP)
+                return result.release_error();
 
     if (has_flag(preserve_mode, PreserveMode::Timestamps)) {
         struct timespec times[2] = {
@@ -271,10 +272,14 @@ ErrorOr<void> copy_directory(StringView destination_path, StringView source_path
     auto my_umask = umask(0);
     umask(my_umask);
 
-    TRY(Core::System::chmod(destination_path, source_stat.st_mode & ~my_umask));
+    if (auto result = Core::System::chmod(destination_path, source_stat.st_mode & ~my_umask); result.is_error())
+        if (result.error().is_errno() && result.error().code() != ENOTSUP)
+            return result.release_error();
 
     if (has_flag(preserve_mode, PreserveMode::Ownership))
-        TRY(Core::System::chown(destination_path, source_stat.st_uid, source_stat.st_gid));
+        if (auto result = Core::System::chown(destination_path, source_stat.st_uid, source_stat.st_gid); result.is_error())
+            if (result.error().is_errno() && result.error().code() != ENOTSUP)
+                return result.release_error();
 
     if (has_flag(preserve_mode, PreserveMode::Timestamps)) {
         struct timespec times[2] = {

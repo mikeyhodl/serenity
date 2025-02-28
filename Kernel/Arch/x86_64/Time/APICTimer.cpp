@@ -24,7 +24,7 @@ UNMAP_AFTER_INIT APICTimer* APICTimer::initialize(u8 interrupt_number, HardwareT
     return &timer.leak_ref();
 }
 
-UNMAP_AFTER_INIT APICTimer::APICTimer(u8 interrupt_number, Function<void(RegisterState const&)> callback)
+UNMAP_AFTER_INIT APICTimer::APICTimer(u8 interrupt_number, Function<void()> callback)
     : HardwareTimer<GenericInterruptHandler>(interrupt_number, move(callback))
 {
     disable_remap();
@@ -44,10 +44,10 @@ UNMAP_AFTER_INIT bool APICTimer::calibrate(HardwareTimerBase& calibration_source
         size_t ticks_in_100ms { 0 };
         Atomic<size_t, AK::memory_order_relaxed> calibration_ticks { 0 };
 #ifdef APIC_TIMER_MEASURE_CPU_CLOCK
-        volatile u64 start_tsc { 0 }, end_tsc { 0 };
+        u64 volatile start_tsc { 0 }, end_tsc { 0 };
 #endif
-        volatile u64 start_reference { 0 }, end_reference { 0 };
-        volatile u32 start_apic_count { 0 }, end_apic_count { 0 };
+        u64 volatile start_reference { 0 }, end_reference { 0 };
+        u32 volatile start_apic_count { 0 }, end_apic_count { 0 };
         bool query_reference { false };
     } state;
 
@@ -55,7 +55,7 @@ UNMAP_AFTER_INIT bool APICTimer::calibrate(HardwareTimerBase& calibration_source
     state.query_reference = calibration_source.can_query_raw();
 
     // temporarily replace the timer callbacks
-    auto original_source_callback = calibration_source.set_callback([&state, &calibration_source](RegisterState const&) {
+    auto original_source_callback = calibration_source.set_callback([&state, &calibration_source]() {
         u32 current_timer_count = state.apic.get_timer_current_count();
 #ifdef APIC_TIMER_MEASURE_CPU_CLOCK
         u64 current_tsc = state.supports_tsc ? read_tsc() : 0;
@@ -82,7 +82,7 @@ UNMAP_AFTER_INIT bool APICTimer::calibrate(HardwareTimerBase& calibration_source
     // We don't want the APIC timer to actually fire. We do however want the
     // calbibration_source timer to fire so that we can read the current
     // tick count from the APIC timer
-    auto original_callback = set_callback([&](RegisterState const&) {
+    auto original_callback = set_callback([&]() {
         // TODO: How should we handle this?
         PANIC("APICTimer: Timer fired during calibration!");
     });
@@ -139,11 +139,6 @@ void APICTimer::enable_local_timer()
 void APICTimer::disable_local_timer()
 {
     APIC::the().setup_local_timer(0, APIC::TimerMode::OneShot, false);
-}
-
-size_t APICTimer::ticks_per_second() const
-{
-    return m_frequency;
 }
 
 void APICTimer::set_periodic()

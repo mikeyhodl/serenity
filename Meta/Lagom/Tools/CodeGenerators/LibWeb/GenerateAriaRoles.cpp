@@ -10,34 +10,7 @@
 #include <LibCore/ArgsParser.h>
 #include <LibMain/Main.h>
 
-ErrorOr<void> generate_header_file(JsonObject& roles_data, Core::File& file);
-ErrorOr<void> generate_implementation_file(JsonObject& roles_data, Core::File& file);
-
-ErrorOr<int> serenity_main(Main::Arguments arguments)
-{
-    StringView generated_header_path;
-    StringView generated_implementation_path;
-    StringView identifiers_json_path;
-
-    Core::ArgsParser args_parser;
-    args_parser.add_option(generated_header_path, "Path to the TransformFunctions header file to generate", "generated-header-path", 'h', "generated-header-path");
-    args_parser.add_option(generated_implementation_path, "Path to the TransformFunctions implementation file to generate", "generated-implementation-path", 'c', "generated-implementation-path");
-    args_parser.add_option(identifiers_json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
-    args_parser.parse(arguments);
-
-    auto json = TRY(read_entire_file_as_json(identifiers_json_path));
-    VERIFY(json.is_object());
-    auto roles_data = json.as_object();
-
-    auto generated_header_file = TRY(Core::File::open(generated_header_path, Core::File::OpenMode::Write));
-    auto generated_implementation_file = TRY(Core::File::open(generated_implementation_path, Core::File::OpenMode::Write));
-
-    TRY(generate_header_file(roles_data, *generated_header_file));
-    TRY(generate_implementation_file(roles_data, *generated_implementation_file));
-
-    return 0;
-}
-
+namespace {
 ErrorOr<void> generate_header_file(JsonObject& roles_data, Core::File& file)
 {
     StringBuilder builder;
@@ -130,7 +103,7 @@ void generate_hash_table_member(SourceGenerator& generator, StringView member_na
     member_generator.set("member_name"sv, member_name);
     member_generator.set("hash_table_name"sv, hash_table_name);
     member_generator.set("enum_class"sv, enum_class);
-    member_generator.set("hash_table_size"sv, MUST(String::number(values.size())));
+    member_generator.set("hash_table_size"sv, String::number(values.size()));
 
     if (values.size() == 0) {
         member_generator.append(R"~~~(
@@ -166,6 +139,10 @@ StringView aria_name_to_enum_name(StringView name)
         return "AriaAtomic"sv;
     } else if (name == "aria-autocomplete"sv) {
         return "AriaAutoComplete"sv;
+    } else if (name == "aria-braillelabel"sv) {
+        return "AriaBrailleLabel"sv;
+    } else if (name == "aria-brailleroledescription"sv) {
+        return "AriaBrailleRoleDescription"sv;
     } else if (name == "aria-busy"sv) {
         return "AriaBusy"sv;
     } else if (name == "aria-checked"sv) {
@@ -174,6 +151,8 @@ StringView aria_name_to_enum_name(StringView name)
         return "AriaColCount"sv;
     } else if (name == "aria-colindex"sv) {
         return "AriaColIndex"sv;
+    } else if (name == "aria-colindextext"sv) {
+        return "AriaColIndexText"sv;
     } else if (name == "aria-colspan"sv) {
         return "AriaColSpan"sv;
     } else if (name == "aria-controls"sv) {
@@ -182,6 +161,8 @@ StringView aria_name_to_enum_name(StringView name)
         return "AriaCurrent"sv;
     } else if (name == "aria-describedby"sv) {
         return "AriaDescribedBy"sv;
+    } else if (name == "aria-description"sv) {
+        return "AriaDescription"sv;
     } else if (name == "aria-details"sv) {
         return "AriaDetails"sv;
     } else if (name == "aria-disabled"sv) {
@@ -240,6 +221,8 @@ StringView aria_name_to_enum_name(StringView name)
         return "AriaRowCount"sv;
     } else if (name == "aria-rowindex"sv) {
         return "AriaRowIndex"sv;
+    } else if (name == "aria-rowindextext"sv) {
+        return "AriaRowIndexText"sv;
     } else if (name == "aria-rowspan"sv) {
         return "AriaRowSpan"sv;
     } else if (name == "aria-selected"sv) {
@@ -386,4 +369,30 @@ NameFromSource @name@::name_from_source() const
 
     TRY(file.write_until_depleted(generator.as_string_view().bytes()));
     return {};
+}
+} // end anonymous namespace
+
+ErrorOr<int> serenity_main(Main::Arguments arguments)
+{
+    StringView generated_header_path;
+    StringView generated_implementation_path;
+    StringView json_path;
+
+    Core::ArgsParser args_parser;
+    args_parser.add_option(generated_header_path, "Path to the TransformFunctions header file to generate", "generated-header-path", 'h', "generated-header-path");
+    args_parser.add_option(generated_implementation_path, "Path to the TransformFunctions implementation file to generate", "generated-implementation-path", 'c', "generated-implementation-path");
+    args_parser.add_option(json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
+    args_parser.parse(arguments);
+
+    auto json = TRY(read_entire_file_as_json(json_path));
+    VERIFY(json.is_object());
+    auto roles_data = json.as_object();
+
+    auto generated_header_file = TRY(Core::File::open(generated_header_path, Core::File::OpenMode::Write));
+    auto generated_implementation_file = TRY(Core::File::open(generated_implementation_path, Core::File::OpenMode::Write));
+
+    TRY(generate_header_file(roles_data, *generated_header_file));
+    TRY(generate_implementation_file(roles_data, *generated_implementation_file));
+
+    return 0;
 }

@@ -5,25 +5,13 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGLengthPrototype.h>
 #include <LibWeb/CSS/PercentageOr.h>
 #include <LibWeb/SVG/SVGLength.h>
 
 namespace Web::SVG {
 
 JS_DEFINE_ALLOCATOR(SVGLength);
-
-// Same as SVGLength.idl
-constexpr unsigned short SVG_LENGTHTYPE_UNKNOWN = 0;
-constexpr unsigned short SVG_LENGTHTYPE_NUMBER = 1;
-constexpr unsigned short SVG_LENGTHTYPE_PERCENTAGE = 2;
-constexpr unsigned short SVG_LENGTHTYPE_EMS = 3;
-constexpr unsigned short SVG_LENGTHTYPE_EXS = 4;
-constexpr unsigned short SVG_LENGTHTYPE_PX = 5;
-constexpr unsigned short SVG_LENGTHTYPE_CM = 6;
-constexpr unsigned short SVG_LENGTHTYPE_MM = 7;
-constexpr unsigned short SVG_LENGTHTYPE_IN = 8;
-constexpr unsigned short SVG_LENGTHTYPE_PT = 9;
-constexpr unsigned short SVG_LENGTHTYPE_PC = 10;
 
 JS::NonnullGCPtr<SVGLength> SVGLength::create(JS::Realm& realm, u8 unit_type, float value)
 {

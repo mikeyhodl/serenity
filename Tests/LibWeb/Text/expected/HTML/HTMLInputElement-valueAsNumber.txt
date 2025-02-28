@@ -1,4 +1,6 @@
-   valueAsNumber getter:
+valueAsNumber getter:
+number: 100
+range: 100
 hidden: NaN
 text: NaN
 search: NaN
@@ -11,8 +13,6 @@ month: NaN
 week: NaN
 time: NaN
 datetime-local: NaN
-number: 100
-range: 100
 color: NaN
 checkbox: NaN
 radio: NaN
@@ -22,6 +22,8 @@ image: NaN
 reset: NaN
 button: NaN
 valueAsNumber setter:
+number did not throw: 100
+range did not throw: 100
 hidden threw exception: InvalidStateError: valueAsNumber: Invalid input type used
 text threw exception: InvalidStateError: valueAsNumber: Invalid input type used
 search threw exception: InvalidStateError: valueAsNumber: Invalid input type used
@@ -33,9 +35,7 @@ date did not throw: NaN
 month did not throw: NaN
 week did not throw: NaN
 time did not throw: NaN
-datetime-local threw exception: InvalidStateError: valueAsNumber: Invalid input type used
-number did not throw: 100
-range did not throw: 100
+datetime-local did not throw: NaN
 color threw exception: InvalidStateError: valueAsNumber: Invalid input type used
 checkbox threw exception: InvalidStateError: valueAsNumber: Invalid input type used
 radio threw exception: InvalidStateError: valueAsNumber: Invalid input type used

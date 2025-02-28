@@ -17,11 +17,11 @@ struct BorderRadiusData {
     CSSPixels horizontal_radius { 0 };
     CSSPixels vertical_radius { 0 };
 
-    Gfx::AntiAliasingPainter::CornerRadius as_corner(PaintContext const& context) const;
+    Gfx::CornerRadius as_corner(PaintContext const& context) const;
 
     inline operator bool() const
     {
-        return horizontal_radius > 0 || vertical_radius > 0;
+        return horizontal_radius > 0 && vertical_radius > 0;
     }
 
     inline void shrink(CSSPixels horizontal, CSSPixels vertical)
@@ -39,7 +39,7 @@ struct BorderRadiusData {
     }
 };
 
-using CornerRadius = Gfx::AntiAliasingPainter::CornerRadius;
+using CornerRadius = Gfx::CornerRadius;
 
 struct CornerRadii {
     CornerRadius top_left;

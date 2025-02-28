@@ -16,6 +16,7 @@
 #include <ctype.h>
 #include <stdio.h>
 
+namespace {
 struct Parameter {
     Vector<ByteString> attributes;
     ByteString type;
@@ -70,7 +71,7 @@ static bool is_primitive_type(ByteString const& type)
 static bool is_simple_type(ByteString const& type)
 {
     // Small types that it makes sense just to pass by value.
-    return type.is_one_of("Gfx::Color", "Web::DevicePixels", "Gfx::IntPoint", "Gfx::FloatPoint", "Web::DevicePixelPoint", "Gfx::IntSize", "Gfx::FloatSize", "Web::DevicePixelSize", "Core::File::OpenMode", "Web::Cookie::Source", "Web::HTML::AllowMultipleFiles");
+    return type.is_one_of("AK::CaseSensitivity", "AK::Duration", "Gfx::Color", "Web::DevicePixels", "Gfx::IntPoint", "Gfx::FloatPoint", "Web::DevicePixelPoint", "Gfx::IntSize", "Gfx::FloatSize", "Web::DevicePixelSize", "Core::File::OpenMode", "Web::Cookie::Source", "Web::EventResult", "Web::HTML::AllowMultipleFiles", "Web::HTML::AudioPlayState", "Web::HTML::HistoryHandlingBehavior", "WebView::PageInfoType");
 }
 
 static bool is_primitive_or_simple_type(ByteString const& type)
@@ -109,8 +110,39 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
             lexer.ignore_until('\n');
     };
 
-    auto parse_parameter = [&](Vector<Parameter>& storage) {
-        for (;;) {
+    auto parse_parameter_type = [&]() {
+        ByteString parameter_type = lexer.consume_until([](char ch) { return ch == '<' || isspace(ch); });
+        if (lexer.peek() == '<') {
+            lexer.consume();
+
+            StringBuilder builder;
+            builder.append(parameter_type);
+            builder.append('<');
+            auto nesting_level = 1;
+            while (nesting_level > 0) {
+                auto inner_type = lexer.consume_until([](char ch) { return ch == '<' || ch == '>'; });
+                if (lexer.is_eof()) {
+                    warnln("Unexpected EOF when parsing parameter type");
+                    VERIFY_NOT_REACHED();
+                }
+                builder.append(inner_type);
+                if (lexer.peek() == '<') {
+                    nesting_level++;
+                } else if (lexer.peek() == '>') {
+                    nesting_level--;
+                }
+
+                builder.append(lexer.consume());
+            }
+
+            parameter_type = builder.to_byte_string();
+        }
+
+        return parameter_type;
+    };
+
+    auto parse_parameter = [&](Vector<Parameter>& storage, StringView message_name) {
+        for (auto parameter_index = 1;; ++parameter_index) {
             Parameter parameter;
             if (lexer.is_eof()) {
                 warnln("EOF when parsing parameter");
@@ -133,12 +165,9 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
                     consume_whitespace();
                 }
             }
-            // FIXME: This is not entirely correct. Types can have spaces, for example `HashMap<int, ByteString>`.
-            //        Maybe we should use LibCpp::Parser for parsing types.
-            parameter.type = lexer.consume_until([](char ch) { return isspace(ch); });
-            if (parameter.type.ends_with(',')) {
-                warnln("Parameter type '{}' looks invalid!", parameter.type);
-                warnln("Note that templates must not include spaces.");
+            parameter.type = parse_parameter_type();
+            if (parameter.type.ends_with(',') || parameter.type.ends_with(')')) {
+                warnln("Parameter {} of method: {} must be named", parameter_index, message_name);
                 VERIFY_NOT_REACHED();
             }
             VERIFY(!lexer.is_eof());
@@ -153,10 +182,10 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
         }
     };
 
-    auto parse_parameters = [&](Vector<Parameter>& storage) {
+    auto parse_parameters = [&](Vector<Parameter>& storage, StringView message_name) {
         for (;;) {
             consume_whitespace();
-            parse_parameter(storage);
+            parse_parameter(storage, message_name);
             consume_whitespace();
             if (lexer.consume_specific(','))
                 continue;
@@ -171,7 +200,7 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
         message.name = lexer.consume_until([](char ch) { return isspace(ch) || ch == '('; });
         consume_whitespace();
         assert_specific('(');
-        parse_parameters(message.inputs);
+        parse_parameters(message.inputs, message.name);
         assert_specific(')');
         consume_whitespace();
         assert_specific('=');
@@ -188,7 +217,7 @@ Vector<Endpoint> parse(ByteBuffer const& file_contents)
 
         if (message.is_synchronous) {
             assert_specific('(');
-            parse_parameters(message.outputs);
+            parse_parameters(message.outputs, message.name);
             assert_specific(')');
         }
 
@@ -344,9 +373,9 @@ public:)~~~");
     static i32 static_message_id() { return (int)MessageID::@message.pascal_name@; }
     virtual const char* message_name() const override { return "@endpoint.name@::@message.pascal_name@"; }
 
-    static ErrorOr<NonnullOwnPtr<@message.pascal_name@>> decode(Stream& stream, Core::LocalSocket& socket)
+    static ErrorOr<NonnullOwnPtr<@message.pascal_name@>> decode(Stream& stream, Queue<IPC::File>& files)
     {
-        IPC::Decoder decoder { stream, socket };)~~~");
+        IPC::Decoder decoder { stream, files };)~~~");
 
     for (auto const& parameter : parameters) {
         auto parameter_generator = message_generator.fork();
@@ -592,7 +621,7 @@ public:
 
     static u32 static_magic() { return @endpoint.magic@; }
 
-    static ErrorOr<NonnullOwnPtr<IPC::Message>> decode_message(ReadonlyBytes buffer, [[maybe_unused]] Core::LocalSocket& socket)
+    static ErrorOr<NonnullOwnPtr<IPC::Message>> decode_message(ReadonlyBytes buffer, [[maybe_unused]] Queue<IPC::File>& files)
     {
         FixedMemoryStream stream { buffer };
         auto message_endpoint_magic = TRY(stream.read_value<u32>());)~~~");
@@ -621,7 +650,7 @@ public:
 
             message_generator.append(R"~~~(
         case (int)Messages::@endpoint.name@::MessageID::@message.pascal_name@:
-            return TRY(Messages::@endpoint.name@::@message.pascal_name@::decode(stream, socket));)~~~");
+            return TRY(Messages::@endpoint.name@::@message.pascal_name@::decode(stream, files));)~~~");
         };
 
         do_decode_message(message.name);
@@ -795,6 +824,7 @@ void build(StringBuilder& builder, Vector<Endpoint> const& endpoints)
     for (auto const& endpoint : endpoints)
         build_endpoint(generator.fork(), endpoint);
 }
+} // end anonymous namespace
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {

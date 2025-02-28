@@ -18,10 +18,10 @@
 #include <LibGfx/GrayscaleBitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/PaintStyle.h>
-#include <LibGfx/Painter.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
+#include <LibGfx/ScalingMode.h>
 #include <LibGfx/Size.h>
 #include <LibGfx/StylePainter.h>
 #include <LibGfx/TextAlignment.h>
@@ -33,7 +33,8 @@
 #include <LibWeb/Painting/BorderRadiiData.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
 #include <LibWeb/Painting/GradientData.h>
-#include <LibWeb/Painting/PaintOuterBoxShadowParams.h>
+#include <LibWeb/Painting/PaintBoxShadowParams.h>
+#include <LibWeb/Painting/PaintStyle.h>
 
 namespace Web::Painting {
 
@@ -49,19 +50,6 @@ struct DrawGlyphRun {
     void translate_by(Gfx::IntPoint const& offset);
 };
 
-struct DrawText {
-    Gfx::IntRect rect;
-    String raw_text;
-    Gfx::TextAlignment alignment;
-    Color color;
-    Gfx::TextElision elision;
-    Gfx::TextWrapping wrapping;
-    Optional<NonnullRefPtr<Gfx::Font>> font {};
-
-    [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
-    void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
-};
-
 struct FillRect {
     Gfx::IntRect rect;
     Color color;
@@ -75,7 +63,7 @@ struct DrawScaledBitmap {
     Gfx::IntRect dst_rect;
     NonnullRefPtr<Gfx::Bitmap> bitmap;
     Gfx::IntRect src_rect;
-    Gfx::Painter::ScalingMode scaling_mode;
+    Gfx::ScalingMode scaling_mode;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return dst_rect; }
     void translate_by(Gfx::IntPoint const& offset) { dst_rect.translate_by(offset); }
@@ -85,7 +73,7 @@ struct DrawScaledImmutableBitmap {
     Gfx::IntRect dst_rect;
     NonnullRefPtr<Gfx::ImmutableBitmap> bitmap;
     Gfx::IntRect src_rect;
-    Gfx::Painter::ScalingMode scaling_mode;
+    Gfx::ScalingMode scaling_mode;
     Vector<Gfx::Path> clip_paths;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return dst_rect; }
@@ -141,15 +129,16 @@ struct PaintLinearGradient {
 };
 
 struct PaintOuterBoxShadow {
-    PaintOuterBoxShadowParams outer_box_shadow_params;
+    PaintBoxShadowParams box_shadow_params;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const;
     void translate_by(Gfx::IntPoint const& offset);
 };
 
 struct PaintInnerBoxShadow {
-    PaintOuterBoxShadowParams outer_box_shadow_params;
+    PaintBoxShadowParams box_shadow_params;
 
+    [[nodiscard]] Gfx::IntRect bounding_rect() const;
     void translate_by(Gfx::IntPoint const& offset);
 };
 
@@ -157,9 +146,9 @@ struct PaintTextShadow {
     int blur_radius;
     Gfx::IntRect shadow_bounding_rect;
     Gfx::IntRect text_rect;
-    Vector<Gfx::DrawGlyphOrEmoji> glyph_run;
+    NonnullRefPtr<Gfx::GlyphRun> glyph_run;
+    double glyph_run_scale { 1 };
     Color color;
-    int fragment_baseline;
     Gfx::IntPoint draw_location;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return { draw_location, shadow_bounding_rect.size() }; }
@@ -169,10 +158,10 @@ struct PaintTextShadow {
 struct FillRectWithRoundedCorners {
     Gfx::IntRect rect;
     Color color;
-    Gfx::AntiAliasingPainter::CornerRadius top_left_radius;
-    Gfx::AntiAliasingPainter::CornerRadius top_right_radius;
-    Gfx::AntiAliasingPainter::CornerRadius bottom_left_radius;
-    Gfx::AntiAliasingPainter::CornerRadius bottom_right_radius;
+    Gfx::CornerRadius top_left_radius;
+    Gfx::CornerRadius top_right_radius;
+    Gfx::CornerRadius bottom_left_radius;
+    Gfx::CornerRadius bottom_right_radius;
     Vector<Gfx::Path> clip_paths;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
@@ -183,7 +172,7 @@ struct FillPathUsingColor {
     Gfx::IntRect path_bounding_rect;
     Gfx::Path path;
     Color color;
-    Gfx::Painter::WindingRule winding_rule;
+    Gfx::WindingRule winding_rule;
     Gfx::FloatPoint aa_translation;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return path_bounding_rect; }
@@ -198,8 +187,8 @@ struct FillPathUsingColor {
 struct FillPathUsingPaintStyle {
     Gfx::IntRect path_bounding_rect;
     Gfx::Path path;
-    NonnullRefPtr<Gfx::PaintStyle> paint_style;
-    Gfx::Painter::WindingRule winding_rule;
+    PaintStyle paint_style;
+    Gfx::WindingRule winding_rule;
     float opacity;
     Gfx::FloatPoint aa_translation;
 
@@ -213,6 +202,9 @@ struct FillPathUsingPaintStyle {
 };
 
 struct StrokePathUsingColor {
+    Gfx::Path::CapStyle cap_style;
+    Gfx::Path::JoinStyle join_style;
+    float miter_limit;
     Gfx::IntRect path_bounding_rect;
     Gfx::Path path;
     Color color;
@@ -229,9 +221,12 @@ struct StrokePathUsingColor {
 };
 
 struct StrokePathUsingPaintStyle {
+    Gfx::Path::CapStyle cap_style;
+    Gfx::Path::JoinStyle join_style;
+    float miter_limit;
     Gfx::IntRect path_bounding_rect;
     Gfx::Path path;
-    NonnullRefPtr<Gfx::PaintStyle> paint_style;
+    PaintStyle paint_style;
     float thickness;
     float opacity = 1.0f;
     Gfx::FloatPoint aa_translation;
@@ -261,7 +256,6 @@ struct DrawEllipse {
 struct FillEllipse {
     Gfx::IntRect rect;
     Color color;
-    Gfx::AntiAliasingPainter::BlendMode blend_mode;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
 
@@ -276,7 +270,7 @@ struct DrawLine {
     Gfx::IntPoint from;
     Gfx::IntPoint to;
     int thickness;
-    Gfx::Painter::LineStyle style;
+    Gfx::LineStyle style;
     Color alternate_color;
 
     void translate_by(Gfx::IntPoint const& offset)
@@ -286,34 +280,10 @@ struct DrawLine {
     }
 };
 
-struct DrawSignedDistanceField {
-    Gfx::IntRect rect;
-    Color color;
-    Gfx::GrayscaleBitmap sdf;
-    float smoothing;
-
-    [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
-
-    void translate_by(Gfx::IntPoint const& offset)
-    {
-        rect.translate_by(offset);
-    }
-};
-
-struct PaintFrame {
-    Gfx::IntRect rect;
-    Palette palette;
-    Gfx::FrameStyle style;
-
-    [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
-
-    void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
-};
-
 struct ApplyBackdropFilter {
     Gfx::IntRect backdrop_region;
     BorderRadiiData border_radii_data;
-    CSS::ResolvedBackdropFilter backdrop_filter;
+    CSS::ResolvedFilter backdrop_filter;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return backdrop_region; }
 
@@ -390,22 +360,8 @@ struct BlitCornerClipping {
     void translate_by(Gfx::IntPoint const& offset) { border_rect.translate_by(offset); }
 };
 
-struct PaintBorders {
-    DevicePixelRect border_rect;
-    CornerRadii corner_radii;
-    BordersDataDevicePixels borders_data;
-
-    [[nodiscard]] Gfx::IntRect bounding_rect() const { return border_rect.to_type<int>(); }
-
-    void translate_by(Gfx::IntPoint const& offset)
-    {
-        border_rect.translate_by(offset.to_type<DevicePixels>());
-    }
-};
-
 using Command = Variant<
     DrawGlyphRun,
-    DrawText,
     FillRect,
     DrawScaledBitmap,
     DrawScaledImmutableBitmap,
@@ -427,13 +383,10 @@ using Command = Variant<
     DrawEllipse,
     FillEllipse,
     DrawLine,
-    DrawSignedDistanceField,
-    PaintFrame,
     ApplyBackdropFilter,
     DrawRect,
     DrawTriangleWave,
     SampleUnderCorners,
-    BlitCornerClipping,
-    PaintBorders>;
+    BlitCornerClipping>;
 
 }

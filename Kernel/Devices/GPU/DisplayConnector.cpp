@@ -5,6 +5,7 @@
  */
 
 #include <Kernel/API/Ioctl.h>
+#include <Kernel/API/MajorNumberAllocation.h>
 #include <Kernel/Devices/GPU/DisplayConnector.h>
 #include <Kernel/Devices/GPU/Management.h>
 #include <Kernel/FileSystem/SysFS/Subsystems/DeviceIdentifiers/CharacterDevicesDirectory.h>
@@ -14,31 +15,34 @@
 
 namespace Kernel {
 
-DisplayConnector::DisplayConnector(PhysicalAddress framebuffer_address, size_t framebuffer_resource_size, bool enable_write_combine_optimization)
-    : CharacterDevice(226, GraphicsManagement::the().allocate_minor_device_number())
-    , m_enable_write_combine_optimization(enable_write_combine_optimization)
+DisplayConnector::DisplayConnector(PhysicalAddress framebuffer_address, size_t framebuffer_resource_size, Memory::MemoryType memory_type)
+    : CharacterDevice(MajorAllocation::CharacterDeviceFamily::GPU, GraphicsManagement::the().allocate_minor_device_number())
+    , m_memory_type(memory_type)
     , m_framebuffer_at_arbitrary_physical_range(false)
     , m_framebuffer_address(framebuffer_address)
     , m_framebuffer_resource_size(framebuffer_resource_size)
 {
 }
 
-DisplayConnector::DisplayConnector(size_t framebuffer_resource_size, bool enable_write_combine_optimization)
-    : CharacterDevice(226, GraphicsManagement::the().allocate_minor_device_number())
-    , m_enable_write_combine_optimization(enable_write_combine_optimization)
+DisplayConnector::DisplayConnector(size_t framebuffer_resource_size, Memory::MemoryType memory_type)
+    : CharacterDevice(MajorAllocation::CharacterDeviceFamily::GPU, GraphicsManagement::the().allocate_minor_device_number())
+    , m_memory_type(memory_type)
     , m_framebuffer_at_arbitrary_physical_range(true)
     , m_framebuffer_address({})
     , m_framebuffer_resource_size(framebuffer_resource_size)
 {
 }
 
-ErrorOr<NonnullLockRefPtr<Memory::VMObject>> DisplayConnector::vmobject_for_mmap(Process&, Memory::VirtualRange const&, u64& offset, bool)
+ErrorOr<File::VMObjectAndMemoryType> DisplayConnector::vmobject_and_memory_type_for_mmap(Process&, Memory::VirtualRange const&, u64& offset, bool)
 {
     VERIFY(m_shared_framebuffer_vmobject);
     if (offset != 0)
         return Error::from_errno(ENOTSUP);
 
-    return *m_shared_framebuffer_vmobject;
+    return VMObjectAndMemoryType {
+        .vmobject = *m_shared_framebuffer_vmobject,
+        .memory_type = m_framebuffer_region->memory_type(),
+    };
 }
 
 ErrorOr<size_t> DisplayConnector::read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t)
@@ -80,10 +84,10 @@ ErrorOr<void> DisplayConnector::allocate_framebuffer_resources(size_t rounded_si
     if (!m_framebuffer_at_arbitrary_physical_range) {
         VERIFY(m_framebuffer_address.value().page_base() == m_framebuffer_address.value());
         m_shared_framebuffer_vmobject = TRY(Memory::SharedFramebufferVMObject::try_create_for_physical_range(m_framebuffer_address.value(), rounded_size));
-        m_framebuffer_region = TRY(MM.allocate_kernel_region(m_framebuffer_address.value().page_base(), rounded_size, "Framebuffer"sv, Memory::Region::Access::ReadWrite));
+        m_framebuffer_region = TRY(MM.allocate_mmio_kernel_region(m_framebuffer_address.value().page_base(), rounded_size, "Framebuffer"sv, Memory::Region::Access::ReadWrite, m_memory_type));
     } else {
         m_shared_framebuffer_vmobject = TRY(Memory::SharedFramebufferVMObject::try_create_at_arbitrary_physical_range(rounded_size));
-        m_framebuffer_region = TRY(MM.allocate_kernel_region_with_vmobject(m_shared_framebuffer_vmobject->real_writes_framebuffer_vmobject(), rounded_size, "Framebuffer"sv, Memory::Region::Access::ReadWrite));
+        m_framebuffer_region = TRY(MM.allocate_kernel_region_with_vmobject(m_shared_framebuffer_vmobject->real_writes_framebuffer_vmobject(), rounded_size, "Framebuffer"sv, Memory::Region::Access::ReadWrite, m_memory_type));
     }
 
     m_framebuffer_data = m_framebuffer_region->vaddr().as_ptr();
@@ -133,9 +137,6 @@ ErrorOr<void> DisplayConnector::after_inserting()
     clean_symlink_to_device_identifier_directory.disarm();
 
     GraphicsManagement::the().attach_new_display_connector({}, *this);
-    if (m_enable_write_combine_optimization) {
-        [[maybe_unused]] auto result = m_framebuffer_region->set_write_combine(true);
-    }
     after_inserting_add_to_device_management();
     return {};
 }

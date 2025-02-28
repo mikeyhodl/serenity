@@ -1,14 +1,15 @@
 # SerenityOS smart pointers
 
-----
+---
+
 ## Introduction
 
 There are three main C++ smart pointer types used in SerenityOS. Each type describes the ownership (or lack thereof) of the pointee.
 
 The reason for using these pointers is to make it explicit through code who owns which resources, and how ownership is transferred. They also serve as a guard against memory leaks and use-after-free bugs.
 
+---
 
-----
 ## OwnPtr\<T\> and NonnullOwnPtr\<T\>
 
 `OwnPtr` is used for single-owner objects. An object held in an `OwnPtr` is owned by that `OwnPtr`, and not by anybody else.
@@ -19,7 +20,7 @@ These pointers cannot be copied. Transferring ownership is done by moving the po
 
 `NonnullOwnPtr` is a special variant of `OwnPtr` with one additional property: it cannot be null. `NonnullOwnPtr` is suitable as a return type from functions that are guaranteed to never return null, and as an argument type where ownership is transferred, and the argument may not be null. In other words, if `OwnPtr` is "\*", then `NonnullOwnPtr` is "&".
 
-Note: A `NonnullOwnPtr` can be assigned to an `OwnPtr` but not vice versa. To transform an known-non-null `OwnPtr` into a `NonnullOwnPtr`, use `OwnPtr::release_nonnull()`.
+Note: A `NonnullOwnPtr` can be assigned to an `OwnPtr` but not vice versa. To transform a known-non-null `OwnPtr` into a `NonnullOwnPtr`, use `OwnPtr::release_nonnull()`.
 
 ### Construction using helper functions
 
@@ -64,11 +65,12 @@ Any (possibly null) pointer to `T` can be turned into an `OwnPtr<T>` by the glob
 OwnPtr<Foo> my_object = adopt_own_if_nonnull(new (nothrow) Foo);
 ```
 
-In this case, the *non-throwing* `new` should be used to construct the raw pointer, which returns null if the allocation fails, instead of aborting the program.
+In this case, the _non-throwing_ `new` should be used to construct the raw pointer, which returns null if the allocation fails, instead of aborting the program.
 
 **Note:** Always prefer the helper functions to manual construction.
 
-----
+---
+
 ## RefPtr\<T\> and NonnullRefPtr\<T\>
 
 `RefPtr` is used for multiple-owner objects. An object held by a `RefPtr` is owned together by every pointer pointing to that object.
@@ -87,7 +89,7 @@ class Bar : public RefCounted<Bar> {
 };
 ```
 
-Note: A `NonnullRefPtr` can be assigned to a `RefPtr` but not vice versa. To transform an known-non-null `RefPtr` into a `NonnullRefPtr`, either use `RefPtr::release_nonnull()` or simply dereference the `RefPtr` using its `operator*`.
+Note: A `NonnullRefPtr` can be assigned to a `RefPtr` but not vice versa. To transform a known-non-null `RefPtr` into a `NonnullRefPtr`, either use `RefPtr::release_nonnull()` or simply dereference the `RefPtr` using its `operator*`.
 
 ### Construction using helper functions
 
@@ -97,7 +99,6 @@ There is a `make_ref_counted<T>()` global helper function that constructs a new 
 NonnullRefPtr<Bar> our_object = make_ref_counted<Bar>();
 NonnullRefPtr<Bar> another_owner = our_object;
 ```
-
 
 The `try_make_ref_counted<T>()` function constructs an object wrapped in `ErrorOr<NonnullRefPtr<T>>` which may be an error if the allocation does not succeed. This allows the calling code to handle allocation failure as it wishes. All arguments passed to it are forwarded to `T`'s constructor.
 
@@ -124,16 +125,18 @@ NonnullRefPtr<Bar> our_object = adopt_ref(*new Bar);
 
 Note: It is safe to immediately dereference this raw pointer, as the normal `new` expression cannot return a null pointer.
 
-Any (possibly null) pointer to a reference-counted object can can be turned into a `RefPtr` by the global `adopt_ref_if_nonnull()` function.
+Any (possibly null) pointer to a reference-counted object can be turned into a `RefPtr` by the global `adopt_ref_if_nonnull()` function.
 
 ```cpp
 RefPtr<Bar> our_object = adopt_ref_if_nonnull(new (nothrow) Bar);
 ```
-In this case, the *non-throwing* `new` should be used to construct the raw pointer, which returns null if the allocation fails, instead of aborting the program.
+
+In this case, the _non-throwing_ `new` should be used to construct the raw pointer, which returns null if the allocation fails, instead of aborting the program.
 
 **Note:** Always prefer the helper functions to manual construction.
 
-----
+---
+
 ## WeakPtr\<T\>
 
 `WeakPtr` is used for objects that somebody else owns. When the pointee of a `WeakPtr` is deleted, the `WeakPtr` will magically become null.

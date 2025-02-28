@@ -8,8 +8,8 @@
 
 #include <AK/FlyString.h>
 #include <AK/TypeCasts.h>
-#include <Kernel/API/KeyCode.h>
 #include <LibWeb/UIEvents/EventModifier.h>
+#include <LibWeb/UIEvents/KeyCode.h>
 #include <LibWeb/UIEvents/UIEvent.h>
 
 namespace Web::UIEvents {
@@ -61,6 +61,8 @@ public:
     bool get_modifier_state(String const& key_arg) const;
 
     virtual u32 which() const override { return m_key_code; }
+
+    void init_keyboard_event(String const& type, bool bubbles, bool cancelable, HTML::Window* view, String const& key, WebIDL::UnsignedLong location, bool ctrl_key, bool alt_key, bool shift_key, bool meta_key);
 
 private:
     KeyboardEvent(JS::Realm&, FlyString const& event_name, KeyboardEventInit const& event_init);

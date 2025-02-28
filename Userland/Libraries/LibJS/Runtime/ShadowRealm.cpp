@@ -22,10 +22,8 @@ namespace JS {
 
 JS_DEFINE_ALLOCATOR(ShadowRealm);
 
-ShadowRealm::ShadowRealm(Realm& shadow_realm, NonnullOwnPtr<ExecutionContext> execution_context, Object& prototype)
+ShadowRealm::ShadowRealm(Object& prototype)
     : Object(ConstructWithPrototypeTag::Tag, prototype)
-    , m_shadow_realm(shadow_realm)
-    , m_execution_context(move(execution_context))
 {
 }
 
@@ -97,9 +95,8 @@ ThrowCompletionOr<void> copy_name_and_length(VM& vm, FunctionObject& function, F
 // 3.1.3 PerformShadowRealmEval ( sourceText: a String, callerRealm: a Realm Record, evalRealm: a Realm Record, ), https://tc39.es/proposal-shadowrealm/#sec-performshadowrealmeval
 ThrowCompletionOr<Value> perform_shadow_realm_eval(VM& vm, StringView source_text, Realm& caller_realm, Realm& eval_realm)
 {
-    // FIXME: Needs to be updated to latest ECMA-262. See: https://github.com/tc39/proposal-shadowrealm/issues/367
-    // 1. Perform ? HostEnsureCanCompileStrings(callerRealm, evalRealm).
-    TRY(vm.host_ensure_can_compile_strings(eval_realm));
+    // 1. Perform ? HostEnsureCanCompileStrings(evalRealm, « », sourceText, false).
+    TRY(vm.host_ensure_can_compile_strings(eval_realm, {}, source_text, EvalMode::Indirect));
 
     // 2. Perform the following substeps in an implementation-defined order, possibly interleaving parsing and error detection:
 
@@ -110,7 +107,7 @@ ThrowCompletionOr<Value> perform_shadow_realm_eval(VM& vm, StringView source_tex
     // b. If script is a List of errors, throw a SyntaxError exception.
     if (parser.has_errors()) {
         auto& error = parser.errors()[0];
-        return vm.throw_completion<SyntaxError>(TRY_OR_THROW_OOM(vm, error.to_string()));
+        return vm.throw_completion<SyntaxError>(error.to_string());
     }
 
     // c. If script Contains ScriptBody is false, return undefined.
@@ -127,101 +124,78 @@ ThrowCompletionOr<Value> perform_shadow_realm_eval(VM& vm, StringView source_tex
     auto strict_eval = program->is_strict_mode();
 
     // 4. Let runningContext be the running execution context.
-    // NOTE: This would be unused due to step 11 and is omitted for that reason.
+    // 5. If runningContext is not already suspended, suspend runningContext.
+    // NOTE: This would be unused due to step 9 and is omitted for that reason.
 
-    // 5. Let lexEnv be NewDeclarativeEnvironment(evalRealm.[[GlobalEnv]]).
-    Environment* lexical_environment = new_declarative_environment(eval_realm.global_environment()).ptr();
+    // 6. Let evalContext be GetShadowRealmContext(evalRealm, strictEval).
+    auto eval_context = get_shadow_realm_context(eval_realm, strict_eval);
 
-    // 6. Let varEnv be evalRealm.[[GlobalEnv]].
-    Environment* variable_environment = &eval_realm.global_environment();
+    // 7. Let lexEnv be evalContext's LexicalEnvironment.
+    auto lexical_environment = eval_context->lexical_environment;
 
-    // 7. If strictEval is true, set varEnv to lexEnv.
-    if (strict_eval)
-        variable_environment = lexical_environment;
+    // 8. Let varEnv be evalContext's VariableEnvironment.
+    auto variable_environment = eval_context->variable_environment;
 
-    // 8. If runningContext is not already suspended, suspend runningContext.
-    // NOTE: We don't support this concept yet.
-
-    // 9. Let evalContext be a new ECMAScript code execution context.
-    auto eval_context = ExecutionContext::create(vm.heap());
-
-    // 10. Set evalContext's Function to null.
-    eval_context->function = nullptr;
-
-    // 11. Set evalContext's Realm to evalRealm.
-    eval_context->realm = &eval_realm;
-
-    // 12. Set evalContext's ScriptOrModule to null.
-    // Note: This is already the default value.
-
-    // 13. Set evalContext's VariableEnvironment to varEnv.
-    eval_context->variable_environment = variable_environment;
-
-    // 14. Set evalContext's LexicalEnvironment to lexEnv.
-    eval_context->lexical_environment = lexical_environment;
-
-    // Non-standard
-    eval_context->is_strict_mode = strict_eval;
-
-    // 15. Push evalContext onto the execution context stack; evalContext is now the running execution context.
+    // 9. Push evalContext onto the execution context stack; evalContext is now the running execution context.
     TRY(vm.push_execution_context(*eval_context, {}));
 
-    // 16. Let result be Completion(EvalDeclarationInstantiation(body, varEnv, lexEnv, null, strictEval)).
+    // 10. Let result be Completion(EvalDeclarationInstantiation(body, varEnv, lexEnv, null, strictEval)).
     auto eval_result = eval_declaration_instantiation(vm, program, variable_environment, lexical_environment, nullptr, strict_eval);
 
     Completion result;
 
-    // 17. If result.[[Type]] is normal, then
+    // 11. If result.[[Type]] is normal, then
     if (!eval_result.is_throw_completion()) {
         // a. Set result to the result of evaluating body.
-        auto maybe_executable = Bytecode::compile(vm, program, {}, FunctionKind::Normal, "ShadowRealmEval"sv);
-        if (maybe_executable.is_error())
+        auto maybe_executable = Bytecode::compile(vm, program, FunctionKind::Normal, "ShadowRealmEval"sv);
+        if (maybe_executable.is_error()) {
             result = maybe_executable.release_error();
-        else {
+        } else {
             auto executable = maybe_executable.release_value();
 
-            auto value_and_frame = vm.bytecode_interpreter().run_and_return_frame(*executable, nullptr);
-            if (value_and_frame.value.is_error()) {
-                result = value_and_frame.value.release_error();
+            auto result_and_return_register = vm.bytecode_interpreter().run_executable(*executable, {});
+            if (result_and_return_register.value.is_error()) {
+                result = result_and_return_register.value.release_error();
             } else {
                 // Resulting value is in the accumulator.
-                result = value_and_frame.frame->registers()[0].value_or(js_undefined());
+                result = result_and_return_register.return_register_value.value_or(js_undefined());
             }
         }
     }
 
-    // 18. If result.[[Type]] is normal and result.[[Value]] is empty, then
+    // 12. If result.[[Type]] is normal and result.[[Value]] is empty, then
     if (result.type() == Completion::Type::Normal && !result.value().has_value()) {
         // a. Set result to NormalCompletion(undefined).
         result = normal_completion(js_undefined());
     }
 
-    // 19. Suspend evalContext and remove it from the execution context stack.
+    // 13. Suspend evalContext and remove it from the execution context stack.
     // NOTE: We don't support this concept yet.
     vm.pop_execution_context();
 
-    // 20. Resume the context that is now on the top of the execution context stack as the running execution context.
+    // 14. Resume the context that is now on the top of the execution context stack as the running execution context.
     // NOTE: We don't support this concept yet.
 
-    // 21. If result.[[Type]] is not normal, throw a TypeError exception.
-    if (result.type() != Completion::Type::Normal)
+    // 15. If result.[[Type]] is not normal, then
+    if (result.type() != Completion::Type::Normal) {
+        // a. Let copiedError be CreateTypeErrorCopy(callerRealm, result.[[Value]]).
+        // b. Return ThrowCompletion(copiedError).
         return vm.throw_completion<TypeError>(ErrorType::ShadowRealmEvaluateAbruptCompletion);
+    }
 
-    // 22. Return ? GetWrappedValue(callerRealm, result.[[Value]]).
+    // 16. Return ? GetWrappedValue(callerRealm, result.[[Value]]).
     return get_wrapped_value(vm, caller_realm, *result.value());
 
     // NOTE: Also see "Editor's Note" in the spec regarding the TypeError above.
 }
 
 // 3.1.4 ShadowRealmImportValue ( specifierString: a String, exportNameString: a String, callerRealm: a Realm Record, evalRealm: a Realm Record, evalContext: an execution context, ), https://tc39.es/proposal-shadowrealm/#sec-shadowrealmimportvalue
-ThrowCompletionOr<Value> shadow_realm_import_value(VM& vm, ByteString specifier_string, ByteString export_name_string, Realm& caller_realm, Realm& eval_realm, ExecutionContext& eval_context)
+ThrowCompletionOr<Value> shadow_realm_import_value(VM& vm, ByteString specifier_string, ByteString export_name_string, Realm& caller_realm, Realm& eval_realm)
 {
-    // FIXME: evalRealm isn't being used anywhere in this AO (spec issue)
-    (void)eval_realm;
-
     auto& realm = *vm.current_realm();
 
-    // 1. Assert: evalContext is an execution context associated to a ShadowRealm instance's [[ExecutionContext]].
+    // 1. Let evalContext be GetShadowRealmContext(evalRealm, true).
+    auto eval_context = get_shadow_realm_context(eval_realm, true);
 
     // 2. Let innerCapability be ! NewPromiseCapability(%Promise%).
     auto inner_capability = MUST(new_promise_capability(vm, realm.intrinsics().promise_constructor()));
@@ -231,10 +205,11 @@ ThrowCompletionOr<Value> shadow_realm_import_value(VM& vm, ByteString specifier_
     // NOTE: We don't support this concept yet.
 
     // 5. Push evalContext onto the execution context stack; evalContext is now the running execution context.
-    TRY(vm.push_execution_context(eval_context, {}));
+    TRY(vm.push_execution_context(*eval_context, {}));
 
     // 6. Let referrer be the Realm component of evalContext.
-    auto referrer = JS::NonnullGCPtr { *eval_context.realm };
+    auto referrer = JS::NonnullGCPtr { *eval_context->realm };
+
     // 7. Perform HostLoadImportedModule(referrer, specifierString, empty, innerCapability).
     vm.host_load_imported_module(referrer, ModuleRequest { specifier_string }, nullptr, inner_capability);
 
@@ -310,6 +285,47 @@ ThrowCompletionOr<Value> get_wrapped_value(VM& vm, Realm& caller_realm, Value va
 
     // 2. Return value.
     return value;
+}
+
+// 3.1.7 GetShadowRealmContext ( shadowRealmRecord, strictEval ), https://tc39.es/proposal-shadowrealm/#sec-getshadowrealmcontext
+NonnullOwnPtr<ExecutionContext> get_shadow_realm_context(Realm& shadow_realm, bool strict_eval)
+{
+    // 1. Let lexEnv be NewDeclarativeEnvironment(shadowRealmRecord.[[GlobalEnv]]).
+    Environment* lexical_environment = new_declarative_environment(shadow_realm.global_environment()).ptr();
+
+    // 2. Let varEnv be shadowRealmRecord.[[GlobalEnv]].
+    Environment* variable_environment = &shadow_realm.global_environment();
+
+    // 3. If strictEval is true, set varEnv to lexEnv.
+    if (strict_eval)
+        variable_environment = lexical_environment;
+
+    // 4. Let context be a new ECMAScript code execution context.
+    auto context = ExecutionContext::create();
+
+    // 5. Set context's Function to null.
+    context->function = nullptr;
+
+    // 6. Set context's Realm to shadowRealmRecord.
+    context->realm = &shadow_realm;
+
+    // 7. Set context's ScriptOrModule to null.
+    context->script_or_module = {};
+
+    // 8. Set context's VariableEnvironment to varEnv.
+    context->variable_environment = variable_environment;
+
+    // 9. Set context's LexicalEnvironment to lexEnv.
+    context->lexical_environment = lexical_environment;
+
+    // 10. Set context's PrivateEnvironment to null.
+    context->private_environment = nullptr;
+
+    // Non-standard
+    context->is_strict_mode = strict_eval;
+
+    // 11. Return context.
+    return context;
 }
 
 }

@@ -9,9 +9,11 @@
 
 #include <AK/ByteBuffer.h>
 #include <AK/ByteString.h>
+#include <AK/Noncopyable.h>
 #include <AK/Optional.h>
 #include <AK/Vector.h>
 #include <LibCore/Forward.h>
+#include <LibHTTP/HeaderMap.h>
 #include <LibURL/URL.h>
 
 namespace HTTP {
@@ -55,11 +57,6 @@ public:
         PUT,
     };
 
-    struct Header {
-        ByteString name;
-        ByteString value;
-    };
-
     struct BasicAuthenticationCredentials {
         ByteString username;
         ByteString password;
@@ -68,8 +65,10 @@ public:
     HttpRequest() = default;
     ~HttpRequest() = default;
 
+    AK_MAKE_DEFAULT_MOVABLE(HttpRequest);
+
     ByteString const& resource() const { return m_resource; }
-    Vector<Header> const& headers() const { return m_headers; }
+    HeaderMap const& headers() const { return m_headers; }
 
     URL::URL const& url() const { return m_url; }
     void set_url(URL::URL const& url) { m_url = url; }
@@ -83,7 +82,7 @@ public:
     StringView method_name() const;
     ErrorOr<ByteBuffer> to_raw_request() const;
 
-    void set_headers(HashMap<ByteString, ByteString> const&);
+    void set_headers(HeaderMap);
 
     static ErrorOr<HttpRequest, HttpRequest::ParseError> from_raw_request(ReadonlyBytes);
     static Optional<Header> get_http_basic_authentication_header(URL::URL const&);
@@ -93,7 +92,7 @@ private:
     URL::URL m_url;
     ByteString m_resource;
     Method m_method { GET };
-    Vector<Header> m_headers;
+    HeaderMap m_headers;
     ByteBuffer m_body;
 };
 

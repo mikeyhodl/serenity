@@ -3,7 +3,6 @@
 #import <DOM/Attr.idl>
 #import <DOM/ChildNode.idl>
 #import <DOM/DOMTokenList.idl>
-#import <DOM/InnerHTML.idl>
 #import <DOM/NamedNodeMap.idl>
 #import <DOM/Node.idl>
 #import <DOM/NodeList.idl>
@@ -21,6 +20,15 @@ dictionary ScrollIntoViewOptions : ScrollOptions {
     ScrollLogicalPosition inline = "nearest";
 };
 
+// https://drafts.csswg.org/cssom-view-1/#dictdef-checkvisibilityoptions
+dictionary CheckVisibilityOptions {
+    boolean checkOpacity = false;
+    boolean checkVisibilityCSS = false;
+    boolean contentVisibilityAuto = false;
+    boolean opacityProperty = false;
+    boolean visibilityProperty = false;
+};
+
 // https://dom.spec.whatwg.org/#element
 [Exposed=Window]
 interface Element : Node {
@@ -29,49 +37,61 @@ interface Element : Node {
     readonly attribute DOMString localName;
     readonly attribute DOMString tagName;
 
-    DOMString? getAttribute(DOMString qualifiedName);
-    DOMString? getAttributeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
-    [CEReactions] undefined setAttribute(DOMString qualifiedName, DOMString value);
-    [CEReactions] undefined setAttributeNS([FlyString] DOMString? namespace , [FlyString] DOMString qualifiedName , DOMString value);
-    [CEReactions] Attr? setAttributeNode(Attr attr);
-    [CEReactions] Attr? setAttributeNodeNS(Attr attr);
-
-    [CEReactions] undefined removeAttribute([FlyString] DOMString qualifiedName);
-    [CEReactions] undefined removeAttributeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
-    [CEReactions] boolean toggleAttribute(DOMString qualifiedName, optional boolean force);
-    boolean hasAttribute(DOMString qualifiedName);
-    boolean hasAttributeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
-    boolean hasAttributes();
-    [SameObject] readonly attribute NamedNodeMap attributes;
-    sequence<DOMString> getAttributeNames();
-
-    Attr? getAttributeNode([FlyString] DOMString qualifiedName);
-    Attr? getAttributeNodeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
-
-    HTMLCollection getElementsByTagName(DOMString tagName);
-    HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
-    HTMLCollection getElementsByClassName(DOMString className);
-
     [Reflect, CEReactions] attribute DOMString id;
     [Reflect=class, CEReactions] attribute DOMString className;
     [SameObject, PutForwards=value] readonly attribute DOMTokenList classList;
     [Reflect, CEReactions, Unscopable] attribute DOMString slot;
 
+    boolean hasAttributes();
+    [SameObject] readonly attribute NamedNodeMap attributes;
+    sequence<DOMString> getAttributeNames();
+    DOMString? getAttribute(DOMString qualifiedName);
+    DOMString? getAttributeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
+    [CEReactions] undefined setAttribute(DOMString qualifiedName, DOMString value);
+    [CEReactions] undefined setAttributeNS([FlyString] DOMString? namespace , [FlyString] DOMString qualifiedName , DOMString value);
+    [CEReactions] undefined removeAttribute([FlyString] DOMString qualifiedName);
+    [CEReactions] undefined removeAttributeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
+    [CEReactions] boolean toggleAttribute(DOMString qualifiedName, optional boolean force);
+    boolean hasAttribute(DOMString qualifiedName);
+    boolean hasAttributeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
+
+    Attr? getAttributeNode([FlyString] DOMString qualifiedName);
+    Attr? getAttributeNodeNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
+    [CEReactions] Attr? setAttributeNode(Attr attr);
+    [CEReactions] Attr? setAttributeNodeNS(Attr attr);
+    [CEReactions] Attr removeAttributeNode(Attr attr);
+
     ShadowRoot attachShadow(ShadowRootInit init);
-    readonly attribute ShadowRoot? shadowRoot;
+    [ImplementedAs=shadow_root_for_bindings] readonly attribute ShadowRoot? shadowRoot;
 
     boolean matches(DOMString selectors);
     Element? closest(DOMString selectors);
+    [ImplementedAs=matches] boolean webkitMatchesSelector(DOMString selectors); // legacy alias of .matches
 
-    // legacy alias of .matches
-    [ImplementedAs=matches] boolean webkitMatchesSelector(DOMString selectors);
+    HTMLCollection getElementsByTagName([FlyString] DOMString tagName);
+    HTMLCollection getElementsByTagNameNS([FlyString] DOMString? namespace, [FlyString] DOMString localName);
+    HTMLCollection getElementsByClassName(DOMString className);
 
+    [CEReactions] Element? insertAdjacentElement(DOMString where, Element element); // legacy
+    undefined insertAdjacentText(DOMString where, DOMString data); // legacy
+
+    // https://dom.spec.whatwg.org/#interface-nondocumenttypechildnode
     readonly attribute Element? nextElementSibling;
     readonly attribute Element? previousElementSibling;
 
-    DOMRect getBoundingClientRect();
+    // https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface
     DOMRectList getClientRects();
+    DOMRect getBoundingClientRect();
 
+    boolean checkVisibility(optional CheckVisibilityOptions options = {});
+
+    undefined scrollIntoView(optional (boolean or ScrollIntoViewOptions) arg = {});
+    undefined scroll(optional ScrollToOptions options = {});
+    undefined scroll(unrestricted double x, unrestricted double y);
+    [ImplementedAs=scroll] undefined scrollTo(optional ScrollToOptions options = {});
+    [ImplementedAs=scroll] undefined scrollTo(unrestricted double x, unrestricted double y);
+    undefined scrollBy(optional ScrollToOptions options = {});
+    undefined scrollBy(unrestricted double x, unrestricted double y);
     attribute unrestricted double scrollTop;
     attribute unrestricted double scrollLeft;
     readonly attribute long scrollWidth;
@@ -80,29 +100,39 @@ interface Element : Node {
     readonly attribute long clientLeft;
     readonly attribute long clientWidth;
     readonly attribute long clientHeight;
+    readonly attribute double currentCSSZoom;
 
-    [CEReactions] Element? insertAdjacentElement(DOMString where, Element element);
-    undefined insertAdjacentText(DOMString where, DOMString data);
+    // https://html.spec.whatwg.org/#dom-parsing-and-serialization
+    // FIXME: [CEReactions] undefined setHTMLUnsafe((TrustedHTML or DOMString) html);
+    [CEReactions] undefined setHTMLUnsafe(DOMString html);
+    DOMString getHTML(optional GetHTMLOptions options = {});
+
+    // FIXME: [CEReactions] attribute (TrustedHTML or [LegacyNullToEmptyString] DOMString) innerHTML;
+    [CEReactions, LegacyNullToEmptyString] attribute DOMString innerHTML;
+
+    // FIXME: [CEReactions] attribute (TrustedHTML or [LegacyNullToEmptyString] DOMString) outerHTML;
+    [CEReactions, LegacyNullToEmptyString] attribute DOMString outerHTML;
+
+    // FIXME: [CEReactions] undefined insertAdjacentHTML(DOMString position, (TrustedHTML or DOMString) string);
     [CEReactions] undefined insertAdjacentHTML(DOMString position, DOMString text);
 
-    undefined scrollIntoView(optional (boolean or ScrollIntoViewOptions) arg = {});
+};
 
-    undefined scroll(optional ScrollToOptions options = {});
-    undefined scroll(unrestricted double x, unrestricted double y);
-    [ImplementedAs=scroll] undefined scrollTo(optional ScrollToOptions options = {});
-    [ImplementedAs=scroll] undefined scrollTo(unrestricted double x, unrestricted double y);
-
+dictionary GetHTMLOptions {
+    boolean serializableShadowRoots = false;
+    sequence<ShadowRoot> shadowRoots = [];
 };
 
 dictionary ShadowRootInit {
     required ShadowRootMode mode;
     boolean delegatesFocus = false;
     SlotAssignmentMode slotAssignment = "named";
+    boolean clonable = false;
+    boolean serializable = false;
 };
 
 Element includes ParentNode;
 Element includes ChildNode;
-Element includes InnerHTML;
 // https://www.w3.org/TR/wai-aria-1.2/#idl_element
 Element includes ARIAMixin;
 Element includes Slottable;

@@ -511,13 +511,14 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     // 2. If Type(x) is not String, return x.
     if (!x.is_string())
         return x;
+    auto& code_string = x.as_string();
 
     // 3. Let evalRealm be the current Realm Record.
     auto& eval_realm = *vm.running_execution_context().realm;
 
     // 4. NOTE: In the case of a direct eval, evalRealm is the realm of both the caller of eval and of the eval function itself.
-    // 5. Perform ? HostEnsureCanCompileStrings(evalRealm).
-    TRY(vm.host_ensure_can_compile_strings(eval_realm));
+    // 5. Perform ? HostEnsureCanCompileStrings(evalRealm, « », x, direct).
+    TRY(vm.host_ensure_can_compile_strings(eval_realm, {}, code_string.utf8_string_view(), direct));
 
     // 6. Let inFunction be false.
     bool in_function = false;
@@ -571,8 +572,6 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     //     f. If inMethod is false, and body Contains SuperProperty, throw a SyntaxError exception.
     //     g. If inDerivedConstructor is false, and body Contains SuperCall, throw a SyntaxError exception.
     //     h. If inClassFieldInitializer is true, and ContainsArguments of body is true, throw a SyntaxError exception.
-    auto& code_string = x.as_string();
-
     Parser::EvalInitialState initial_state {
         .in_eval_function_context = in_function,
         .allow_super_property_lookup = in_method,
@@ -586,7 +585,7 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     //     b. If script is a List of errors, throw a SyntaxError exception.
     if (parser.has_errors()) {
         auto& error = parser.errors()[0];
-        return vm.throw_completion<SyntaxError>(TRY_OR_THROW_OOM(vm, error.to_string()));
+        return vm.throw_completion<SyntaxError>(error.to_string());
     }
 
     bool strict_eval = false;
@@ -644,7 +643,7 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     // FIXME: We don't have this concept yet.
 
     // 20. Let evalContext be a new ECMAScript code execution context.
-    auto eval_context = ExecutionContext::create(vm.heap());
+    auto eval_context = ExecutionContext::create();
 
     // 21. Set evalContext's Function to null.
     // NOTE: This was done in the construction of eval_context.
@@ -685,7 +684,7 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
 
     // 29. If result.[[Type]] is normal, then
     //     a. Set result to the result of evaluating body.
-    auto executable_result = Bytecode::Generator::generate(vm, program, {});
+    auto executable_result = Bytecode::Generator::generate_from_ast_node(vm, program, {});
     if (executable_result.is_error())
         return vm.throw_completion<InternalError>(ErrorType::NotImplemented, TRY_OR_THROW_OOM(vm, executable_result.error().to_string()));
 
@@ -693,11 +692,11 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
     executable->name = "eval"sv;
     if (Bytecode::g_dump_bytecode)
         executable->dump();
-    auto result_or_error = vm.bytecode_interpreter().run_and_return_frame(*executable, nullptr);
+    auto result_or_error = vm.bytecode_interpreter().run_executable(*executable, {});
     if (result_or_error.value.is_error())
         return result_or_error.value.release_error();
 
-    auto& result = result_or_error.frame->registers()[0];
+    auto& result = result_or_error.return_register_value;
     if (!result.is_empty())
         eval_result = result;
 
@@ -972,7 +971,8 @@ ThrowCompletionOr<void> eval_declaration_instantiation(VM& vm, Program const& pr
     for (auto& declaration : functions_to_initialize.in_reverse()) {
         // a. Let fn be the sole element of the BoundNames of f.
         // b. Let fo be InstantiateFunctionObject of f with arguments lexEnv and privateEnv.
-        auto function = ECMAScriptFunctionObject::create(realm, declaration.name(), declaration.source_text(), declaration.body(), declaration.parameters(), declaration.function_length(), declaration.local_variables_names(), lexical_environment, private_environment, declaration.kind(), declaration.is_strict_mode(), declaration.might_need_arguments_object());
+        auto function = ECMAScriptFunctionObject::create(realm, declaration.name(), declaration.source_text(), declaration.body(), declaration.parameters(), declaration.function_length(), declaration.local_variables_names(), lexical_environment, private_environment, declaration.kind(), declaration.is_strict_mode(),
+            declaration.parsing_insights());
 
         // c. If varEnv is a global Environment Record, then
         if (global_var_environment) {
@@ -1402,7 +1402,7 @@ ThrowCompletionOr<String> get_substitution(VM& vm, Utf16View const& matched, Utf
     }
 
     // 6. Return result.
-    return MUST(Utf16View { result }.to_utf8());
+    return MUST(Utf16View { result }.to_utf8(Utf16View::AllowInvalidCodeUnits::Yes));
 }
 
 // 2.1.2 AddDisposableResource ( disposable, V, hint [ , method ] ), https://tc39.es/proposal-explicit-resource-management/#sec-adddisposableresource-disposable-v-hint-disposemethod

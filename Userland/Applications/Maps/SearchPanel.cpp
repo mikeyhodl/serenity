@@ -52,14 +52,15 @@ void SearchPanel::search(StringView query)
     m_start_container->set_visible(false);
 
     // Start HTTP GET request to load people.json
-    HashMap<ByteString, ByteString> headers;
+    HTTP::HeaderMap headers;
     headers.set("User-Agent", "SerenityOS Maps");
     headers.set("Accept", "application/json");
     URL::URL url(MUST(String::formatted("https://nominatim.openstreetmap.org/search?q={}&format=json", URL::percent_encode(query, URL::PercentEncodeSet::Query))));
     auto request = m_request_client->start_request("GET", url, headers, {});
     VERIFY(!request.is_null());
     m_request = request;
-    request->on_buffered_request_finish = [this, request, url](bool success, auto, auto&, auto, ReadonlyBytes payload) {
+
+    request->set_buffered_request_finished_callback([this, request, url](bool success, auto, auto&, auto, ReadonlyBytes payload) {
         m_request.clear();
         if (!success) {
             dbgln("Maps: Can't load: {}", url);
@@ -111,8 +112,8 @@ void SearchPanel::search(StringView query)
         m_empty_container->set_visible(false);
         m_places_list->set_model(*GUI::ItemListModel<String>::create(m_places_names));
         m_places_list->set_visible(true);
-    };
-    request->set_should_buffer_all_input(true);
+    });
+
     request->on_certificate_requested = []() -> Protocol::Request::CertificateAndKey { return {}; };
 }
 

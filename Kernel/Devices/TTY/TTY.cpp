@@ -19,8 +19,8 @@
 
 namespace Kernel {
 
-TTY::TTY(MajorNumber major, MinorNumber minor)
-    : CharacterDevice(major, minor)
+TTY::TTY(MajorAllocation::CharacterDeviceFamily character_device_family, MinorNumber minor)
+    : CharacterDevice(character_device_family, minor)
 {
     set_default_termios();
 }
@@ -89,7 +89,7 @@ ErrorOr<size_t> TTY::write(OpenFileDescription&, u64, UserOrKernelBuffer const& 
     return buffer.read_buffered<num_chars>(size, [&](ReadonlyBytes bytes) -> ErrorOr<size_t> {
         u8 modified_data[num_chars * 2];
         size_t modified_data_size = 0;
-        for (const auto& byte : bytes) {
+        for (auto const& byte : bytes) {
             process_output(byte, [&modified_data, &modified_data_size](u8 out_ch) {
                 modified_data[modified_data_size++] = out_ch;
             });
@@ -358,7 +358,7 @@ void TTY::generate_signal(int signal)
         flush_input();
     dbgln_if(TTY_DEBUG, "Send signal {} to everyone in pgrp {}", signal, pgid().value());
     InterruptDisabler disabler; // FIXME: Iterate over a set of process handles instead?
-    MUST(Process::current().for_each_in_pgrp_in_same_jail(pgid(), [&](auto& process) -> ErrorOr<void> {
+    MUST(Process::current().for_each_in_pgrp_in_same_process_list(pgid(), [&](auto& process) -> ErrorOr<void> {
         dbgln_if(TTY_DEBUG, "Send signal {} to {}", signal, process);
         // FIXME: Should this error be propagated somehow?
         [[maybe_unused]] auto rc = process.send_signal(signal, nullptr);
@@ -498,7 +498,7 @@ ErrorOr<void> TTY::ioctl(OpenFileDescription& description, unsigned request, Use
         if (!process_group)
             return EINVAL;
 
-        auto process = Process::from_pid_in_same_jail(ProcessID(pgid.value()));
+        auto process = Process::from_pid_in_same_process_list(ProcessID(pgid.value()));
         SessionID new_sid = process ? process->sid() : Process::get_sid_from_pgid(pgid);
         if (!new_sid || new_sid != current_process.sid())
             return EPERM;
@@ -507,7 +507,7 @@ ErrorOr<void> TTY::ioctl(OpenFileDescription& description, unsigned request, Use
         m_pg = TRY(process_group->try_make_weak_ptr());
 
         if (process) {
-            if (auto parent = Process::from_pid_ignoring_jails(process->ppid())) {
+            if (auto parent = Process::from_pid_ignoring_process_lists(process->ppid())) {
                 m_original_process_parent = *parent;
                 return {};
             }

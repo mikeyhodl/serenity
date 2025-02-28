@@ -11,6 +11,7 @@
 #include <AK/JsonObject.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefPtr.h>
+#include <LibCore/MimeData.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
@@ -128,7 +129,9 @@ Widget::Widget()
         });
 
 #define __ENUMERATE_COLOR_ROLE(role) \
-    { Gfx::ColorRole::role, #role },
+    {                                \
+        Gfx::ColorRole::role, #role  \
+    },
     REGISTER_ENUM_PROPERTY("foreground_role", foreground_role, set_foreground_role, Gfx::ColorRole,
         { Gfx::ColorRole::NoRole, "NoRole" },
         ENUMERATE_COLOR_ROLES(__ENUMERATE_COLOR_ROLE));
@@ -530,9 +533,7 @@ void Widget::drag_move_event(DragEvent&)
 
 void Widget::drag_enter_event(DragEvent& event)
 {
-    StringBuilder builder;
-    builder.join(',', event.mime_types());
-    dbgln_if(DRAG_DEBUG, "{} {:p} DRAG ENTER @ {}, {}", class_name(), this, event.position(), builder.string_view());
+    dbgln_if(DRAG_DEBUG, "{} {:p} DRAG ENTER @ {}, {}", class_name(), this, event.position(), event.mime_data().formats());
 }
 
 void Widget::drag_leave_event(Event&)

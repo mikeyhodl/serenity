@@ -10,8 +10,8 @@
 
 namespace JS {
 
-constexpr const size_t SPARSE_ARRAY_HOLE_THRESHOLD = 200;
-constexpr const size_t LENGTH_SETTER_GENERIC_STORAGE_THRESHOLD = 4 * MiB;
+constexpr size_t const SPARSE_ARRAY_HOLE_THRESHOLD = 200;
+constexpr size_t const LENGTH_SETTER_GENERIC_STORAGE_THRESHOLD = 4 * MiB;
 
 SimpleIndexedPropertyStorage::SimpleIndexedPropertyStorage(Vector<Value>&& initial_values)
     : IndexedPropertyStorage(IsSimpleStorage::Yes)
@@ -22,14 +22,12 @@ SimpleIndexedPropertyStorage::SimpleIndexedPropertyStorage(Vector<Value>&& initi
 
 bool SimpleIndexedPropertyStorage::has_index(u32 index) const
 {
-    return index < m_array_size && !m_packed_elements[index].is_empty();
+    return inline_has_index(index);
 }
 
 Optional<ValueAndAttributes> SimpleIndexedPropertyStorage::get(u32 index) const
 {
-    if (!has_index(index))
-        return {};
-    return ValueAndAttributes { m_packed_elements[index], default_attributes };
+    return inline_get(index);
 }
 
 void SimpleIndexedPropertyStorage::grow_storage_if_needed()
@@ -103,7 +101,7 @@ Optional<ValueAndAttributes> GenericIndexedPropertyStorage::get(u32 index) const
 {
     if (index >= m_array_size)
         return {};
-    return m_sparse_elements.get(index);
+    return m_sparse_elements.get(index).copy();
 }
 
 void GenericIndexedPropertyStorage::put(u32 index, Value value, PropertyAttributes attributes)
@@ -212,10 +210,12 @@ bool IndexedPropertyIterator::operator!=(IndexedPropertyIterator const& other) c
 
 void IndexedPropertyIterator::skip_empty_indices()
 {
-    for (auto i : m_cached_indices) {
-        if (i < m_index)
+    for (size_t i = m_next_cached_index; i < m_cached_indices.size(); i++) {
+        auto index = m_cached_indices[i];
+        if (index < m_index)
             continue;
-        m_index = i;
+        m_index = index;
+        m_next_cached_index = i + 1;
         return;
     }
     m_index = m_indexed_properties.array_like_size();

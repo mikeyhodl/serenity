@@ -29,12 +29,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         exit(1);
     }
 
+    if (port < 1024 && geteuid() != 0) {
+        warnln("Listening on port {} requires root privileges", port);
+        exit(1);
+    }
+
     Core::EventLoop event_loop;
 
     auto server = TRY(Core::TCPServer::try_create());
     TRY(server->listen({}, port));
 
-    HashMap<int, NonnullRefPtr<Client>> clients;
+    IGNORE_USE_IN_ESCAPING_LAMBDA HashMap<int, NonnullRefPtr<Client>> clients;
     int next_id = 0;
 
     server->on_ready_to_accept = [&next_id, &clients, &server] {
@@ -58,7 +63,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         clients.set(id, client);
     };
 
-    outln("Listening on 0.0.0.0:{}", port);
+    outln("Listening on 0.0.0.0:{}...", port);
 
     return event_loop.exec();
 }

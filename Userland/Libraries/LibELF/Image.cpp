@@ -128,14 +128,8 @@ bool Image::parse()
         return false;
     }
 
-    auto result_or_error = validate_program_headers(header(), m_size, { m_buffer, m_size }, nullptr, nullptr, m_verbose_logging);
-    if (result_or_error.is_error()) {
-        if (m_verbose_logging)
-            dbgln("ELF::Image::parse(): Failed validating ELF Program Headers");
-        m_valid = false;
-        return false;
-    }
-    if (!result_or_error.value()) {
+    [[maybe_unused]] Optional<Elf_Phdr> interpreter_path_program_header {};
+    if (!validate_program_headers(header(), m_size, { m_buffer, m_size }, interpreter_path_program_header, nullptr, m_verbose_logging)) {
         if (m_verbose_logging)
             dbgln("ELF::Image::parse(): ELF Program Headers not valid");
         m_valid = false;
@@ -175,7 +169,7 @@ StringView Image::table_string(unsigned table_index, unsigned offset) const
             dbgln("SHENANIGANS! Image::table_string() computed offset outside image.");
         return {};
     }
-    size_t max_length = min(m_size - computed_offset, (size_t)PAGE_SIZE);
+    size_t max_length = min(m_size - computed_offset, (size_t)SERENITY_PAGE_SIZE);
     size_t length = strnlen(raw_data(sh.sh_offset + offset), max_length);
     return { raw_data(sh.sh_offset + offset), length };
 }
@@ -243,22 +237,9 @@ Image::ProgramHeader Image::program_header(unsigned index) const
 Image::Relocation Image::RelocationSection::relocation(unsigned index) const
 {
     VERIFY(index < relocation_count());
-    auto* rels = reinterpret_cast<Elf_Rel const*>(m_image.raw_data(offset()));
-    return Relocation(m_image, rels[index]);
-}
-
-Optional<Image::RelocationSection> Image::Section::relocations() const
-{
-    StringBuilder builder;
-    builder.append(".rel"sv);
-    builder.append(name());
-
-    auto relocation_section = m_image.lookup_section(builder.string_view());
-    if (!relocation_section.has_value())
-        return {};
-
-    dbgln_if(ELF_IMAGE_DEBUG, "Found relocations for {} in {}", name(), relocation_section.value().name());
-    return static_cast<RelocationSection>(relocation_section.value());
+    unsigned offset_in_section = index * entry_size();
+    auto relocation_address = bit_cast<Elf_Rela*>(m_image.raw_data(offset() + offset_in_section));
+    return Relocation(m_image, *relocation_address, addend_used());
 }
 
 Optional<Image::Section> Image::lookup_section(StringView name) const

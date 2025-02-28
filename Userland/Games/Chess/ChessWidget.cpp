@@ -2,12 +2,16 @@
  * Copyright (c) 2020-2022, the SerenityOS developers.
  * Copyright (c) 2023, Tim Ledbetter <timledbetter@gmail.com>
  * Copyright (c) 2023, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2024, Daniel Gaston <tfd@tuta.io>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include "ChessWidget.h"
 #include "PromotionDialog.h"
+#include <AK/Enumerate.h>
+#include <AK/GenericLexer.h>
+#include <AK/NumberFormat.h>
 #include <AK/Random.h>
 #include <AK/String.h>
 #include <LibCore/Account.h>
@@ -22,6 +26,8 @@
 #include <LibGfx/Path.h>
 #include <unistd.h>
 
+namespace Chess {
+
 ErrorOr<NonnullRefPtr<ChessWidget>> ChessWidget::try_create()
 {
     auto widget = TRY(AK::adopt_nonnull_ref_or_enomem(new (nothrow) ChessWidget));
@@ -33,7 +39,6 @@ ErrorOr<NonnullRefPtr<ChessWidget>> ChessWidget::try_create()
 void ChessWidget::paint_event(GUI::PaintEvent& event)
 {
     int const min_size = min(width(), height());
-    int const widget_offset_x = (window()->width() - min_size) / 2;
     int const widget_offset_y = (window()->height() - min_size) / 2;
 
     GUI::Frame::paint_event(event);
@@ -41,9 +46,9 @@ void ChessWidget::paint_event(GUI::PaintEvent& event)
     GUI::Painter painter(*this);
     painter.add_clip_rect(event.rect());
 
-    painter.fill_rect(frame_inner_rect(), Color::Black);
+    painter.fill_rect(frame_inner_rect(), Gfx::Color::Black);
 
-    painter.translate(frame_thickness() + widget_offset_x, frame_thickness() + widget_offset_y);
+    painter.translate(frame_thickness(), frame_thickness() + widget_offset_y);
 
     auto square_width = min_size / 8;
     auto square_height = min_size / 8;
@@ -72,8 +77,8 @@ void ChessWidget::paint_event(GUI::PaintEvent& event)
             auto const piece = active_board.get_piece(sq);
             if (m_highlight_checks && last_move.is_check && piece.type == Chess::Type::King && piece.color == active_board.turn()) {
                 Array<Gfx::ColorStop, 2> colors = {
-                    Gfx::ColorStop { .color = Color::Red, .position = 0.16f },
-                    Gfx::ColorStop { .color = Color::Transparent, .position = .66f }
+                    Gfx::ColorStop { .color = Gfx::Color::Red, .position = 0.16f },
+                    Gfx::ColorStop { .color = Gfx::Color::Transparent, .position = .66f }
                 };
 
                 painter.fill_rect_with_radial_gradient(tile_rect, colors, tile_rect.center() - tile_rect.top_left(), tile_rect.size());
@@ -107,7 +112,7 @@ void ChessWidget::paint_event(GUI::PaintEvent& event)
         if (!(m_dragging_piece && sq == m_moving_square)) {
             auto bmp = get_piece_graphic(active_board.get_piece(sq));
             if (bmp) {
-                painter.draw_scaled_bitmap(tile_rect.shrunken(square_margin, square_margin, square_margin, square_margin), *bmp, bmp->rect(), 1.0f, Gfx::Painter::ScalingMode::BilinearBlend);
+                painter.draw_scaled_bitmap(tile_rect.shrunken(square_margin, square_margin, square_margin, square_margin), *bmp, bmp->rect(), 1.0f, Gfx::ScalingMode::BilinearBlend);
             }
         }
 
@@ -121,8 +126,8 @@ void ChessWidget::paint_event(GUI::PaintEvent& event)
         float hdx = h * cosf(phi);
         float hdy = h * sinf(phi);
 
-        const auto cos_pi_2_phi = cosf(float { M_PI_2 } - phi);
-        const auto sin_pi_2_phi = sinf(float { M_PI_2 } - phi);
+        auto const cos_pi_2_phi = cosf(float { M_PI_2 } - phi);
+        auto const sin_pi_2_phi = sinf(float { M_PI_2 } - phi);
 
         Gfx::FloatPoint A1(A.x() - (w1 / 2) * cos_pi_2_phi, A.y() - (w1 / 2) * sin_pi_2_phi);
         Gfx::FloatPoint B3(A.x() + (w1 / 2) * cos_pi_2_phi, A.y() + (w1 / 2) * sin_pi_2_phi);
@@ -143,7 +148,7 @@ void ChessWidget::paint_event(GUI::PaintEvent& event)
         path.line_to(A);
         path.close();
 
-        painter.fill_path(path, color, Gfx::Painter::WindingRule::EvenOdd);
+        painter.fill_path(path, color, Gfx::WindingRule::EvenOdd);
     };
 
     for (auto& m : m_board_markings) {
@@ -192,7 +197,7 @@ void ChessWidget::paint_event(GUI::PaintEvent& event)
         auto bmp = get_piece_graphic(active_board.get_piece(m_moving_square));
         if (bmp) {
             auto center = m_drag_point - Gfx::IntPoint(square_width / 2, square_height / 2);
-            painter.draw_scaled_bitmap({ center, { square_width, square_height } }, *bmp, bmp->rect(), 1.0f, Gfx::Painter::ScalingMode::BilinearBlend);
+            painter.draw_scaled_bitmap({ center, { square_width, square_height } }, *bmp, bmp->rect(), 1.0f, Gfx::ScalingMode::BilinearBlend);
         }
     }
 
@@ -207,7 +212,6 @@ void ChessWidget::paint_event(GUI::PaintEvent& event)
 void ChessWidget::mousedown_event(GUI::MouseEvent& event)
 {
     int const min_size = min(width(), height());
-    int const widget_offset_x = (window()->width() - min_size) / 2;
     int const widget_offset_y = (window()->height() - min_size) / 2;
 
     if (!frame_inner_rect().contains(event.position()))
@@ -229,11 +233,13 @@ void ChessWidget::mousedown_event(GUI::MouseEvent& event)
     if (!square.has_value())
         return;
 
+    set_focus(true);
+
     auto piece = board().get_piece(square.value());
     if (drag_enabled() && piece.color == board().turn() && !m_playback) {
         m_dragging_piece = true;
         set_override_cursor(Gfx::StandardCursor::Drag);
-        m_drag_point = { event.position().x() - widget_offset_x, event.position().y() - widget_offset_y };
+        m_drag_point = { event.position().x(), event.position().y() - widget_offset_y };
         m_moving_square = square.value();
 
         m_board.generate_moves([&](Chess::Move move) {
@@ -285,12 +291,22 @@ void ChessWidget::mouseup_event(GUI::MouseEvent& event)
 
     Chess::Move move = { m_moving_square, target_square.release_value() };
     if (board().is_promotion_move(move)) {
-        auto promotion_dialog = PromotionDialog::construct(*this);
+        auto promotion_dialog = MUST(PromotionDialog::try_create(*this));
         if (promotion_dialog->exec() == PromotionDialog::ExecResult::OK)
             move.promote_to = promotion_dialog->selected_piece();
     }
 
+    if (board().moves().size() == 0) {
+        if (!m_timer->is_active() && !m_unlimited_time_control) {
+            m_timer->start();
+        }
+    }
+
     if (board().apply_move(move)) {
+        update_move_display_widget(m_board);
+        if (!m_unlimited_time_control) {
+            apply_increment(move);
+        }
         m_playback_move_number = board().moves().size();
         m_playback = false;
         m_board_playback = m_board;
@@ -306,7 +322,6 @@ void ChessWidget::mouseup_event(GUI::MouseEvent& event)
 void ChessWidget::mousemove_event(GUI::MouseEvent& event)
 {
     int const min_size = min(width(), height());
-    int const widget_offset_x = (window()->width() - min_size) / 2;
     int const widget_offset_y = (window()->height() - min_size) / 2;
 
     if (!frame_inner_rect().contains(event.position()))
@@ -330,7 +345,7 @@ void ChessWidget::mousemove_event(GUI::MouseEvent& event)
         return;
     }
 
-    m_drag_point = { event.position().x() - widget_offset_x, event.position().y() - widget_offset_y };
+    m_drag_point = { event.position().x(), event.position().y() - widget_offset_y };
     update();
 }
 
@@ -395,10 +410,9 @@ void ChessWidget::set_piece_set(StringView set)
 Optional<Chess::Square> ChessWidget::mouse_to_square(GUI::MouseEvent& event) const
 {
     int const min_size = min(width(), height());
-    int const widget_offset_x = (window()->width() - min_size) / 2;
     int const widget_offset_y = (window()->height() - min_size) / 2;
 
-    auto x = event.x() - widget_offset_x;
+    auto x = event.x();
     auto y = event.y() - widget_offset_y;
     if (x < 0 || y < 0 || x > min_size || y > min_size)
         return {};
@@ -429,11 +443,22 @@ void ChessWidget::reset()
     m_playback_move_number = 0;
     m_board_playback = Chess::Board();
     m_board = Chess::Board();
+    update_move_display_widget(m_board);
     m_side = (get_random<u32>() % 2) ? Chess::Color::White : Chess::Color::Black;
     m_drag_enabled = true;
+    m_white_time_elapsed = 0;
+    m_black_time_elapsed = 0;
+    m_timer->stop();
+
     if (m_engine)
         m_engine->start_new_game();
 
+    if (m_unlimited_time_control) {
+        m_white_time_label->set_text("White time: -"_string);
+        m_black_time_label->set_text("Black time: -"_string);
+    } else {
+        update_time_labels(m_time_control_seconds, m_time_control_seconds);
+    }
     input_engine_move();
     update();
 }
@@ -443,11 +468,11 @@ void ChessWidget::set_board_theme(StringView name)
     // FIXME: Add some kind of themes.json
     // The following Colors have been taken from lichess.org, but i'm pretty sure they took them from chess.com.
     if (name == "Beige") {
-        m_board_theme = { "Beige"sv, Color::from_rgb(0xb58863), Color::from_rgb(0xf0d9b5) };
+        m_board_theme = { "Beige"sv, Gfx::Color::from_rgb(0xb58863), Gfx::Color::from_rgb(0xf0d9b5) };
     } else if (name == "Green") {
-        m_board_theme = { "Green"sv, Color::from_rgb(0x86a666), Color::from_rgb(0xffffdd) };
+        m_board_theme = { "Green"sv, Gfx::Color::from_rgb(0x86a666), Gfx::Color::from_rgb(0xffffdd) };
     } else if (name == "Blue") {
-        m_board_theme = { "Blue"sv, Color::from_rgb(0x8ca2ad), Color::from_rgb(0xdee3e6) };
+        m_board_theme = { "Blue"sv, Gfx::Color::from_rgb(0x8ca2ad), Gfx::Color::from_rgb(0xdee3e6) };
     } else {
         set_board_theme("Beige"sv);
     }
@@ -471,6 +496,12 @@ void ChessWidget::input_engine_move()
     if (drag_was_enabled)
         set_drag_enabled(false);
 
+    if (board().moves().size() == 0) {
+        if (!m_timer->is_active() && !m_unlimited_time_control) {
+            m_timer->start();
+        }
+    }
+
     set_override_cursor(Gfx::StandardCursor::Wait);
     m_engine->get_best_move(board(), 4000, [this, drag_was_enabled](ErrorOr<Chess::Move> move) {
         set_override_cursor(Gfx::StandardCursor::None);
@@ -479,10 +510,13 @@ void ChessWidget::input_engine_move()
         set_drag_enabled(drag_was_enabled);
         if (!move.is_error()) {
             VERIFY(board().apply_move(move.release_value()));
+            update_move_display_widget(board());
+            if (!m_unlimited_time_control) {
+                apply_increment(move.release_value());
+            }
             if (check_game_over(ClaimDrawBehavior::Prompt))
                 return;
         }
-
         m_playback_move_number = m_board.moves().size();
         m_playback = false;
         m_board_markings.clear();
@@ -505,6 +539,7 @@ void ChessWidget::playback_move(PlaybackDirection direction)
         m_board_playback = Chess::Board();
         for (size_t i = 0; i < m_playback_move_number - 1; i++)
             m_board_playback.apply_move(m_board.moves().at(i));
+        update_move_display_widget(m_board_playback);
         m_playback_move_number--;
         break;
     case PlaybackDirection::Forward:
@@ -513,6 +548,7 @@ void ChessWidget::playback_move(PlaybackDirection direction)
             return;
         }
         m_board_playback.apply_move(m_board.moves().at(m_playback_move_number++));
+        update_move_display_widget(m_board_playback);
         if (m_playback_move_number == m_board.moves().size())
             m_playback = false;
         break;
@@ -531,96 +567,219 @@ void ChessWidget::playback_move(PlaybackDirection direction)
     update();
 }
 
+void ChessWidget::update_move_display_widget(Chess::Board& board)
+{
+    size_t turn = 1;
+    StringBuilder sb;
+    for (auto [i, move] : enumerate(board.moves())) {
+        if (i % 2 == 0) {
+            sb.append(MUST(String::formatted("{}. {}", turn, MUST(move.to_algebraic()))));
+        } else {
+            sb.append(MUST(String::formatted(" {}\n", MUST(move.to_algebraic()))));
+            turn++;
+        }
+    }
+    m_move_display_widget->set_text(sb.string_view());
+}
+
 ErrorOr<String> ChessWidget::get_fen() const
 {
     return TRY(m_playback ? m_board_playback.to_fen() : m_board.to_fen());
 }
 
-ErrorOr<void> ChessWidget::import_pgn(Core::File& file)
+ErrorOr<void, PGNParseError> ChessWidget::import_pgn(Core::File& file)
 {
-    m_board = Chess::Board();
+    reset();
+    enum class TokenType {
+        Move,
+        TagSymbol,
+        TagString,
+        Comment,
+        GameTerminator,
+        RAVStart,
+        RAVEnd,
+        Nag
+    };
 
-    ByteBuffer bytes = TRY(file.read_until_eof());
-    StringView content = bytes;
-    auto lines = content.lines();
-    StringView line;
-    size_t i = 0;
+    struct Token {
+        TokenType type;
+        StringView value;
+    };
+    auto maybe_file = file.read_until_eof();
+    if (maybe_file.is_error()) {
+        return PGNParseError::from_string_formatted(String::formatted("Could not read file"));
+    }
+    ByteString bytes = ByteString { maybe_file.release_value().bytes() };
+    Vector<Token> tokens;
+    Vector<StringView> rav_stack;
+    // FIXME: Engine cannot parse suffixes ? and !.
+    StringView suffix_characters = "+#"sv;
+    StringView closing_characters = "]})"sv;
+    StringView opening_characters = "({["sv;
+    LineTrackingLexer lexer { StringView { bytes } };
 
-    // Tag Pair Section
-    // FIXME: Parse these tags when they become relevant
-    do {
-        line = lines.at(i++);
-    } while (!line.is_empty() || i >= lines.size());
+    while (!lexer.is_eof()) {
 
-    // Movetext Section
-    bool skip = false;
-    bool recursive_annotation = false;
-    bool future_expansion = false;
+        if (lexer.next_is(is_any_of(closing_characters))) {
+            return PGNParseError::from_string_formatted(String::formatted("Unexpected character: {}.\n(line {} column {})", lexer.consume(1), lexer.current_position().line + 1, lexer.current_position().column));
+        }
+        if (lexer.next_is('[')) {
+            lexer.consume_specific('[');
+            auto value = lexer.consume_until(" ");
+            tokens.append(Token { TokenType::TagSymbol, value });
+            lexer.ignore_while(is_ascii_space);
+            if (!lexer.consume_specific('"')) {
+                return PGNParseError::from_string_formatted(String::formatted("Expected opening \".\n(line {} column {})", lexer.current_position().line + 1, lexer.current_position().column));
+            }
+            // Parsing will only succeed if a " is reached, if the lexer goes to a ] the next
+            // consume_specific will fail.
+            value = lexer.consume_until(is_any_of("\"]\n"sv));
+            tokens.append(Token { TokenType::TagString, value });
+            if (!lexer.consume_specific('"')) {
+                return PGNParseError::from_string_formatted(String::formatted("Expected closing \".\n(line {} column {})", lexer.current_position().line + 1, lexer.current_position().column));
+            }
+            // The end quote must be followed by a closing bracket.
+            if (!lexer.consume_specific(']')) {
+                return PGNParseError::from_string_formatted(String::formatted("Expected closing bracket.\n(line {} column {})", lexer.current_position().line + 1, lexer.current_position().column));
+            }
+            // Deal with trailing white space
+            lexer.ignore_while(is_ascii_space);
+            continue;
+        }
+
+        if (lexer.next_is('{')) {
+            lexer.consume_specific('{');
+            // Deal with leading white space
+            lexer.ignore_while(is_ascii_space);
+            auto value = lexer.consume_until('}');
+            tokens.append(Token { TokenType::Comment, value });
+            if (!lexer.consume_specific('}')) {
+                return PGNParseError::from_string_formatted(String::formatted("Expected closing brace.\n(line {} column {})", lexer.current_position().line + 1, lexer.current_position().column));
+            }
+            // Deal with trailing white space
+            lexer.ignore_while(is_ascii_space);
+            continue;
+        }
+
+        if (lexer.next_is('(')) {
+            // FIXME: Actually implement RAV instead of just ignoring them.
+            rav_stack.append(lexer.consume(1));
+            while (!rav_stack.is_empty() && !lexer.is_eof()) {
+                lexer.ignore_until(is_any_of("()"sv));
+                if (lexer.next_is('(')) {
+                    rav_stack.append(lexer.consume(1));
+                    tokens.append(Token { TokenType::RAVStart, rav_stack.last() });
+                } else {
+                    rav_stack.take_last();
+                    tokens.append(Token { TokenType::RAVStart, lexer.consume(1) });
+                }
+            }
+            if (!rav_stack.is_empty() || lexer.is_eof()) {
+                return PGNParseError::from_string_formatted(String::formatted("Unclosed recursive annotation.\n(line {} column {})", lexer.current_position().line + 1, lexer.current_position().column));
+            }
+            continue;
+        }
+
+        if (lexer.next_is("1-0"sv)) {
+            auto value = lexer.consume(3);
+            tokens.append(Token { TokenType::GameTerminator, value });
+            break;
+        }
+        if (lexer.next_is("0-1"sv)) {
+            auto value = lexer.consume(3);
+            tokens.append(Token { TokenType::GameTerminator, value });
+            break;
+        }
+
+        if (lexer.next_is("1/2-1/2"sv)) {
+            auto value = lexer.consume(3);
+            tokens.append(Token { TokenType::GameTerminator, value });
+            break;
+        }
+
+        if (lexer.next_is("*"sv)) {
+            auto value = lexer.consume(1);
+            tokens.append(Token { TokenType::GameTerminator, value });
+            break;
+        }
+
+        if (lexer.next_is(is_ascii_alpha)) {
+            // Parse move.
+            auto value = lexer.consume_while([&](char c) { return is_ascii_alphanumeric(c) || suffix_characters.contains(c) || c == '=' || c == '-'; });
+            tokens.append(Token { TokenType::Move, value });
+
+            if (!lexer.next_is(is_any_of(" ({$"sv)) && !lexer.next_is(is_ascii_space)) {
+                return PGNParseError::from_string_formatted(String::formatted("Unexpected character {}.\n(line {} column {})", lexer.consume(1), lexer.current_position().line + 1, lexer.current_position().column));
+            }
+
+            // Deal with any extra trailing white space
+            lexer.ignore_while(is_ascii_space);
+            continue;
+        }
+
+        if (lexer.next_is("$"sv)) {
+            lexer.consume_specific('$');
+            if (!lexer.next_is(is_ascii_digit)) {
+                return PGNParseError::from_string_formatted(String::formatted("Unexpected character {}.\n(line {} column {})", lexer.consume(1), lexer.current_position().line + 1, lexer.current_position().column));
+            }
+
+            auto value = lexer.consume_while(is_ascii_digit);
+            tokens.append(Token { TokenType::Nag, value });
+
+            // Ensure that a number has been parsed and it's in range 0-255.
+            auto optional_number = value.to_number<int>();
+            if (!optional_number.has_value()) {
+                return PGNParseError::from_string_formatted(String::formatted("Could not parse Nag.\n(line {} column {})", lexer.current_position().line + 1, lexer.current_position().column));
+            }
+
+            auto number = optional_number.value();
+            if (number < 0 || number > 255) {
+                return PGNParseError::from_string_formatted(String::formatted("Nag must be number between 0-255 but got {}.\n(line {} column {})", number, lexer.current_position().line + 1, lexer.current_position().column));
+            }
+
+            // Ensure that the Nag is followed by a whitespace.
+            if (!lexer.consume_specific(' ')) {
+                return PGNParseError::from_string_formatted(String::formatted("Unexpected character {}.\n(line {} column {})", lexer.consume(1), lexer.current_position().line + 1, lexer.current_position().column));
+            }
+
+            // Deal with trailing white space
+            lexer.ignore_while(is_ascii_space);
+            continue;
+        }
+
+        // Advance to the start of a token or to an invalid closing character to be dealt with.
+        lexer.ignore_until([&](char c) { return is_ascii_alpha(c) || opening_characters.contains(c) || closing_characters.contains(c) || c == '$'; });
+    }
+
+    // FIXME: Display more of this information in the UI.
     Chess::Color turn = Chess::Color::White;
-    String movetext;
-
-    for (size_t j = i; j < lines.size(); j++)
-        movetext = TRY(String::formatted("{}{}", movetext, lines.at(i)));
-
-    for (auto token : TRY(movetext.split(' '))) {
-        token = TRY(token.trim_ascii_whitespace());
-
-        // FIXME: Parse all of these tokens when we start caring about them
-        if (token.ends_with('}')) {
-            skip = false;
-            continue;
-        }
-        if (skip)
-            continue;
-        if (token.starts_with('{')) {
-            if (token.ends_with('}'))
-                continue;
-            skip = true;
-            continue;
-        }
-        if (token.ends_with(')')) {
-            recursive_annotation = false;
-            continue;
-        }
-        if (recursive_annotation)
-            continue;
-        if (token.starts_with('(')) {
-            if (token.ends_with(')'))
-                continue;
-            recursive_annotation = true;
-            continue;
-        }
-        if (token.ends_with('>')) {
-            future_expansion = false;
-            continue;
-        }
-        if (future_expansion)
-            continue;
-        if (token.starts_with('<')) {
-            if (token.ends_with('>'))
-                continue;
-            future_expansion = true;
-            continue;
-        }
-        if (token.starts_with('$'))
-            continue;
-        if (token.contains('*'))
-            break;
-        // FIXME: When we become able to set more of the game state, fix these end results
-        if (token.contains("1-0"sv)) {
-            m_board.set_resigned(Chess::Color::Black);
-            break;
-        }
-        if (token.contains("0-1"sv)) {
-            m_board.set_resigned(Chess::Color::White);
-            break;
-        }
-        if (token.contains("1/2-1/2"sv)) {
-            break;
-        }
-        if (!token.ends_with('.')) {
-            m_board.apply_move(Chess::Move::from_algebraic(token, turn, m_board));
+    for (auto& token : tokens) {
+        switch (token.type) {
+        case TokenType::Move:
+            // FIXME: Add some move validation so the engine doesn't crash.
+            m_board.apply_move(Chess::Move::from_algebraic(token.value, turn, m_board));
             turn = Chess::opposing_color(turn);
+            break;
+        case TokenType::TagSymbol:
+            break;
+        case TokenType::TagString:
+            break;
+        case TokenType::GameTerminator:
+            if (token.value == "1-0"sv) {
+                m_board.set_resigned(Chess::Color::Black);
+            }
+            if (token.value == "0-1"sv) {
+                m_board.set_resigned(Chess::Color::White);
+            }
+            break;
+        case TokenType::Comment:
+            break;
+        case TokenType::RAVStart:
+            break;
+        case TokenType::RAVEnd:
+            break;
+        case TokenType::Nag:
+            break;
         }
     }
 
@@ -628,6 +787,7 @@ ErrorOr<void> ChessWidget::import_pgn(Core::File& file)
     m_board_playback = m_board;
     m_playback_move_number = m_board_playback.moves().size();
     m_playback = true;
+    update_move_display_widget(m_board_playback);
     update();
 
     return {};
@@ -654,7 +814,11 @@ ErrorOr<void> ChessWidget::export_pgn(Core::File& file) const
     TRY(file.write_until_depleted("[WhiteElo \"?\"]\n"sv.bytes()));
     TRY(file.write_until_depleted("[BlackElo \"?\"]\n"sv.bytes()));
     TRY(file.write_until_depleted("[Variant \"Standard\"]\n"sv.bytes()));
-    TRY(file.write_until_depleted("[TimeControl \"-\"]\n"sv.bytes()));
+    if (m_unlimited_time_control) {
+        TRY(file.write_until_depleted("[TimeControl \"-\"]\n"sv.bytes()));
+    } else {
+        TRY(file.write_until_depleted(TRY(String::formatted("[TimeControl \"{}+{}\"]\n", m_time_control_seconds, m_time_control_increment))));
+    }
     TRY(file.write_until_depleted("[Annotator \"SerenityOS Chess\"]\n"sv.bytes()));
     TRY(file.write_until_depleted("\n"sv.bytes()));
 
@@ -708,11 +872,65 @@ int ChessWidget::resign()
     board().set_resigned(m_board.turn());
 
     set_drag_enabled(false);
+    m_timer->stop();
     update();
     auto const msg = Chess::Board::result_to_string(m_board.game_result(), m_board.turn());
     GUI::MessageBox::show(window(), msg, "Game Over"sv, GUI::MessageBox::Type::Information);
 
     return 0;
+}
+
+void ChessWidget::initialize_timer()
+{
+    m_timer = Core::Timer::create_repeating(
+        1000, [this] {
+            // FIXME: Look into using AK/Timer methods to calculate elapsed time from
+            // start for greater accuracy.
+            auto white_time = m_time_control_seconds - m_white_time_elapsed;
+            auto black_time = m_time_control_seconds - m_black_time_elapsed;
+            if (m_board.turn() == Chess::Color::White) {
+                m_white_time_elapsed++;
+                update_time_labels(m_time_control_seconds - m_white_time_elapsed, black_time);
+                check_resign_on_time("White time out. Black wins."sv);
+            } else if (m_board.turn() == Chess::Color::Black) {
+                m_black_time_elapsed++;
+                update_time_labels(white_time, m_time_control_seconds - m_black_time_elapsed);
+                check_resign_on_time("Black time out. White wins."sv);
+            }
+        },
+        this);
+}
+
+void ChessWidget::apply_increment(Chess::Move move)
+{
+    if (move.piece.color == Chess::Color::White) {
+        m_white_time_elapsed -= m_time_control_increment;
+    } else {
+        m_black_time_elapsed -= m_time_control_increment;
+    }
+    update_time_labels(m_time_control_seconds - m_white_time_elapsed, m_time_control_seconds - m_black_time_elapsed);
+}
+
+void ChessWidget::update_time_labels(u32 white_time, u32 black_time)
+{
+    m_white_time_label->set_text(MUST(String::formatted("White time: {}", human_readable_digital_time(white_time))));
+    m_black_time_label->set_text(MUST(String::formatted("Black time: {}", human_readable_digital_time(black_time))));
+}
+
+void ChessWidget::check_resign_on_time(StringView msg)
+{
+    if (m_white_time_elapsed >= m_time_control_seconds) {
+        m_board.set_resigned(Chess::Color::White);
+    } else if (m_black_time_elapsed >= m_time_control_seconds) {
+        m_board.set_resigned(Chess::Color::Black);
+    } else {
+        return;
+    }
+    m_timer->stop();
+    set_override_cursor(Gfx::StandardCursor::None);
+    set_drag_enabled(false);
+    update();
+    GUI::MessageBox::show(window(), msg, "Game Over"sv, GUI::MessageBox::Type::Information);
 }
 
 bool ChessWidget::check_game_over(ClaimDrawBehavior claim_draw_behavior)
@@ -750,6 +968,7 @@ bool ChessWidget::check_game_over(ClaimDrawBehavior claim_draw_behavior)
 
     set_override_cursor(Gfx::StandardCursor::None);
     set_drag_enabled(false);
+    m_timer->stop();
     update();
     auto msg = Chess::Board::result_to_string(board().game_result(), board().turn());
     GUI::MessageBox::show(window(), msg, "Game Over"sv, GUI::MessageBox::Type::Information);
@@ -782,4 +1001,6 @@ void ChessWidget::config_bool_did_change(StringView domain, StringView group, St
         set_highlight_checks(value);
         update();
     }
+}
+
 }

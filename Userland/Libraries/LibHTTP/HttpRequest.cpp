@@ -49,10 +49,9 @@ ErrorOr<ByteBuffer> HttpRequest::to_raw_request() const
     StringBuilder builder;
     TRY(builder.try_append(method_name()));
     TRY(builder.try_append(' '));
-    // NOTE: The percent_encode is so that e.g. spaces are properly encoded.
     auto path = m_url.serialize_path();
     VERIFY(!path.is_empty());
-    TRY(builder.try_append(URL::percent_encode(path, URL::PercentEncodeSet::EncodeURI)));
+    TRY(builder.try_append(path));
     if (m_url.query().has_value()) {
         TRY(builder.try_append('?'));
         TRY(builder.try_append(*m_url.query()));
@@ -63,13 +62,11 @@ ErrorOr<ByteBuffer> HttpRequest::to_raw_request() const
         TRY(builder.try_appendff(":{}", *m_url.port()));
     TRY(builder.try_append("\r\n"sv));
     // Start headers.
-    bool has_content_length = false;
-    for (auto& header : m_headers) {
-        if (header.name.equals_ignoring_ascii_case("Content-Length"sv))
-            has_content_length = true;
-        TRY(builder.try_append(header.name));
+    bool has_content_length = m_headers.contains("Content-Length"sv);
+    for (auto const& [name, value] : m_headers.headers()) {
+        TRY(builder.try_append(name));
         TRY(builder.try_append(": "sv));
-        TRY(builder.try_append(header.value));
+        TRY(builder.try_append(value));
         TRY(builder.try_append("\r\n"sv));
     }
     if (!m_body.is_empty() || method() == Method::POST) {
@@ -118,7 +115,7 @@ ErrorOr<HttpRequest, HttpRequest::ParseError> HttpRequest::from_raw_request(Read
     ByteString method;
     ByteString resource;
     ByteString protocol;
-    Vector<Header> headers;
+    HeaderMap headers;
     Header current_header;
     ByteBuffer body;
 
@@ -185,7 +182,7 @@ ErrorOr<HttpRequest, HttpRequest::ParseError> HttpRequest::from_raw_request(Read
                 if (current_header.name.equals_ignoring_ascii_case("Content-Length"sv))
                     content_length = current_header.value.to_number<unsigned>();
 
-                headers.append(move(current_header));
+                headers.set(move(current_header.name), move(current_header.value));
                 break;
             }
             buffer.append(consume());
@@ -263,23 +260,22 @@ ErrorOr<HttpRequest, HttpRequest::ParseError> HttpRequest::from_raw_request(Read
     return request;
 }
 
-void HttpRequest::set_headers(HashMap<ByteString, ByteString> const& headers)
+void HttpRequest::set_headers(HTTP::HeaderMap headers)
 {
-    for (auto& it : headers)
-        m_headers.append({ it.key, it.value });
+    m_headers = move(headers);
 }
 
-Optional<HttpRequest::Header> HttpRequest::get_http_basic_authentication_header(URL::URL const& url)
+Optional<Header> HttpRequest::get_http_basic_authentication_header(URL::URL const& url)
 {
     if (!url.includes_credentials())
         return {};
     StringBuilder builder;
-    builder.append(url.username().release_value_but_fixme_should_propagate_errors());
+    builder.append(URL::percent_decode(url.username()));
     builder.append(':');
-    builder.append(url.password().release_value_but_fixme_should_propagate_errors());
+    builder.append(URL::percent_decode(url.password()));
 
     // FIXME: change to TRY() and make method fallible
-    auto token = MUST(encode_base64(MUST(builder.to_string()).bytes()));
+    auto token = MUST(encode_base64(builder.string_view().bytes()));
     builder.clear();
     builder.append("Basic "sv);
     builder.append(token);

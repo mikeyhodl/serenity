@@ -10,10 +10,11 @@
 
 namespace Web::Layout {
 
-LineBuilder::LineBuilder(InlineFormattingContext& context, LayoutState& layout_state, LayoutState::UsedValues& containing_block_used_values)
+LineBuilder::LineBuilder(InlineFormattingContext& context, LayoutState& layout_state, LayoutState::UsedValues& containing_block_used_values, CSS::Direction direction)
     : m_context(context)
     , m_layout_state(layout_state)
     , m_containing_block_used_values(containing_block_used_values)
+    , m_direction(direction)
 {
     m_text_indent = m_context.containing_block().computed_values().text_indent().to_px(m_context.containing_block(), m_containing_block_used_values.content_width());
     begin_new_line(false);
@@ -35,7 +36,7 @@ void LineBuilder::break_line(ForcedBreak forced_break, Optional<CSSPixels> next_
     size_t break_count = 0;
     bool floats_intrude_at_current_y = false;
     do {
-        m_containing_block_used_values.line_boxes.append(LineBox());
+        m_containing_block_used_values.line_boxes.append(LineBox(m_direction));
         begin_new_line(true, break_count == 0);
         break_count++;
         floats_intrude_at_current_y = m_context.any_floats_intrude_at_y(m_current_y);
@@ -80,7 +81,7 @@ LineBox& LineBuilder::ensure_last_line_box()
 {
     auto& line_boxes = m_containing_block_used_values.line_boxes;
     if (line_boxes.is_empty())
-        line_boxes.append(LineBox {});
+        line_boxes.append(LineBox(m_direction));
     return line_boxes.last();
 }
 
@@ -97,9 +98,9 @@ void LineBuilder::append_box(Box const& box, CSSPixels leading_size, CSSPixels t
     };
 }
 
-void LineBuilder::append_text_chunk(TextNode const& text_node, size_t offset_in_node, size_t length_in_node, CSSPixels leading_size, CSSPixels trailing_size, CSSPixels leading_margin, CSSPixels trailing_margin, CSSPixels content_width, CSSPixels content_height, Span<Gfx::DrawGlyphOrEmoji> glyph_run)
+void LineBuilder::append_text_chunk(TextNode const& text_node, size_t offset_in_node, size_t length_in_node, CSSPixels leading_size, CSSPixels trailing_size, CSSPixels leading_margin, CSSPixels trailing_margin, CSSPixels content_width, CSSPixels content_height, RefPtr<Gfx::GlyphRun> glyph_run)
 {
-    ensure_last_line_box().add_fragment(text_node, offset_in_node, length_in_node, leading_size, trailing_size, leading_margin, trailing_margin, content_width, content_height, 0, 0, glyph_run);
+    ensure_last_line_box().add_fragment(text_node, offset_in_node, length_in_node, leading_size, trailing_size, leading_margin, trailing_margin, content_width, content_height, 0, 0, move(glyph_run));
     m_max_height_on_current_line = max(m_max_height_on_current_line, content_height);
 }
 
@@ -163,6 +164,7 @@ void LineBuilder::update_last_line()
     auto& line_box = line_boxes.last();
 
     auto text_align = m_context.containing_block().computed_values().text_align();
+    auto direction = m_context.containing_block().computed_values().direction();
 
     auto current_line_height = max(m_max_height_on_current_line, m_context.containing_block().computed_values().line_height());
     CSSPixels x_offset_top = m_context.leftmost_x_offset_at(m_current_y);
@@ -178,6 +180,14 @@ void LineBuilder::update_last_line()
         case CSS::TextAlign::Center:
         case CSS::TextAlign::LibwebCenter:
             x_offset += excess_horizontal_space / 2;
+            break;
+        case CSS::TextAlign::Start:
+            if (direction == CSS::Direction::Rtl)
+                x_offset += excess_horizontal_space;
+            break;
+        case CSS::TextAlign::End:
+            if (direction == CSS::Direction::Ltr)
+                x_offset += excess_horizontal_space;
             break;
         case CSS::TextAlign::Right:
         case CSS::TextAlign::LibwebRight:
@@ -252,25 +262,32 @@ void LineBuilder::update_last_line()
         CSSPixels new_fragment_y = 0;
 
         auto y_value_for_alignment = [&](CSS::VerticalAlign vertical_align) {
-            CSSPixels effective_box_top = fragment.border_box_top();
+            CSSPixels effective_box_top_offset = fragment.border_box_top();
+            CSSPixels effective_box_bottom_offset = fragment.border_box_top();
             if (fragment.is_atomic_inline()) {
                 auto const& fragment_box_state = m_layout_state.get(static_cast<Box const&>(fragment.layout_node()));
-                effective_box_top = fragment_box_state.margin_box_top();
+                effective_box_top_offset = fragment_box_state.margin_box_top();
+                effective_box_bottom_offset = fragment_box_state.margin_box_bottom();
             }
 
             switch (vertical_align) {
             case CSS::VerticalAlign::Baseline:
-                return m_current_y + line_box_baseline - fragment.baseline() + effective_box_top;
+                return m_current_y + line_box_baseline - fragment.baseline() + effective_box_top_offset;
             case CSS::VerticalAlign::Top:
-                return m_current_y + effective_box_top;
-            case CSS::VerticalAlign::Middle:
+                return m_current_y + effective_box_top_offset;
+            case CSS::VerticalAlign::Middle: {
+                // Align the vertical midpoint of the box with the baseline of the parent box
+                // plus half the x-height of the parent.
+                auto const x_height = CSSPixels::nearest_value_for(m_context.containing_block().first_available_font().pixel_metrics().x_height);
+                return m_current_y + line_box_baseline + ((effective_box_top_offset - effective_box_bottom_offset - x_height - fragment.height()) / 2);
+            }
             case CSS::VerticalAlign::Bottom:
             case CSS::VerticalAlign::Sub:
             case CSS::VerticalAlign::Super:
             case CSS::VerticalAlign::TextBottom:
             case CSS::VerticalAlign::TextTop:
                 // FIXME: These are all 'baseline'
-                return m_current_y + line_box_baseline - fragment.baseline() + effective_box_top;
+                return m_current_y + line_box_baseline - fragment.baseline() + effective_box_top_offset;
             }
             VERIFY_NOT_REACHED();
         };

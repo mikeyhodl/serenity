@@ -147,8 +147,7 @@ void SoundPlayerWidget::set_nonlinear_volume_slider(bool nonlinear)
 
 void SoundPlayerWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -162,7 +161,7 @@ void SoundPlayerWidget::drop_event(GUI::DropEvent& event)
             return;
         window()->move_to_front();
         // FIXME: Add all paths from drop event to the playlist
-        play_file_path(urls.first().serialize_path());
+        play_file_path(URL::percent_decode(urls.first().serialize_path()));
     }
 }
 
@@ -195,8 +194,9 @@ RefPtr<Gfx::Bitmap> SoundPlayerWidget::get_image_from_music_file()
 
     // FIXME: We randomly select the first picture available for the track,
     //        We might want to hardcode or let the user set a preference.
-    auto decoded_image_or_error = m_image_decoder_client.decode_image(pictures[0].data);
-    if (!decoded_image_or_error.has_value())
+    // FIXME: Refactor image decoding to be more async-aware, and don't await this promise
+    auto decoded_image_or_error = m_image_decoder_client.decode_image(pictures[0].data, {}, {})->await();
+    if (decoded_image_or_error.is_error())
         return {};
 
     auto const decoded_image = decoded_image_or_error.release_value();

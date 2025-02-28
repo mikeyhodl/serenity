@@ -1,8 +1,8 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='stb'
-version='af1a5bc352164740c1cc1354942b1c6b72eacb8a'
+version='2e2bef463a5b53ddf8bb788e25da6b8506314c08'
 files=(
-    "https://github.com/nothings/stb/archive/${version}.zip#e3d0edbecd356506d3d69b87419de2f9d180a98099134c6343177885f6c2cbef"
+    "https://github.com/nothings/stb/archive/${version}.zip#f6a4669309a29dd8634c3c2c7a955da72469c2dc61471f68d9c499e517ab823f"
 )
 
 build() {

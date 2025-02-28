@@ -73,7 +73,7 @@ ErrorOr<NonnullLockRefPtr<PageDirectory>> PageDirectory::try_create_for_userspac
     directory->m_root_table = TRY(MM.allocate_physical_page());
 
     directory->m_directory_table = TRY(MM.allocate_physical_page());
-    auto kernel_pd_index = (kernel_mapping_base >> 30) & 0x1ffu;
+    auto kernel_pd_index = (g_boot_info.kernel_mapping_base >> 30) & 0x1ffu;
     for (size_t i = 0; i < kernel_pd_index; i++) {
         directory->m_directory_pages[i] = TRY(MM.allocate_physical_page());
     }
@@ -108,14 +108,18 @@ PageDirectory::PageDirectory() = default;
 UNMAP_AFTER_INIT void PageDirectory::allocate_kernel_directory()
 {
     // Adopt the page tables already set up by boot.S
-    dmesgln("MM: boot_pml4t @ {}", boot_pml4t);
-    m_root_table = PhysicalPage::create(boot_pml4t, MayReturnToFreeList::No);
-    dmesgln("MM: boot_pdpt @ {}", boot_pdpt);
-    dmesgln("MM: boot_pd0 @ {}", boot_pd0);
-    dmesgln("MM: boot_pd_kernel @ {}", boot_pd_kernel);
-    m_directory_table = PhysicalPage::create(boot_pdpt, MayReturnToFreeList::No);
-    m_directory_pages[0] = PhysicalPage::create(boot_pd0, MayReturnToFreeList::No);
-    m_directory_pages[(kernel_mapping_base >> 30) & 0x1ff] = PhysicalPage::create(boot_pd_kernel, MayReturnToFreeList::No);
+    dmesgln("MM: boot_pml4t @ {}", g_boot_info.boot_pml4t);
+    dmesgln("MM: boot_pdpt @ {}", g_boot_info.boot_pdpt);
+    dmesgln("MM: boot_pd_kernel @ {}", g_boot_info.boot_pd_kernel);
+
+    m_root_table = PhysicalRAMPage::create(g_boot_info.boot_pml4t, MayReturnToFreeList::No);
+    m_directory_table = PhysicalRAMPage::create(g_boot_info.boot_pdpt, MayReturnToFreeList::No);
+    m_directory_pages[(g_boot_info.kernel_mapping_base >> 30) & 0x1ff] = PhysicalRAMPage::create(g_boot_info.boot_pd_kernel, MayReturnToFreeList::No);
+
+    if (g_boot_info.boot_method == BootMethod::EFI) {
+        dmesgln("MM: bootstrap_page_page_directory @ {}", g_boot_info.boot_method_specific.efi.bootstrap_page_page_directory_paddr);
+        m_directory_pages[(g_boot_info.boot_method_specific.efi.bootstrap_page_vaddr.get() >> 30) & 0x1ff] = PhysicalRAMPage::create(g_boot_info.boot_method_specific.efi.bootstrap_page_page_directory_paddr, MayReturnToFreeList::No);
+    }
 }
 
 PageDirectory::~PageDirectory()

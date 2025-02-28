@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/HashMap.h>
+#include <Kernel/FileSystem/Ext2FS/BlockView.h>
 #include <Kernel/FileSystem/Ext2FS/Definitions.h>
 #include <Kernel/FileSystem/Ext2FS/DirectoryEntry.h>
 #include <Kernel/FileSystem/Ext2FS/FileSystem.h>
@@ -17,6 +18,7 @@ namespace Kernel {
 
 class Ext2FSInode final : public Inode {
     friend class Ext2FS;
+    friend class Ext2FSBlockView;
 
 public:
     virtual ~Ext2FSInode() override;
@@ -36,7 +38,6 @@ private:
     virtual ErrorOr<NonnullRefPtr<Inode>> create_child(StringView name, mode_t, dev_t, UserID, GroupID) override;
     virtual ErrorOr<void> add_child(Inode& child, StringView name, mode_t) override;
     virtual ErrorOr<void> remove_child(StringView name) override;
-    virtual ErrorOr<void> replace_child(StringView name, Inode& child) override;
     virtual ErrorOr<void> update_timestamps(Optional<UnixDateTime> atime, Optional<UnixDateTime> ctime, Optional<UnixDateTime> mtime) override;
     virtual ErrorOr<void> increment_link_count() override;
     virtual ErrorOr<void> decrement_link_count() override;
@@ -45,31 +46,60 @@ private:
     virtual ErrorOr<void> truncate_locked(u64) override;
     virtual ErrorOr<int> get_block_address(int) override;
 
+    bool is_within_inode_bounds(FlatPtr base, FlatPtr value_offset, size_t value_size) const;
+
+    static u8 to_ext2_file_type(mode_t mode);
+
+    static time_t decode_seconds_with_extra(i32 seconds, u32 extra) { return (extra & EXT4_EPOCH_MASK) ? static_cast<time_t>(seconds) + (static_cast<time_t>(extra & EXT4_EPOCH_MASK) << 32) : static_cast<time_t>(seconds); }
+    static u32 decode_nanoseconds_from_extra(u32 extra) { return (extra & EXT4_NSEC_MASK) >> EXT4_EPOCH_BITS; }
+    static u32 encode_time_to_extra(time_t seconds, u32 nanoseconds) { return (((static_cast<time_t>(seconds) - static_cast<i32>(seconds)) >> 32) & EXT4_EPOCH_MASK) | (nanoseconds << EXT4_EPOCH_BITS); }
+
+    ErrorOr<BlockBasedFileSystem::BlockIndex> allocate_block(BlockBasedFileSystem::BlockIndex, bool zero_newly_allocated_block, bool allow_cache);
+    ErrorOr<u32> allocate_and_zero_block();
+
+    enum class RemoveDotEntries {
+        Yes,
+        No,
+    };
+
+    ErrorOr<void> remove_child_impl(StringView name, RemoveDotEntries);
     ErrorOr<void> write_directory(Vector<Ext2FSDirectoryEntry>&);
     ErrorOr<void> populate_lookup_cache();
     ErrorOr<void> resize(u64);
-    ErrorOr<void> write_indirect_block(BlockBasedFileSystem::BlockIndex, Span<BlockBasedFileSystem::BlockIndex>);
-    ErrorOr<void> grow_doubly_indirect_block(BlockBasedFileSystem::BlockIndex, size_t, Span<BlockBasedFileSystem::BlockIndex>, Vector<BlockBasedFileSystem::BlockIndex>&, unsigned&);
-    ErrorOr<void> shrink_doubly_indirect_block(BlockBasedFileSystem::BlockIndex, size_t, size_t, unsigned&);
-    ErrorOr<void> grow_triply_indirect_block(BlockBasedFileSystem::BlockIndex, size_t, Span<BlockBasedFileSystem::BlockIndex>, Vector<BlockBasedFileSystem::BlockIndex>&, unsigned&);
-    ErrorOr<void> shrink_triply_indirect_block(BlockBasedFileSystem::BlockIndex, size_t, size_t, unsigned&);
-    ErrorOr<void> flush_block_list();
+    ErrorOr<void> write_singly_indirect_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index);
+    ErrorOr<void> write_doubly_indirect_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index);
+    ErrorOr<void> write_triply_indirect_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index);
+    ErrorOr<void> write_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index);
 
-    ErrorOr<void> compute_block_list_with_exclusive_locking();
-    ErrorOr<Vector<BlockBasedFileSystem::BlockIndex>> compute_block_list() const;
-    ErrorOr<Vector<BlockBasedFileSystem::BlockIndex>> compute_block_list_with_meta_blocks() const;
-    ErrorOr<Vector<BlockBasedFileSystem::BlockIndex>> compute_block_list_impl(bool include_block_list_blocks) const;
-    ErrorOr<Vector<BlockBasedFileSystem::BlockIndex>> compute_block_list_impl_internal(ext2_inode const&, bool include_block_list_blocks) const;
+    ErrorOr<Ext2FS::BlockList> compute_block_list(BlockBasedFileSystem::BlockIndex, BlockBasedFileSystem::BlockIndex) const;
+
+    ErrorOr<void> free_all_blocks();
+
+    u64 singly_indirect_block_capacity() const
+    {
+        auto const entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
+        return EXT2_NDIR_BLOCKS + entries_per_block;
+    }
+
+    u64 doubly_indirect_block_capacity() const
+    {
+        auto const entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
+        return singly_indirect_block_capacity() + entries_per_block * entries_per_block;
+    }
+
+    u64 triply_indirect_block_capacity() const
+    {
+        auto const entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
+        return doubly_indirect_block_capacity() + entries_per_block * entries_per_block * entries_per_block;
+    }
 
     Ext2FS& fs();
     Ext2FS const& fs() const;
     Ext2FSInode(Ext2FS&, InodeIndex);
 
-    Vector<BlockBasedFileSystem::BlockIndex> m_block_list;
+    mutable Ext2FSBlockView m_block_view;
     HashMap<NonnullOwnPtr<KString>, InodeIndex> m_lookup_cache;
-    ext2_inode m_raw_inode {};
-
-    Mutex m_block_list_lock { "BlockList"sv };
+    ext2_inode_large m_raw_inode {};
 };
 
 inline Ext2FS& Ext2FSInode::fs()

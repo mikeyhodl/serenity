@@ -16,7 +16,7 @@ interface WebSocket : EventTarget {
     const unsigned short CLOSING = 2;
     const unsigned short CLOSED = 3;
     readonly attribute unsigned short readyState;
-    // FIXME: readonly attribute unsigned long long bufferedAmount;
+    [FIXME] readonly attribute unsigned long long bufferedAmount;
 
     // networking
     attribute EventHandler onopen;
@@ -24,7 +24,7 @@ interface WebSocket : EventTarget {
     attribute EventHandler onclose;
     readonly attribute DOMString extensions;
     readonly attribute DOMString protocol;
-    undefined close(optional unsigned short code, optional USVString reason);
+    undefined close(optional [Clamp] unsigned short code, optional USVString reason);
 
     // messaging
     attribute EventHandler onmessage;

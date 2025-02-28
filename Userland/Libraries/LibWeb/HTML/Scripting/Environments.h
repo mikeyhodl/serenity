@@ -8,17 +8,21 @@
 #pragma once
 
 #include <LibJS/Forward.h>
+#include <LibURL/Origin.h>
 #include <LibURL/URL.h>
+#include <LibWeb/Forward.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
-#include <LibWeb/HTML/Origin.h>
 #include <LibWeb/HTML/Scripting/ModuleMap.h>
 #include <LibWeb/HTML/Scripting/SerializedEnvironmentSettingsObject.h>
 
 namespace Web::HTML {
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#environment
-struct Environment {
-    virtual ~Environment() = default;
+struct Environment : public JS::Cell {
+    JS_CELL(Environment, JS::Cell);
+
+public:
+    virtual ~Environment() override;
 
     // An id https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-id
     String id;
@@ -30,7 +34,7 @@ struct Environment {
     URL::URL top_level_creation_url;
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin
-    Origin top_level_origin;
+    URL::Origin top_level_origin;
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-target-browsing-context
     JS::GCPtr<BrowsingContext> target_browsing_context;
@@ -39,6 +43,9 @@ struct Environment {
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-execution-ready-flag
     bool execution_ready { false };
+
+protected:
+    virtual void visit_edges(Cell::Visitor&) override;
 };
 
 enum class RunScriptDecision {
@@ -47,11 +54,10 @@ enum class RunScriptDecision {
 };
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#environment-settings-object
-struct EnvironmentSettingsObject
-    : public JS::Cell
-    , public Environment {
-    JS_CELL(EnvironmentSettingsObject, JS::Cell);
+struct EnvironmentSettingsObject : public Environment {
+    JS_CELL(EnvironmentSettingsObject, Environment);
 
+public:
     virtual ~EnvironmentSettingsObject() override;
     virtual void initialize(JS::Realm&) override;
 
@@ -71,7 +77,7 @@ struct EnvironmentSettingsObject
     virtual URL::URL api_base_url() = 0;
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-origin
-    virtual Origin origin() = 0;
+    virtual URL::Origin origin() = 0;
 
     // A policy container https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-policy-container
     virtual PolicyContainer policy_container() = 0;
@@ -85,24 +91,15 @@ struct EnvironmentSettingsObject
     JS::Object& global_object();
     EventLoop& responsible_event_loop();
 
+    // https://fetch.spec.whatwg.org/#concept-fetch-group
+    Vector<JS::NonnullGCPtr<Fetch::Infrastructure::FetchRecord>>& fetch_group() { return m_fetch_group; }
+
     RunScriptDecision can_run_script();
     void prepare_to_run_script();
     void clean_up_after_running_script();
 
     void prepare_to_run_callback();
     void clean_up_after_running_callback();
-
-    void push_onto_outstanding_rejected_promises_weak_set(JS::Promise*);
-
-    // Returns true if removed, false otherwise.
-    bool remove_from_outstanding_rejected_promises_weak_set(JS::Promise*);
-
-    void push_onto_about_to_be_notified_rejected_promises_list(JS::NonnullGCPtr<JS::Promise>);
-
-    // Returns true if removed, false otherwise.
-    bool remove_from_about_to_be_notified_rejected_promises_list(JS::NonnullGCPtr<JS::Promise>);
-
-    void notify_about_rejected_promises(Badge<EventLoop>);
 
     bool is_scripting_enabled() const;
     bool is_scripting_disabled() const;
@@ -113,6 +110,11 @@ struct EnvironmentSettingsObject
 
     SerializedEnvironmentSettingsObject serialize();
 
+    JS::NonnullGCPtr<StorageAPI::StorageManager> storage_manager();
+
+    [[nodiscard]] bool discarded() const { return m_discarded; }
+    void set_discarded(bool b) { m_discarded = b; }
+
 protected:
     explicit EnvironmentSettingsObject(NonnullOwnPtr<JS::ExecutionContext>);
 
@@ -122,14 +124,19 @@ private:
     NonnullOwnPtr<JS::ExecutionContext> m_realm_execution_context;
     JS::GCPtr<ModuleMap> m_module_map;
 
-    EventLoop* m_responsible_event_loop { nullptr };
+    JS::GCPtr<EventLoop> m_responsible_event_loop;
 
-    // https://html.spec.whatwg.org/multipage/webappapis.html#outstanding-rejected-promises-weak-set
-    // The outstanding rejected promises weak set must not create strong references to any of its members, and implementations are free to limit its size, e.g. by removing old entries from it when new ones are added.
-    Vector<JS::GCPtr<JS::Promise>> m_outstanding_rejected_promises_weak_set;
+    // https://fetch.spec.whatwg.org/#concept-fetch-record
+    // A fetch group holds an ordered list of fetch records
+    Vector<JS::NonnullGCPtr<Fetch::Infrastructure::FetchRecord>> m_fetch_group;
 
-    // https://html.spec.whatwg.org/multipage/webappapis.html#about-to-be-notified-rejected-promises-list
-    Vector<JS::Handle<JS::Promise>> m_about_to_be_notified_rejected_promises_list;
+    // https://storage.spec.whatwg.org/#api
+    // Each environment settings object has an associated StorageManager object.
+    JS::GCPtr<StorageAPI::StorageManager> m_storage_manager;
+
+    // https://w3c.github.io/ServiceWorker/#service-worker-client-discarded-flag
+    // A service worker client has an associated discarded flag. It is initially unset.
+    bool m_discarded { false };
 };
 
 EnvironmentSettingsObject& incumbent_settings_object();

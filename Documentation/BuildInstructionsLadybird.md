@@ -1,8 +1,11 @@
 # Ladybird browser build instructions
 
+> [!NOTE]
+> The Ladybird web browser project has moved to [LadybirdBrowser/ladybird](https://github.com/LadybirdBrowser/ladybird), this version is kept as a developer convenience for the testing of LibWeb and LibJS libraries included with SerenityOS.
+
 ## Build Prerequisites
 
-Qt6 development packages and a C++20 capable compiler are required. g++-12 or clang-15 are required at a minimum for c++20 support.
+Qt6 development packages and a C++23 capable compiler are required. g++-13 or clang-17 are required at a minimum for c++23 support.
 
 NOTE: In all of the below lists of packages, the Qt6 multimedia package is not needed if your Linux system supports PulseAudio.
 
@@ -25,36 +28,38 @@ sudo pacman -S --needed base-devel cmake libgl ninja qt6-base qt6-tools qt6-wayl
 ```
 
 On Fedora or derivatives:
+
 ```
 sudo dnf install cmake libglvnd-devel ninja-build qt6-qtbase-devel qt6-qttools-devel qt6-qtwayland-devel qt6-qtmultimedia-devel ccache
 ```
 
 On openSUSE:
+
 ```
 sudo zypper install cmake libglvnd-devel ninja qt6-base-devel qt6-multimedia-devel qt6-tools-devel qt6-wayland-devel ccache
 ```
 
-On Nix/NixOS (using your host nixpkgs):
-```bash
-# From /path/to/serenity
-nix-shell Ladybird/ladybird.nix
+On NixOS or with Nix:
+
+```console
+nix develop .#ladybird
 
 # With a custom entrypoint, for example your favorite shell
-nix-shell --command bash Ladybird/ladybird.nix
+nix develop .#ladybird --command bash
 ```
 
-You can also use the nix flake in `Toolchain`:
-```bash
-# From /path/to/serenity
-nix develop ./Toolchain#ladybird
+On NixOS or with Nix using your host `nixpkgs` and the legacy `nix-shell` tool:
+
+```console
+nix-shell Ladybird
 
 # With a custom entrypoint, for example your favorite shell
-nix develop ./Toolchain#ladybird --command bash
+nix-shell --command bash Ladybird
 ```
 
 On macOS:
 
-Note that Xcode 13.x does not have sufficient C++20 support to build ladybird. Xcode 14 versions before 14.3 might crash while building ladybird. Xcode 14.3 or clang from homebrew may be required to successfully build ladybird.
+Xcode 14 versions before 14.3 might crash while building ladybird. Xcode 14.3 or clang from homebrew may be required to successfully build ladybird.
 
 ```
 xcode-select --install
@@ -62,6 +67,7 @@ brew install cmake ninja ccache
 ```
 
 If you also plan to use the Qt chrome on macOS:
+
 ```
 brew install qt
 ```
@@ -71,10 +77,11 @@ On OpenIndiana:
 Note that OpenIndiana's latest GCC port (GCC 11) is too old to build Ladybird, so you need Clang, which is available in the repository.
 
 ```
-pfexec pkg install cmake ninja clang-15 libglvnd qt6
+pfexec pkg install cmake ninja clang-17 libglvnd qt6
 ```
 
 On Haiku:
+
 ```
 pkgman install cmake ninja cmd:python3 qt6_base_devel qt6_multimedia_devel qt6_tools_devel openal_devel
 ```
@@ -83,11 +90,6 @@ On Windows:
 
 WSL2/WSLg are preferred, as they provide a linux environment that matches one of the above distributions.
 MinGW/MSYS2 are not supported, but may work with sufficient elbow grease. Native Windows builds are not supported with either clang-cl or MSVC.
-
-For Android:
-
-On a Unix-like platform, install the prerequisites for that platform and then see the [Android Studio guide](AndroidStudioConfiguration.md).
-Or, download a version of Gradle >= 8.0.0, and run the ``gradlew`` program in ``Ladybird/Android``
 
 ## Build steps
 
@@ -102,11 +104,11 @@ The simplest way to build and run ladybird is via the serenity.sh script:
 ```
 
 The above commands will build Ladybird with one of the following browser chromes, depending on the platform:
-* [Android UI](https://developer.android.com/develop/ui) - The native chrome on Android.
-* [AppKit](https://developer.apple.com/documentation/appkit?language=objc) - The native chrome on macOS.
-* [Qt](https://doc.qt.io/qt-6/) - The chrome used on all other platforms.
 
-The Qt chrome is available on platforms where it is not the default as well (except on Android). To build the
+-   [AppKit](https://developer.apple.com/documentation/appkit?language=objc) - The native chrome on macOS.
+-   [Qt](https://doc.qt.io/qt-6/) - The chrome used on all other platforms.
+
+The Qt chrome is available on platforms where it is not the default as well. To build the
 Qt chrome, install the Qt dependencies for your platform, and enable the Qt chrome via CMake:
 
 ```bash
@@ -135,7 +137,7 @@ Ladybird requires resource files from the serenity/Base/res directory in order t
 icons, fonts, and other theming information. The serenity.sh script calls into custom CMake targets
 that set these variables, and ensure that the $PWD is set properly to allow execution from the build
 directory. To run the built binary without using the script, one can either directly invoke the
-ninja rules or install ladybird  using the provided CMake install rules. See the ``Custom CMake build directory``
+ninja rules or install ladybird using the provided CMake install rules. See the `Custom CMake build directory`
 section below for details.
 
 ### Custom CMake build directory
@@ -146,10 +148,10 @@ CMakeLists.txt, or via the CMakeLists.txt found in the Ladybird directory. For d
 Ladybird as the source directory will give the desired results.
 
 The install rules in Ladybird/cmake/InstallRules.cmake define which binaries and libraries will be
-installed into the configured CMAKE_PREFIX_PATH or path passed to ``cmake --install``.
+installed into the configured CMAKE_PREFIX_PATH or path passed to `cmake --install`.
 
 Note that when using a custom build directory rather than Meta/serenity.sh, the user may need to provide
-a suitable C++ compiler (g++ >= 12, clang >= 14, Apple Clang >= 14.3) via the CMAKE_CXX_COMPILER and
+a suitable C++ compiler (g++ >= 13, clang >= 14, Apple Clang >= 14.3) via the CMAKE_CXX_COMPILER and
 CMAKE_C_COMPILER cmake options.
 
 ```
@@ -160,22 +162,34 @@ ninja -C Build/ladybird run
 ```
 
 To automatically run in gdb:
+
 ```
 ninja -C Build/ladybird debug
 ```
 
 To run without ninja rule on non-macOS systems:
+
 ```
 ./Build/ladybird/bin/Ladybird
 ```
 
 To run without ninja rule on macOS:
+
 ```
 open -W --stdout $(tty) --stderr $(tty) ./Build/ladybird/bin/Ladybird.app
 
 # Or to launch with arguments:
 open -W --stdout $(tty) --stderr $(tty) ./Build/ladybird/bin/Ladybird.app --args https://ladybird.dev
 ```
+
+### Experimental GN build
+
+There is an experimental GN build for Ladybird. It is not officially supported, but it is kept up to date on a best-effort
+basis by interested contributors. See the [GN build instructions](../Meta/gn/README.md) for more information.
+
+In general, the GN build organizes ninja rules in a more compact way than the CMake build, and it may be faster on some systems.
+GN also allows building host and cross-targets in the same build directory, which is useful for managing dependencies on host tools when
+cross-compiling to other platforms.
 
 ### Debugging with CLion
 

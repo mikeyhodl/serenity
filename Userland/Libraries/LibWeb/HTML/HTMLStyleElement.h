@@ -23,11 +23,17 @@ public:
     virtual void inserted() override;
     virtual void removed_from(Node*) override;
 
+    bool disabled();
+    void set_disabled(bool disabled);
+
     CSS::CSSStyleSheet* sheet();
     CSS::CSSStyleSheet const* sheet() const;
 
 private:
     HTMLStyleElement(DOM::Document&, DOM::QualifiedName);
+
+    // ^DOM::Node
+    virtual bool is_html_style_element() const override { return true; }
 
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;

@@ -29,8 +29,7 @@ StaticNodeList::~StaticNodeList() = default;
 void StaticNodeList::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    for (auto& node : m_static_nodes)
-        visitor.visit(node);
+    visitor.visit(m_static_nodes);
 }
 
 // https://dom.spec.whatwg.org/#dom-nodelist-length
@@ -46,14 +45,6 @@ Node const* StaticNodeList::item(u32 index) const
     if (index >= m_static_nodes.size())
         return nullptr;
     return m_static_nodes[index];
-}
-
-// https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-indices
-bool StaticNodeList::is_supported_property_index(u32 index) const
-{
-    // The object’s supported property indices are the numbers in the range zero to one less than the number of nodes represented by the collection.
-    // If there are no such elements, then there are no supported property indices.
-    return index < m_static_nodes.size();
 }
 
 }

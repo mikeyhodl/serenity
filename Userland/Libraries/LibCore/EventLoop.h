@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <AK/Concepts.h>
+#include <AK/Coroutine.h>
 #include <AK/Forward.h>
 #include <AK/Function.h>
 #include <AK/Noncopyable.h>
@@ -67,9 +69,11 @@ public:
 
     void add_job(NonnullRefPtr<Promise<NonnullRefPtr<EventReceiver>>> job_promise);
 
-    void deferred_invoke(Function<void()>);
+    void deferred_invoke(ESCAPING Function<void()>);
 
     void wake();
+
+    void adopt_coroutine(Coroutine<void>&&);
 
     void quit(int);
     void unquit();
@@ -82,7 +86,7 @@ public:
     static void register_notifier(Badge<Notifier>, Notifier&);
     static void unregister_notifier(Badge<Notifier>, Notifier&);
 
-    static int register_signal(int signo, Function<void(int)> handler);
+    static int register_signal(int signo, ESCAPING Function<void(int)> handler);
     static void unregister_signal(int handler_id);
 
     // Note: Boost uses Parent/Child/Prepare, but we don't really have anything
@@ -101,6 +105,28 @@ private:
     NonnullOwnPtr<EventLoopImplementation> m_impl;
 };
 
-void deferred_invoke(Function<void()>);
+void deferred_invoke(ESCAPING Function<void()>);
 
+template<typename T>
+requires(IsSpecializationOf<InvokeResult<T&>, Coroutine>)
+auto run_async_in_new_event_loop(T&& function)
+{
+    Core::EventLoop loop;
+    auto coro = function();
+    loop.spin_until([&] {
+        return coro.await_ready();
+    });
+    return coro.await_resume();
+}
+
+template<typename T>
+requires(IsSpecializationOf<InvokeResult<T&>, Coroutine>)
+auto run_async_in_current_event_loop(T&& function)
+{
+    auto coro = function();
+    EventLoop::current().spin_until([&] {
+        return coro.await_ready();
+    });
+    return coro.await_resume();
+}
 }

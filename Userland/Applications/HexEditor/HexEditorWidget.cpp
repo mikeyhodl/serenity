@@ -24,6 +24,7 @@
 #include <LibGUI/Button.h>
 #include <LibGUI/FilePicker.h>
 #include <LibGUI/InputBox.h>
+#include <LibGUI/ItemListModel.h>
 #include <LibGUI/Menu.h>
 #include <LibGUI/Menubar.h>
 #include <LibGUI/MessageBox.h>
@@ -59,9 +60,19 @@ ErrorOr<void> HexEditorWidget::setup()
     m_side_panel_container = *find_descendant_of_type_named<GUI::DynamicWidgetContainer>("side_panel_container");
     m_value_inspector_container = *find_descendant_of_type_named<GUI::Widget>("value_inspector_container");
     m_value_inspector = *find_descendant_of_type_named<GUI::TableView>("value_inspector");
+    m_value_inspector_endianness = *find_descendant_of_type_named<GUI::ComboBox>("value_inspector_endianness");
 
     // FIXME: Set this in GML once the compiler supports it.
     m_side_panel_container->set_container_with_individual_order(true);
+
+    // TODO: Switch to regular strings once ComboBox::on_change passes a String
+    m_endianness_options.append("Little Endian");
+    m_endianness_options.append("Big Endian");
+    m_value_inspector_endianness->set_model(GUI::ItemListModel<ByteString>::create(m_endianness_options));
+    m_value_inspector_endianness->set_only_allow_values_from_model(true);
+    m_value_inspector_endianness->on_change = [this](ByteString const& value, GUI::ModelIndex const&) {
+        set_inspector_little_endian(value == "Little Endian");
+    };
 
     m_value_inspector->on_activation = [this](GUI::ModelIndex const& index) {
         if (!index.is_valid())
@@ -326,6 +337,11 @@ ErrorOr<void> HexEditorWidget::setup()
         Config::write_bool("HexEditor"sv, "Layout"sv, "ShowSearchResults"sv, action.is_checked());
     });
 
+    m_show_offsets_column_action = GUI::Action::create_checkable("Show &Offsets Column", [&](auto& action) {
+        m_editor->set_show_offsets_column(action.is_checked());
+        Config::write_bool("HexEditor"sv, "Layout"sv, "ShowOffsetsColumn"sv, action.is_checked());
+    });
+
     m_copy_hex_action = GUI::Action::create("Copy &Hex", { Mod_Ctrl, Key_C }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/hex.png"sv)), [&](const GUI::Action&) {
         m_editor->copy_selected_hex_to_clipboard();
     });
@@ -502,26 +518,46 @@ void HexEditorWidget::update_inspector_values(size_t position)
 
     auto selected_bytes = m_editor->get_selected_bytes();
 
-    auto ascii_string = String::from_utf8(ReadonlyBytes { selected_bytes });
+    // Replace control chars with something else - we don't want line breaks here ;)
+    auto replace_control_chars = [](ErrorOr<String> string_or_error) {
+        if (string_or_error.is_error())
+            return string_or_error;
+        return string_or_error.release_value().replace("\n"sv, " "sv, ReplaceMode::All);
+    };
+
+    auto ascii_string = replace_control_chars(String::from_utf8(ReadonlyBytes { selected_bytes }));
     value_inspector_model->set_parsed_value(ValueInspectorModel::ValueType::ASCIIString, move(ascii_string));
 
     Utf8View utf8_string_view { ReadonlyBytes { selected_bytes } };
     utf8_string_view.validate(valid_bytes);
-    if (valid_bytes == 0)
+    if (valid_bytes == 0) {
         value_inspector_model->set_parsed_value(ValueInspectorModel::ValueType::UTF8String, ""_string);
-    else
-        // FIXME: replace control chars with something else - we don't want line breaks here ;)
-        value_inspector_model->set_parsed_value(ValueInspectorModel::ValueType::UTF8String, String::from_utf8(utf8_string_view.as_string()));
+    } else {
+        auto utf8_string = replace_control_chars(String::from_utf8(utf8_string_view.as_string()));
+        value_inspector_model->set_parsed_value(ValueInspectorModel::ValueType::UTF8String, move(utf8_string));
+    }
 
     // FIXME: Parse as other values like Timestamp etc
 
     auto decoder = TextCodec::decoder_for(m_value_inspector_little_endian ? "utf-16le"sv : "utf-16be"sv);
-    ErrorOr<String> utf16_string = decoder->to_utf8(StringView(selected_bytes.span()));
-
+    auto utf16_string = replace_control_chars(decoder->to_utf8(StringView(selected_bytes.span())));
     value_inspector_model->set_parsed_value(ValueInspectorModel::ValueType::UTF16String, move(utf16_string));
 
     m_value_inspector->set_model(value_inspector_model);
     m_value_inspector->update();
+}
+
+void HexEditorWidget::set_inspector_little_endian(bool little_endian, bool force)
+{
+    if (m_value_inspector_little_endian == little_endian && !force)
+        return;
+
+    m_value_inspector_little_endian = little_endian;
+    update_inspector_values(m_editor->selection_start_offset());
+
+    m_value_inspector_endianness->set_selected_index(little_endian ? 0 : 1);
+
+    Config::write_bool("HexEditor"sv, "Layout"sv, "UseLittleEndianInValueInspector"sv, m_value_inspector_little_endian);
 }
 
 ErrorOr<void> HexEditorWidget::initialize_menubar(GUI::Window& window)
@@ -625,6 +661,37 @@ ErrorOr<void> HexEditorWidget::initialize_menubar(GUI::Window& window)
     view_menu->add_action(*m_layout_value_inspector_action);
     view_menu->add_separator();
 
+    auto show_offsets_column = Config::read_bool("HexEditor"sv, "Layout"sv, "ShowOffsetsColumn"sv, true);
+    m_show_offsets_column_action->set_checked(show_offsets_column);
+    m_editor->set_show_offsets_column(show_offsets_column);
+    view_menu->add_action(*m_show_offsets_column_action);
+
+    auto offset_format = HexEditor::offset_format_from_string(Config::read_string("HexEditor"sv, "Layout"sv, "OffsetFormat"sv));
+    m_editor->set_offset_format(offset_format);
+    m_offset_format_actions.set_exclusive(true);
+    auto offset_format_menu = view_menu->add_submenu("Offset Format"_string);
+    auto offset_format_decimal_action = GUI::Action::create_checkable("&Decimal", [this](auto&) {
+        m_editor->set_offset_format(HexEditor::OffsetFormat::Decimal);
+        Config::write_string("HexEditor"sv, "Layout"sv, "OffsetFormat"sv, "decimal"sv);
+    });
+    auto offset_format_hexadecimal_action = GUI::Action::create_checkable("&Hexadecimal", [this](auto&) {
+        m_editor->set_offset_format(HexEditor::OffsetFormat::Hexadecimal);
+        Config::write_string("HexEditor"sv, "Layout"sv, "OffsetFormat"sv, "hexadecimal"sv);
+    });
+    switch (offset_format) {
+    case HexEditor::OffsetFormat::Decimal:
+        offset_format_decimal_action->set_checked(true);
+        break;
+    case HexEditor::OffsetFormat::Hexadecimal:
+        offset_format_hexadecimal_action->set_checked(true);
+        break;
+    }
+    m_offset_format_actions.add_action(offset_format_decimal_action);
+    m_offset_format_actions.add_action(offset_format_hexadecimal_action);
+    offset_format_menu->add_action(offset_format_decimal_action);
+    offset_format_menu->add_action(offset_format_hexadecimal_action);
+    view_menu->add_separator();
+
     auto bytes_per_row = Config::read_i32("HexEditor"sv, "Layout"sv, "BytesPerRow"sv, 16);
     m_editor->set_bytes_per_row(bytes_per_row);
     m_editor->update();
@@ -643,31 +710,8 @@ ErrorOr<void> HexEditorWidget::initialize_menubar(GUI::Window& window)
             action->set_checked(true);
     }
 
-    m_value_inspector_mode_actions.set_exclusive(true);
-    auto inspector_mode_menu = view_menu->add_submenu("Value Inspector &Mode"_string);
-    auto little_endian_mode = GUI::Action::create_checkable("&Little Endian", [&](auto& action) {
-        m_value_inspector_little_endian = action.is_checked();
-        update_inspector_values(m_editor->selection_start_offset());
-
-        Config::write_bool("HexEditor"sv, "Layout"sv, "UseLittleEndianInValueInspector"sv, m_value_inspector_little_endian);
-    });
-    m_value_inspector_mode_actions.add_action(little_endian_mode);
-    inspector_mode_menu->add_action(little_endian_mode);
-
-    auto big_endian_mode = GUI::Action::create_checkable("&Big Endian", [this](auto& action) {
-        m_value_inspector_little_endian = !action.is_checked();
-        update_inspector_values(m_editor->selection_start_offset());
-
-        Config::write_bool("HexEditor"sv, "Layout"sv, "UseLittleEndianInValueInspector"sv, m_value_inspector_little_endian);
-    });
-    m_value_inspector_mode_actions.add_action(big_endian_mode);
-    inspector_mode_menu->add_action(big_endian_mode);
-
     auto use_little_endian = Config::read_bool("HexEditor"sv, "Layout"sv, "UseLittleEndianInValueInspector"sv, true);
-    m_value_inspector_little_endian = use_little_endian;
-
-    little_endian_mode->set_checked(use_little_endian);
-    big_endian_mode->set_checked(!use_little_endian);
+    set_inspector_little_endian(use_little_endian, true);
 
     view_menu->add_separator();
     view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
@@ -789,8 +833,7 @@ void HexEditorWidget::set_value_inspector_visible(bool visible)
 
 void HexEditorWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -807,7 +850,7 @@ void HexEditorWidget::drop_event(GUI::DropEvent& event)
             return;
 
         // TODO: A drop event should be considered user consent for opening a file
-        auto response = FileSystemAccessClient::Client::the().request_file(window(), urls.first().serialize_path(), Core::File::OpenMode::Read);
+        auto response = FileSystemAccessClient::Client::the().request_file(window(), URL::percent_decode(urls.first().serialize_path()), Core::File::OpenMode::Read);
         if (response.is_error())
             return;
         open_file(response.value().filename(), response.value().release_stream());

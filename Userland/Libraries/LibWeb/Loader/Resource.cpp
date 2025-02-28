@@ -83,12 +83,12 @@ static bool is_valid_encoding(StringView encoding)
     return TextCodec::decoder_for(encoding).has_value();
 }
 
-void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> const& headers, Optional<u32> status_code)
+void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, HTTP::HeaderMap const& headers, Optional<u32> status_code)
 {
     VERIFY(m_state == State::Pending);
     // FIXME: Handle OOM failure.
     m_encoded_data = ByteBuffer::copy(data).release_value_but_fixme_should_propagate_errors();
-    m_response_headers = headers.clone().release_value_but_fixme_should_propagate_errors();
+    m_response_headers = headers;
     m_status_code = move(status_code);
     m_state = State::Loaded;
 
@@ -100,14 +100,14 @@ void Resource::did_load(Badge<ResourceLoader>, ReadonlyBytes data, HashMap<ByteS
         // FIXME: "The Quite OK Image Format" doesn't have an official mime type yet,
         //        and servers like nginx will send a generic octet-stream mime type instead.
         //        Let's use image/x-qoi for now, which is also what our Core::MimeData uses & would guess.
-        if (m_mime_type == "application/octet-stream" && url().serialize_path().ends_with(".qoi"sv))
+        if (m_mime_type == "application/octet-stream" && URL::percent_decode(url().serialize_path()).ends_with(".qoi"sv))
             m_mime_type = "image/x-qoi";
     } else {
         auto content_type_options = headers.get("X-Content-Type-Options");
         if (content_type_options.value_or("").equals_ignoring_ascii_case("nosniff"sv)) {
             m_mime_type = "text/plain";
         } else {
-            m_mime_type = Core::guess_mime_type_based_on_filename(url().serialize_path());
+            m_mime_type = Core::guess_mime_type_based_on_filename(URL::percent_decode(url().serialize_path()));
         }
     }
 

@@ -3,7 +3,7 @@ function(lagom_tool tool)
     add_executable(${tool} ${SOURCES} ${LAGOM_TOOL_SOURCES})
     # alias for parity with exports
     add_executable(Lagom::${tool} ALIAS ${tool})
-    target_link_libraries(${tool} AK LibCore LibFileSystem ${LAGOM_TOOL_LIBS})
+    target_link_libraries(${tool} AK LibCoreMinimal LibFileSystem GenericClangPlugin ${LAGOM_TOOL_LIBS})
     install(
         TARGETS ${tool}
         EXPORT LagomTargets
@@ -13,8 +13,7 @@ endfunction()
 
 add_subdirectory(CodeGenerators)
 add_subdirectory(ConfigureComponents)
+add_subdirectory(PrekernelPEImageGenerator)
 add_subdirectory(IPCMagicLinter)
 
-if (ENABLE_JAKT)
-    include(jakt)
-endif()
+include(jakt)

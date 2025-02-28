@@ -51,7 +51,7 @@ ImageEditor::ImageEditor(NonnullRefPtr<Image> image)
         m_marching_ants_offset %= (marching_ant_length * 2);
         if (!m_image->selection().is_empty() || m_image->selection().in_interactive_selection())
             update();
-    }).release_value_but_fixme_should_propagate_errors();
+    });
     m_marching_ants_timer->start();
 }
 
@@ -189,10 +189,10 @@ void ImageEditor::paint_event(GUI::PaintEvent& event)
         for (auto& guide : m_guides) {
             if (guide->orientation() == Guide::Orientation::Horizontal) {
                 int y_coordinate = (int)content_to_frame_position({ 0.0f, guide->offset() }).y();
-                painter.draw_line({ 0, y_coordinate }, { rect().width(), y_coordinate }, Color::Cyan, 1, Gfx::Painter::LineStyle::Dashed, Color::LightGray);
+                painter.draw_line({ 0, y_coordinate }, { rect().width(), y_coordinate }, Color::Cyan, 1, Gfx::LineStyle::Dashed, Color::LightGray);
             } else if (guide->orientation() == Guide::Orientation::Vertical) {
                 int x_coordinate = (int)content_to_frame_position({ guide->offset(), 0.0f }).x();
-                painter.draw_line({ x_coordinate, 0 }, { x_coordinate, rect().height() }, Color::Cyan, 1, Gfx::Painter::LineStyle::Dashed, Color::LightGray);
+                painter.draw_line({ x_coordinate, 0 }, { x_coordinate, rect().height() }, Color::Cyan, 1, Gfx::LineStyle::Dashed, Color::LightGray);
             }
         }
     }
@@ -248,8 +248,8 @@ void ImageEditor::paint_event(GUI::PaintEvent& event)
         }
 
         // Mouse position indicator
-        const Gfx::IntPoint indicator_x({ m_mouse_position.x(), m_ruler_thickness });
-        const Gfx::IntPoint indicator_y({ m_ruler_thickness, m_mouse_position.y() });
+        Gfx::IntPoint const indicator_x({ m_mouse_position.x(), m_ruler_thickness });
+        Gfx::IntPoint const indicator_y({ m_ruler_thickness, m_mouse_position.y() });
         painter.draw_triangle(indicator_x, indicator_x + Gfx::IntPoint(-m_mouse_indicator_triangle_size, -m_mouse_indicator_triangle_size), indicator_x + Gfx::IntPoint(m_mouse_indicator_triangle_size, -m_mouse_indicator_triangle_size), mouse_indicator_color);
         painter.draw_triangle(indicator_y, indicator_y + Gfx::IntPoint(-m_mouse_indicator_triangle_size, -m_mouse_indicator_triangle_size), indicator_y + Gfx::IntPoint(-m_mouse_indicator_triangle_size, m_mouse_indicator_triangle_size), mouse_indicator_color);
 
@@ -276,15 +276,15 @@ int ImageEditor::calculate_ruler_step_size() const
 
 Gfx::IntRect ImageEditor::mouse_indicator_rect_x() const
 {
-    const Gfx::IntPoint top_left({ m_ruler_thickness, m_ruler_thickness - m_mouse_indicator_triangle_size });
-    const Gfx::IntSize size({ width() + 1, m_mouse_indicator_triangle_size + 1 });
+    Gfx::IntPoint const top_left({ m_ruler_thickness, m_ruler_thickness - m_mouse_indicator_triangle_size });
+    Gfx::IntSize const size({ width() + 1, m_mouse_indicator_triangle_size + 1 });
     return Gfx::IntRect(top_left, size);
 }
 
 Gfx::IntRect ImageEditor::mouse_indicator_rect_y() const
 {
-    const Gfx::IntPoint top_left({ m_ruler_thickness - m_mouse_indicator_triangle_size, m_ruler_thickness });
-    const Gfx::IntSize size({ m_mouse_indicator_triangle_size + 1, height() + 1 });
+    Gfx::IntPoint const top_left({ m_ruler_thickness - m_mouse_indicator_triangle_size, m_ruler_thickness });
+    Gfx::IntSize const size({ m_mouse_indicator_triangle_size + 1, height() + 1 });
     return Gfx::IntRect(top_left, size);
 }
 
@@ -485,7 +485,7 @@ void ImageEditor::keydown_event(GUI::KeyEvent& event)
     if (!m_active_tool)
         return;
 
-    if (!m_active_tool->is_overriding_alt() && event.key() == Key_Alt)
+    if (!m_active_tool->is_overriding_alt() && event.key() == Key_LeftAlt)
         set_override_cursor(Gfx::StandardCursor::Eyedropper);
 
     if (m_active_tool->on_keydown(event))
@@ -505,7 +505,7 @@ void ImageEditor::keyup_event(GUI::KeyEvent& event)
     if (!m_active_tool)
         return;
 
-    if (!m_active_tool->is_overriding_alt() && event.key() == Key_Alt)
+    if (!m_active_tool->is_overriding_alt() && event.key() == Key_LeftAlt)
         update_tool_cursor();
 
     m_active_tool->on_keyup(event);

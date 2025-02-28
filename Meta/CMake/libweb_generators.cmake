@@ -1,13 +1,5 @@
 function (generate_css_implementation)
     set(LIBWEB_INPUT_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}")
-    invoke_generator(
-        "EasingFunctions.cpp"
-        Lagom::GenerateCSSEasingFunctions
-        "${LIBWEB_INPUT_FOLDER}/CSS/EasingFunctions.json"
-        "CSS/EasingFunctions.h"
-        "CSS/EasingFunctions.cpp"
-        arguments -j "${LIBWEB_INPUT_FOLDER}/CSS/EasingFunctions.json"
-    )
 
     invoke_generator(
         "Enums.cpp"
@@ -64,15 +56,26 @@ function (generate_css_implementation)
     )
 
     invoke_generator(
-        "ValueID.cpp"
-        Lagom::GenerateCSSValueID
-        "${LIBWEB_INPUT_FOLDER}/CSS/Identifiers.json"
-        "CSS/ValueID.h"
-        "CSS/ValueID.cpp"
-        arguments -j "${LIBWEB_INPUT_FOLDER}/CSS/Identifiers.json"
+        "Keyword.cpp"
+        Lagom::GenerateCSSKeyword
+        "${LIBWEB_INPUT_FOLDER}/CSS/Keywords.json"
+        "CSS/Keyword.h"
+        "CSS/Keyword.cpp"
+        arguments -j "${LIBWEB_INPUT_FOLDER}/CSS/Keywords.json"
     )
 
-    embed_as_string_view(
+    invoke_idl_generator(
+        "GeneratedCSSStyleProperties.cpp"
+        "GeneratedCSSStyleProperties.idl"
+        Lagom::GenerateCSSStyleProperties
+        "${LIBWEB_INPUT_FOLDER}/CSS/Properties.json"
+        "CSS/GeneratedCSSStyleProperties.h"
+        "CSS/GeneratedCSSStyleProperties.cpp"
+        "CSS/GeneratedCSSStyleProperties.idl"
+        arguments -j "${LIBWEB_INPUT_FOLDER}/CSS/Properties.json"
+    )
+
+    embed_as_string(
         "DefaultStyleSheetSource.cpp"
         "${LIBWEB_INPUT_FOLDER}/CSS/Default.css"
         "CSS/DefaultStyleSheetSource.cpp"
@@ -80,7 +83,7 @@ function (generate_css_implementation)
         NAMESPACE "Web::CSS"
     )
 
-    embed_as_string_view(
+    embed_as_string(
         "QuirksModeStyleSheetSource.cpp"
         "${LIBWEB_INPUT_FOLDER}/CSS/QuirksMode.css"
         "CSS/QuirksModeStyleSheetSource.cpp"
@@ -88,7 +91,7 @@ function (generate_css_implementation)
         NAMESPACE "Web::CSS"
     )
 
-    embed_as_string_view(
+    embed_as_string(
         "MathMLStyleSheetSource.cpp"
         "${LIBWEB_INPUT_FOLDER}/MathML/Default.css"
         "MathML/MathMLStyleSheetSource.cpp"
@@ -96,7 +99,7 @@ function (generate_css_implementation)
         NAMESPACE "Web::CSS"
     )
 
-    embed_as_string_view(
+    embed_as_string(
         "SVGStyleSheetSource.cpp"
         "${LIBWEB_INPUT_FOLDER}/SVG/Default.css"
         "SVG/SVGStyleSheetSource.cpp"
@@ -105,22 +108,29 @@ function (generate_css_implementation)
     )
 
     set(CSS_GENERATED_TO_INSTALL
-        "CSS/EasingFunctions.h"
         "CSS/Enums.h"
+        "CSS/GeneratedCSSStyleProperties.h"
+        "CSS/Keyword.h"
         "CSS/MathFunctions.h"
         "CSS/MediaFeatureID.h"
         "CSS/PropertyID.h"
         "CSS/PseudoClass.h"
         "CSS/TransformFunctions.h"
-        "CSS/ValueID.h"
     )
     list(TRANSFORM CSS_GENERATED_TO_INSTALL PREPEND "${CMAKE_CURRENT_BINARY_DIR}/")
     install(FILES ${CSS_GENERATED_TO_INSTALL} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/LibWeb/CSS")
 
+    set(CSS_GENERATED_IDL
+        "GeneratedCSSStyleProperties.idl"
+    )
+    list(APPEND LIBWEB_ALL_GENERATED_IDL ${CSS_GENERATED_IDL})
+    set(LIBWEB_ALL_GENERATED_IDL ${LIBWEB_ALL_GENERATED_IDL} PARENT_SCOPE)
 endfunction()
 
 function (generate_js_bindings target)
     set(LIBWEB_INPUT_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(generated_idl_targets ${LIBWEB_ALL_GENERATED_IDL})
+    list(TRANSFORM generated_idl_targets PREPEND "generate_")
     function(libweb_js_bindings class)
         cmake_parse_arguments(PARSE_ARGV 1 LIBWEB_BINDINGS "NAMESPACE;ITERABLE;GLOBAL" "" "")
         get_filename_component(basename "${class}" NAME)
@@ -170,7 +180,7 @@ function (generate_js_bindings target)
         add_custom_command(
             OUTPUT ${BINDINGS_SOURCES}
             COMMAND "$<TARGET_FILE:Lagom::BindingsGenerator>" -o "Bindings" --depfile "Bindings/${basename}.d"
-                    ${depfile_prefix_arg} "${LIBWEB_INPUT_FOLDER}/${class}.idl" "${LIBWEB_INPUT_FOLDER}"
+                    ${depfile_prefix_arg} "${LIBWEB_INPUT_FOLDER}/${class}.idl" "${LIBWEB_INPUT_FOLDER}" "${CMAKE_CURRENT_BINARY_DIR}"
             VERBATIM
             COMMENT "Generating Bindings for ${class}"
             DEPENDS Lagom::BindingsGenerator
@@ -181,6 +191,7 @@ function (generate_js_bindings target)
         add_custom_target(generate_${basename} DEPENDS ${BINDINGS_SOURCES})
         add_dependencies(all_generated generate_${basename})
         add_dependencies(${target} generate_${basename})
+        add_dependencies(generate_${basename} ${generated_idl_targets})
 
         # install generated sources
         list(FILTER BINDINGS_SOURCES INCLUDE REGEX "\.h$")
@@ -192,7 +203,7 @@ function (generate_js_bindings target)
 
     function(generate_exposed_interface_files)
         set(exposed_interface_sources
-            Forward.h IntrinsicDefinitions.cpp
+            IntrinsicDefinitions.cpp
             DedicatedWorkerExposedInterfaces.cpp DedicatedWorkerExposedInterfaces.h
             SharedWorkerExposedInterfaces.cpp SharedWorkerExposedInterfaces.h
             WindowExposedInterfaces.cpp WindowExposedInterfaces.h)
@@ -200,8 +211,7 @@ function (generate_js_bindings target)
         add_custom_command(
             OUTPUT  ${exposed_interface_sources}
             COMMAND "${CMAKE_COMMAND}" -E make_directory "tmp"
-            COMMAND $<TARGET_FILE:Lagom::GenerateWindowOrWorkerInterfaces> -o "${CMAKE_CURRENT_BINARY_DIR}/tmp" -b "${LIBWEB_INPUT_FOLDER}" ${LIBWEB_ALL_IDL_FILES}
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different tmp/Forward.h "Bindings/Forward.h"
+            COMMAND $<TARGET_FILE:Lagom::GenerateWindowOrWorkerInterfaces> -o "${CMAKE_CURRENT_BINARY_DIR}/tmp" -b "${LIBWEB_INPUT_FOLDER}" -b "${CMAKE_CURRENT_BINARY_DIR}" ${LIBWEB_ALL_IDL_FILES}
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different tmp/IntrinsicDefinitions.cpp "Bindings/IntrinsicDefinitions.cpp"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different tmp/DedicatedWorkerExposedInterfaces.h "Bindings/DedicatedWorkerExposedInterfaces.h"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different tmp/DedicatedWorkerExposedInterfaces.cpp "Bindings/DedicatedWorkerExposedInterfaces.cpp"
@@ -217,6 +227,7 @@ function (generate_js_bindings target)
         add_custom_target(generate_exposed_interfaces DEPENDS ${exposed_interface_sources})
         add_dependencies(all_generated generate_exposed_interfaces)
         add_dependencies(${target} generate_exposed_interfaces)
+        add_dependencies(generate_exposed_interfaces ${generated_idl_targets})
 
         list(FILTER exposed_interface_sources INCLUDE REGEX "\.h$")
         list(TRANSFORM exposed_interface_sources PREPEND "${CMAKE_CURRENT_BINARY_DIR}/")

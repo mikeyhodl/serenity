@@ -776,8 +776,12 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::repeat)
     if (string.is_empty())
         return PrimitiveString::create(vm, String {});
 
+    auto repeated = String::repeated(string, n);
+    if (repeated.is_error())
+        return vm.throw_completion<RangeError>(ErrorType::StringRepeatCountMustNotOverflow);
+
     // 6. Return the String value that is made from n copies of S appended together.
-    return PrimitiveString::create(vm, String::repeated(string, n));
+    return PrimitiveString::create(vm, repeated.release_value());
 }
 
 // 22.1.3.19 String.prototype.replace ( searchValue, replaceValue ), https://tc39.es/ecma262/#sec-string.prototype.replace
@@ -1375,6 +1379,13 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_well_formed)
     // 2. Let S be ? ToString(O).
     auto string = TRY(utf16_string_from(vm));
 
+    // NOTE: Rest of steps in to_well_formed below
+    return PrimitiveString::create(vm, to_well_formed_string(string));
+}
+
+// https://tc39.es/ecma262/#sec-string.prototype.towellformed
+String to_well_formed_string(Utf16String const& string)
+{
     // 3. Let strLen be the length of S.
     auto length = string.length_in_code_units();
 
@@ -1405,7 +1416,7 @@ JS_DEFINE_NATIVE_FUNCTION(StringPrototype::to_well_formed)
     }
 
     // 7. Return result.
-    return PrimitiveString::create(vm, MUST(result.to_string()));
+    return MUST(result.to_string());
 }
 
 // 22.1.3.32.1 TrimString ( string, where ), https://tc39.es/ecma262/#sec-trimstring

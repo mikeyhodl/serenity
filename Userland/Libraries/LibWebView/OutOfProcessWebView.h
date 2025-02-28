@@ -8,7 +8,7 @@
 #pragma once
 
 #include <AK/Queue.h>
-#include <LibGUI/AbstractScrollableWidget.h>
+#include <LibGUI/Frame.h>
 #include <LibGUI/Widget.h>
 #include <LibURL/URL.h>
 #include <LibWeb/CSS/Selector.h>
@@ -25,16 +25,14 @@ namespace WebView {
 class WebContentClient;
 
 class OutOfProcessWebView final
-    : public GUI::AbstractScrollableWidget
+    : public GUI::Frame
     , public ViewImplementation {
     C_OBJECT(OutOfProcessWebView);
 
-    using Super = GUI::AbstractScrollableWidget;
+    using Super = GUI::Frame;
 
 public:
     virtual ~OutOfProcessWebView() override;
-
-    ByteString dump_layout_tree();
 
     OrderedHashMap<String, String> get_local_storage_entries();
     OrderedHashMap<String, String> get_session_storage_entries();
@@ -73,19 +71,24 @@ private:
     virtual void focusout_event(GUI::FocusEvent&) override;
     virtual void show_event(GUI::ShowEvent&) override;
     virtual void hide_event(GUI::HideEvent&) override;
-
-    // ^AbstractScrollableWidget
-    virtual void did_scroll() override;
+    virtual void drag_enter_event(GUI::DragEvent&) override;
+    virtual void drag_move_event(GUI::DragEvent&) override;
+    virtual void drag_leave_event(GUI::Event&) override;
+    virtual void drop_event(GUI::DropEvent&) override;
 
     // ^WebView::ViewImplementation
     virtual void initialize_client(CreateNewClient) override;
     virtual void update_zoom() override;
 
-    virtual Web::DevicePixelRect viewport_rect() const override;
+    virtual Web::DevicePixelSize viewport_size() const override;
     virtual Gfx::IntPoint to_content_position(Gfx::IntPoint widget_position) const override;
     virtual Gfx::IntPoint to_widget_position(Gfx::IntPoint content_position) const override;
 
     void enqueue_native_event(Web::MouseEvent::Type, GUI::MouseEvent const& event);
+
+    void enqueue_native_event(Web::DragEvent::Type, GUI::DropEvent const& event);
+    void finish_handling_drag_event(Web::DragEvent const&);
+
     void enqueue_native_event(Web::KeyEvent::Type, GUI::KeyEvent const& event);
     void finish_handling_key_event(Web::KeyEvent const&);
 

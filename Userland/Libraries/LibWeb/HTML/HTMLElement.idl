@@ -1,5 +1,6 @@
 #import <CSS/ElementCSSInlineStyle.idl>
 #import <HTML/DOMStringMap.idl>
+#import <HTML/ElementInternals.idl>
 #import <DOM/Element.idl>
 #import <DOM/EventHandler.idl>
 
@@ -12,29 +13,30 @@ interface HTMLElement : Element {
     // metadata attributes
     [Reflect, CEReactions] attribute DOMString title;
     [Reflect, CEReactions] attribute DOMString lang;
-    // FIXME: [CEReactions] attribute boolean translate;
+    [FIXME, CEReactions] attribute boolean translate;
     [CEReactions] attribute DOMString dir;
 
     // user interaction
     [Reflect, CEReactions] attribute boolean hidden;
-    // FIXME: [CEReactions] attribute boolean inert;
+    [Reflect, CEReactions] attribute boolean inert;
     undefined click();
-    // FIXME: [CEReactions] attribute DOMString accessKey;
-    // FIXME: readonly attribute DOMString accessKeyLabel;
-    // FIXME: [CEReactions] attribute boolean draggable;
-    // FIXME: [CEReactions] attribute boolean spellcheck;
-    // FIXME: [CEReactions] attribute DOMString autocapitalize;
+    [Reflect=accesskey, CEReactions] attribute DOMString accessKey;
+    readonly attribute DOMString accessKeyLabel;
+    [FIXME, CEReactions] attribute boolean draggable;
+    [FIXME, CEReactions] attribute boolean spellcheck;
+    [FIXME, CEReactions] attribute DOMString autocapitalize;
+    [FIXME, CEReactions] attribute boolean autocorrect;
 
     [LegacyNullToEmptyString, CEReactions] attribute DOMString innerText;
-    // FIXME: [LegacyNullToEmptyString, CEReactions] attribute DOMString outerText;
+    [LegacyNullToEmptyString, CEReactions] attribute DOMString outerText;
 
-    // FIXME: ElementInternals attachInternals();
+    ElementInternals attachInternals();
 
     // The popover API
-    // FIXME: undefined showPopover();
-    // FIXME: undefined hidePopover();
-    // FIXME: boolean togglePopover(optional boolean force);
-    // FIXME: [CEReactions] attribute DOMString? popover;
+    [FIXME] undefined showPopover();
+    [FIXME] undefined hidePopover();
+    [FIXME] boolean togglePopover(optional boolean force);
+    [CEReactions] attribute DOMString? popover;
 
     // https://drafts.csswg.org/cssom-view/#extensions-to-the-htmlelement-interface
     readonly attribute Element? offsetParent;
@@ -52,15 +54,15 @@ HTMLElement includes HTMLOrSVGElement;
 // https://html.spec.whatwg.org/#elementcontenteditable
 interface mixin ElementContentEditable {
     [CEReactions] attribute DOMString contentEditable;
-    // FIXME: [CEReactions] attribute DOMString enterKeyHint;
+    [FIXME, CEReactions] attribute DOMString enterKeyHint;
     readonly attribute boolean isContentEditable;
-    // FIXME: [CEReactions] attribute DOMString inputMode;
+    [FIXME, CEReactions] attribute DOMString inputMode;
 };
 
 // https://html.spec.whatwg.org/#htmlorsvgelement
 interface mixin HTMLOrSVGElement {
     [SameObject] readonly attribute DOMStringMap dataset;
-    // FIXME: attribute DOMString nonce; // intentionally no [CEReactions]
+    [FIXME] attribute DOMString nonce; // intentionally no [CEReactions]
 
     [CEReactions, Reflect] attribute boolean autofocus;
     [CEReactions] attribute long tabIndex;

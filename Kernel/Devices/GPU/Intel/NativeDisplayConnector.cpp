@@ -5,9 +5,8 @@
  */
 
 #include <Kernel/Arch/Delay.h>
-#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Debug.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/GPU/Console/ContiguousFramebufferConsole.h>
 #include <Kernel/Devices/GPU/Intel/DisplayConnectorGroup.h>
 #include <Kernel/Devices/GPU/Intel/NativeDisplayConnector.h>
@@ -16,9 +15,9 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullLockRefPtr<IntelNativeDisplayConnector>> IntelNativeDisplayConnector::try_create_with_display_connector_group(IntelDisplayConnectorGroup const& parent_connector_group, ConnectorIndex connector_index, Type type, PhysicalAddress framebuffer_address, size_t framebuffer_resource_size)
+ErrorOr<NonnullRefPtr<IntelNativeDisplayConnector>> IntelNativeDisplayConnector::try_create_with_display_connector_group(IntelDisplayConnectorGroup const& parent_connector_group, ConnectorIndex connector_index, Type type, PhysicalAddress framebuffer_address, size_t framebuffer_resource_size)
 {
-    return TRY(DeviceManagement::try_create_device<IntelNativeDisplayConnector>(parent_connector_group, connector_index, type, framebuffer_address, framebuffer_resource_size));
+    return TRY(Device::try_create_device<IntelNativeDisplayConnector>(parent_connector_group, connector_index, type, framebuffer_address, framebuffer_resource_size));
 }
 
 ErrorOr<void> IntelNativeDisplayConnector::create_attached_framebuffer_console(Badge<IntelDisplayConnectorGroup>)
@@ -39,7 +38,7 @@ ErrorOr<void> IntelNativeDisplayConnector::create_attached_framebuffer_console(B
 }
 
 IntelNativeDisplayConnector::IntelNativeDisplayConnector(IntelDisplayConnectorGroup const& parent_connector_group, ConnectorIndex connector_index, Type type, PhysicalAddress framebuffer_address, size_t framebuffer_resource_size)
-    : DisplayConnector(framebuffer_address, framebuffer_resource_size, true)
+    : DisplayConnector(framebuffer_address, framebuffer_resource_size, Memory::MemoryType::NonCacheable)
     , m_type(type)
     , m_connector_index(connector_index)
     , m_parent_connector_group(parent_connector_group)

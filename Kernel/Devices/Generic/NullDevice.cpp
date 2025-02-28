@@ -5,22 +5,20 @@
  */
 
 #include <AK/Singleton.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/API/MajorNumberAllocation.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Generic/NullDevice.h>
 #include <Kernel/Sections.h>
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<NullDevice> NullDevice::must_initialize()
+UNMAP_AFTER_INIT NonnullRefPtr<NullDevice> NullDevice::must_initialize()
 {
-    auto null_device_or_error = DeviceManagement::try_create_device<NullDevice>();
-    // FIXME: Find a way to propagate errors
-    VERIFY(!null_device_or_error.is_error());
-    return null_device_or_error.release_value();
+    return MUST(Device::try_create_device<NullDevice>());
 }
 
 UNMAP_AFTER_INIT NullDevice::NullDevice()
-    : CharacterDevice(1, 3)
+    : CharacterDevice(MajorAllocation::CharacterDeviceFamily::Generic, 3)
 {
 }
 
