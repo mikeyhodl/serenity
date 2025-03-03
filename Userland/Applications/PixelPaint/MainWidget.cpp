@@ -286,10 +286,12 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
 
     file_menu->add_action(*m_close_image_action);
 
-    file_menu->add_action(GUI::CommonActions::make_quit_action([this](auto&) {
-        if (request_close())
-            GUI::Application::the()->quit();
-    }));
+    file_menu->add_action(GUI::CommonActions::make_quit_action(
+        [this](auto&) {
+            if (request_close())
+                GUI::Application::the()->quit();
+        },
+        GUI::CommonActions::QuitAltShortcut::None));
 
     m_edit_menu = window.add_menu("&Edit"_string);
 
@@ -677,11 +679,10 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
                 editor->did_complete_action("Resize Image"sv);
             }
         }));
-    m_image_menu->add_action(GUI::Action::create(
+    m_crop_image_to_selection_action = GUI::Action::create(
         "&Crop Image to Selection", g_icon_bag.crop, [&](auto&) {
             auto* editor = current_image_editor();
             VERIFY(editor);
-            // FIXME: disable this action if there is no selection
             if (editor->image().selection().is_empty())
                 return;
             auto crop_rect = editor->image().rect().intersected(editor->image().selection().bounding_rect());
@@ -696,7 +697,8 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             }
             editor->image().selection().clear();
             editor->did_complete_action("Crop Image to Selection"sv);
-        }));
+        });
+    m_image_menu->add_action(*m_crop_image_to_selection_action);
 
     m_image_menu->add_action(GUI::Action::create(
         "&Crop Image to Content", g_icon_bag.crop, [&](auto&) {
@@ -1104,11 +1106,10 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         }));
 
     m_layer_menu->add_separator();
-    m_layer_menu->add_action(GUI::Action::create(
+    m_crop_layer_to_selection_action = GUI::Action::create(
         "&Crop Layer to Selection", g_icon_bag.crop, [&](auto&) {
             auto* editor = current_image_editor();
             VERIFY(editor);
-            // FIXME: disable this action if there is no selection
             auto active_layer = editor->active_layer();
             if (!active_layer || editor->image().selection().is_empty())
                 return;
@@ -1122,7 +1123,8 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             active_layer->set_location(intersection.location());
             editor->image().selection().clear();
             editor->did_complete_action("Crop Layer to Selection"sv);
-        }));
+        });
+    m_layer_menu->add_action(*m_crop_layer_to_selection_action);
     m_layer_menu->add_action(GUI::Action::create(
         "&Crop Layer to Content", g_icon_bag.crop, [&](auto&) {
             auto* editor = current_image_editor();
@@ -1347,6 +1349,13 @@ ErrorOr<void> MainWidget::create_image_from_clipboard()
     return {};
 }
 
+void MainWidget::refresh_crop_to_selection_menu_actions()
+{
+    auto enabled = current_image_editor() && !current_image_editor()->image().selection().is_empty();
+    m_crop_image_to_selection_action->set_enabled(enabled);
+    m_crop_layer_to_selection_action->set_enabled(enabled);
+}
+
 bool MainWidget::request_close()
 {
     while (!m_tab_widget->children().is_empty()) {
@@ -1423,7 +1432,7 @@ ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
     };
 
     image_editor.on_scale_change = Core::debounce(100, [this](float scale) {
-        m_zoom_combobox->set_text(ByteString::formatted("{}%", roundf(scale * 100)));
+        m_zoom_combobox->set_text(ByteString::formatted("{}%", roundf(scale * 100)), GUI::AllowCallback::No);
         current_image_editor()->update_tool_cursor();
     });
 
@@ -1483,8 +1492,7 @@ ImageEditor& MainWidget::create_new_editor(NonnullRefPtr<Image> image)
 
 void MainWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -1502,7 +1510,7 @@ void MainWidget::drop_event(GUI::DropEvent& event)
         if (url.scheme() != "file")
             continue;
 
-        auto response = FileSystemAccessClient::Client::the().request_file(window(), url.serialize_path(), Core::File::OpenMode::Read);
+        auto response = FileSystemAccessClient::Client::the().request_file(window(), URL::percent_decode(url.serialize_path()), Core::File::OpenMode::Read);
         if (response.is_error())
             return;
         open_image(response.release_value());
@@ -1511,6 +1519,7 @@ void MainWidget::drop_event(GUI::DropEvent& event)
 
 void MainWidget::update_window_modified()
 {
+    refresh_crop_to_selection_menu_actions();
     window()->set_modified(m_tab_widget->is_any_tab_modified());
 }
 void MainWidget::update_status_bar(ByteString appended_text)

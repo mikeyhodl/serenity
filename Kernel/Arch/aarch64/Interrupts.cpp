@@ -33,16 +33,14 @@ static void dump_exception_syndrome_register(Aarch64::ESR_EL1 const& esr_el1)
 
 void dump_registers(RegisterState const& regs)
 {
-    auto esr_el1 = Kernel::Aarch64::ESR_EL1::read();
+    auto esr_el1 = bit_cast<Aarch64::ESR_EL1>(regs.esr_el1);
     dump_exception_syndrome_register(esr_el1);
 
     // Special registers
-    Aarch64::SPSR_EL1 spsr_el1 = {};
-    memcpy(&spsr_el1, (u8 const*)&regs.spsr_el1, sizeof(u64));
-
     dbgln("Saved Program Status: (NZCV({:#b}) DAIF({:#b}) M({:#b})) / {:#x}", ((regs.spsr_el1 >> 28) & 0b1111), ((regs.spsr_el1 >> 6) & 0b1111), regs.spsr_el1 & 0b1111, regs.spsr_el1);
     dbgln("Exception Link Register: {:#x}", regs.elr_el1);
     dbgln("Stack Pointer (EL0): {:#x}", regs.sp_el0);
+    dbgln("Software Thread ID Register (EL0): {:#x}", regs.tpidr_el0);
 
     dbgln(" x0={:p}  x1={:p}  x2={:p}  x3={:p}  x4={:p}", regs.x[0], regs.x[1], regs.x[2], regs.x[3], regs.x[4]);
     dbgln(" x5={:p}  x6={:p}  x7={:p}  x8={:p}  x9={:p}", regs.x[5], regs.x[6], regs.x[7], regs.x[8], regs.x[9]);
@@ -82,14 +80,13 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
 {
     Processor::current().enter_trap(*trap_frame, false);
 
-    auto esr_el1 = Kernel::Aarch64::ESR_EL1::read();
+    auto esr_el1 = bit_cast<Aarch64::ESR_EL1>(trap_frame->regs->esr_el1);
     auto fault_address = Aarch64::FAR_EL1::read().virtual_address;
     Processor::enable_interrupts();
 
     if (Aarch64::exception_class_is_data_abort(esr_el1.EC) || Aarch64::exception_class_is_instruction_abort(esr_el1.EC)) {
         auto page_fault_or_error = page_fault_from_exception_syndrome_register(VirtualAddress(fault_address), esr_el1);
         if (page_fault_or_error.is_error()) {
-            dump_registers(*trap_frame->regs);
             handle_crash(*trap_frame->regs, "Unknown page fault", SIGSEGV, false);
         } else {
             auto page_fault = page_fault_or_error.release_value();
@@ -98,7 +95,6 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
     } else if (Aarch64::exception_class_is_svc_instruction_execution(esr_el1.EC)) {
         syscall_handler(trap_frame);
     } else {
-        dump_registers(*trap_frame->regs);
         handle_crash(*trap_frame->regs, "Unexpected exception", SIGSEGV, false);
     }
 
@@ -106,7 +102,15 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
     Processor::current().exit_trap(*trap_frame);
 }
 
-static Array<GenericInterruptHandler*, 64> s_interrupt_handlers;
+// This spinlock is used to reserve IRQs that can be later used by interrupt mechanism such as MSIx
+static Spinlock<LockRank::None> s_interrupt_handler_lock {};
+// A GICv2 supports a maximum of 1020 interrupts.
+static Array<GenericInterruptHandler*, 1020> s_interrupt_handlers;
+
+static bool is_unused_handler(GenericInterruptHandler* handler_slot)
+{
+    return (handler_slot->type() == HandlerType::UnhandledInterruptHandler) && !handler_slot->reserved();
+}
 
 extern "C" void handle_interrupt(TrapFrame&);
 extern "C" void handle_interrupt(TrapFrame& trap_frame)
@@ -114,25 +118,17 @@ extern "C" void handle_interrupt(TrapFrame& trap_frame)
     Processor::current().enter_trap(trap_frame, true);
 
     for (auto& interrupt_controller : InterruptManagement::the().controllers()) {
-        auto pending_interrupts = interrupt_controller->pending_interrupts();
-
         // TODO: Add these interrupts as a source of entropy for randomness.
-        u8 irq = 0;
-        while (pending_interrupts) {
-            if ((pending_interrupts & 0b1) != 0b1) {
-                irq += 1;
-                pending_interrupts >>= 1;
-                continue;
-            }
+        for (;;) {
+            auto maybe_irq = interrupt_controller->pending_interrupt();
+            if (!maybe_irq.has_value())
+                break;
 
-            auto* handler = s_interrupt_handlers[irq];
+            auto* handler = s_interrupt_handlers[maybe_irq.value()];
             VERIFY(handler);
             handler->increment_call_count();
-            handler->handle_interrupt(*trap_frame.regs);
+            handler->handle_interrupt();
             handler->eoi();
-
-            irq += 1;
-            pending_interrupts >>= 1;
         }
     }
 
@@ -216,7 +212,7 @@ void unregister_generic_interrupt_handler(u8 interrupt_number, GenericInterruptH
 
 void initialize_interrupts()
 {
-    for (u8 i = 0; i < s_interrupt_handlers.size(); ++i) {
+    for (size_t i = 0; i < s_interrupt_handlers.size(); ++i) {
         auto* handler = new UnhandledInterruptHandler(i);
         handler->register_interrupt_handler();
     }
@@ -224,10 +220,45 @@ void initialize_interrupts()
 
 // Sets the reserved flag on `number_of_irqs` if it finds unused interrupt handler on
 // a contiguous range.
-ErrorOr<u8> reserve_interrupt_handlers([[maybe_unused]] u8 number_of_irqs)
+// FIXME: Share the code below with Arch/x86_64/Interrupts.cpp.
+ErrorOr<u8> reserve_interrupt_handlers(u8 number_of_irqs)
 {
-    TODO();
-    return Error::from_errno(EINVAL);
+    bool found_range = false;
+    u8 first_irq = 0;
+    SpinlockLocker locker(s_interrupt_handler_lock);
+    for (size_t start_irq = 0; start_irq < s_interrupt_handlers.size(); start_irq++) {
+        auto*& handler_slot = s_interrupt_handlers[start_irq];
+        VERIFY(handler_slot != nullptr);
+
+        if (!is_unused_handler(handler_slot))
+            continue;
+
+        found_range = true;
+        for (auto off = 1; off < number_of_irqs; off++) {
+            auto*& handler = s_interrupt_handlers[start_irq + off];
+            VERIFY(handler_slot != nullptr);
+
+            if (!is_unused_handler(handler)) {
+                found_range = false;
+                break;
+            }
+        }
+
+        if (found_range == true) {
+            first_irq = start_irq;
+            break;
+        }
+    }
+
+    if (!found_range)
+        return Error::from_errno(EAGAIN);
+
+    for (auto irq = first_irq; irq < number_of_irqs; irq++) {
+        auto*& handler_slot = s_interrupt_handlers[irq];
+        handler_slot->set_reserved();
+    }
+
+    return first_irq;
 }
 
 }

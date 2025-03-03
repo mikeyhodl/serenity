@@ -21,6 +21,24 @@ test("error cases", () => {
         const array = new Int32Array(4);
         Atomics.compareExchange(array, 100, 0, 0);
     }).toThrow(RangeError);
+
+    expect(() => {
+        const array = new Int32Array(4);
+
+        function detachArrayWhileAccessingIndex(array) {
+            return {
+                valueOf() {
+                    detachArrayBuffer(array.buffer);
+                    return 0;
+                },
+            };
+        }
+
+        Atomics.compareExchange(array, detachArrayWhileAccessingIndex(array), 0, 0);
+    }).toThrowWithMessage(
+        TypeError,
+        "TypedArray contains a property which references a value at an index not contained within its buffer's bounds"
+    );
 });
 
 test("basic functionality (non-BigInt)", () => {
@@ -30,16 +48,16 @@ test("basic functionality (non-BigInt)", () => {
         array[1] = 2;
 
         expect(Atomics.compareExchange(array, 0, 0, 5)).toBe(1);
-        expect(array).toEqual([1, 2]);
+        expect(array).toEqual(new ArrayType([1, 2]));
 
         expect(Atomics.compareExchange(array, 0, 1, "5")).toBe(1);
-        expect(array).toEqual([5, 2]);
+        expect(array).toEqual(new ArrayType([5, 2]));
 
         expect(Atomics.compareExchange(array, 0, "5", 6)).toBe(5);
-        expect(array).toEqual([6, 2]);
+        expect(array).toEqual(new ArrayType([6, 2]));
 
         expect(Atomics.compareExchange(array, 1, 2, 3.14)).toBe(2);
-        expect(array).toEqual([6, 3]);
+        expect(array).toEqual(new ArrayType([6, 3]));
     });
 });
 
@@ -50,15 +68,15 @@ test("basic functionality (BigInt)", () => {
         array[1] = 2n;
 
         expect(Atomics.compareExchange(array, 0, 0n, 5n)).toBe(1n);
-        expect(array).toEqual([1n, 2n]);
+        expect(array).toEqual(new ArrayType([1n, 2n]));
 
         expect(Atomics.compareExchange(array, 0, 1n, 5n)).toBe(1n);
-        expect(array).toEqual([5n, 2n]);
+        expect(array).toEqual(new ArrayType([5n, 2n]));
 
         expect(Atomics.compareExchange(array, 0, 5n, 6n)).toBe(5n);
-        expect(array).toEqual([6n, 2n]);
+        expect(array).toEqual(new ArrayType([6n, 2n]));
 
         expect(Atomics.compareExchange(array, 1, 2n, 3n)).toBe(2n);
-        expect(array).toEqual([6n, 3n]);
+        expect(array).toEqual(new ArrayType([6n, 3n]));
     });
 });

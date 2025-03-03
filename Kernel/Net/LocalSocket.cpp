@@ -139,7 +139,7 @@ ErrorOr<void> LocalSocket::bind(Credentials const& credentials, Userspace<sockad
 
     mode_t mode = S_IFSOCK | (m_prebind_mode & 0777);
     UidAndGid owner { m_prebind_uid, m_prebind_gid };
-    auto result = VirtualFileSystem::the().open(credentials, path->view(), O_CREAT | O_EXCL | O_NOFOLLOW_NOERROR, mode, Process::current().current_directory(), owner);
+    auto result = VirtualFileSystem::open(Process::current().vfs_root_context(), credentials, path->view(), O_CREAT | O_EXCL | O_NOFOLLOW_NOERROR, mode, Process::current().current_directory(), owner);
     if (result.is_error()) {
         if (result.error().code() == EEXIST)
             return set_so_error(EADDRINUSE);
@@ -156,13 +156,13 @@ ErrorOr<void> LocalSocket::bind(Credentials const& credentials, Userspace<sockad
     m_inode = inode;
 
     m_path = move(path);
-    m_bound = true;
+    m_bound.set();
     return {};
 }
 
 ErrorOr<void> LocalSocket::connect(Credentials const& credentials, OpenFileDescription& description, Userspace<sockaddr const*> user_address, socklen_t address_size)
 {
-    if (m_bound)
+    if (m_bound.was_set())
         return set_so_error(EISCONN);
 
     if (address_size > sizeof(sockaddr_un))
@@ -180,7 +180,7 @@ ErrorOr<void> LocalSocket::connect(Credentials const& credentials, OpenFileDescr
     auto path = SOCKET_TRY(KString::try_create(StringView { address.sun_path, strnlen(address.sun_path, sizeof(address.sun_path)) }));
     dbgln_if(LOCAL_SOCKET_DEBUG, "LocalSocket({}) connect({})", this, *path);
 
-    auto file = SOCKET_TRY(VirtualFileSystem::the().open(credentials, path->view(), O_RDWR, 0, Process::current().current_directory()));
+    auto file = SOCKET_TRY(VirtualFileSystem::open(Process::current().vfs_root_context(), credentials, path->view(), O_RDWR, 0, Process::current().current_directory()));
     auto inode = file->inode();
     m_inode = inode;
 
@@ -260,7 +260,7 @@ void LocalSocket::detach(OpenFileDescription& description)
         VERIFY(m_accept_side_fd_open);
         m_accept_side_fd_open = false;
 
-        if (m_bound) {
+        if (m_bound.was_set()) {
             if (m_inode)
                 m_inode->unbind_socket();
         }
@@ -403,10 +403,22 @@ ErrorOr<void> LocalSocket::getsockopt(OpenFileDescription& description, int leve
     TRY(copy_from_user(&size, value_size.unsafe_userspace_ptr()));
 
     switch (option) {
-    case SO_SNDBUF:
-        return ENOTSUP;
-    case SO_RCVBUF:
-        return ENOTSUP;
+    case SO_SNDBUF: {
+        if (size != sizeof(int))
+            return EINVAL;
+        int snd_buffer_size = static_cast<int>(m_for_server->space_for_writing() + m_for_server->immediately_readable());
+        TRY(copy_to_user(static_ptr_cast<int*>(value), &snd_buffer_size));
+        TRY(copy_to_user(value_size, &size));
+        return {};
+    }
+    case SO_RCVBUF: {
+        if (size != sizeof(int))
+            return EINVAL;
+        int rcv_buffer_size = static_cast<int>(m_for_client->space_for_writing() + m_for_client->immediately_readable());
+        TRY(copy_to_user(static_ptr_cast<int*>(value), &rcv_buffer_size));
+        TRY(copy_to_user(value_size, &size));
+        return {};
+    }
     case SO_PEERCRED: {
         if (size < sizeof(ucred))
             return EINVAL;
@@ -449,7 +461,7 @@ ErrorOr<void> LocalSocket::chmod(Credentials const& credentials, OpenFileDescrip
 {
     if (m_inode) {
         if (auto custody = description.custody())
-            return VirtualFileSystem::the().chmod(credentials, *custody, mode);
+            return VirtualFileSystem::chmod(credentials, *custody, mode);
         VERIFY_NOT_REACHED();
     }
 
@@ -461,7 +473,7 @@ ErrorOr<void> LocalSocket::chown(Credentials const& credentials, OpenFileDescrip
 {
     if (m_inode) {
         if (auto custody = description.custody())
-            return VirtualFileSystem::the().chown(credentials, *custody, uid, gid);
+            return VirtualFileSystem::chown(credentials, *custody, uid, gid);
         VERIFY_NOT_REACHED();
     }
 

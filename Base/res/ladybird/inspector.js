@@ -7,6 +7,8 @@ let selectedBottomTabButton = null;
 let selectedDOMNode = null;
 let pendingEditDOMNode = null;
 
+let visibleDOMNodes = [];
+
 let consoleGroupStack = [];
 let consoleGroupNextID = 0;
 
@@ -89,6 +91,11 @@ const scrollToElement = element => {
     window.scrollTo(0, position);
 };
 
+inspector.exportInspector = () => {
+    const html = `<!DOCTYPE ${document.doctype.name}>\n${document.documentElement.outerHTML}`;
+    inspector.exportInspectorHTML(html);
+};
+
 inspector.reset = () => {
     let domTree = document.getElementById("dom-tree");
     domTree.innerHTML = "";
@@ -119,10 +126,27 @@ inspector.loadDOMTree = tree => {
 
     for (let domNode of domNodes) {
         domNode.addEventListener("dblclick", event => {
-            editDOMNode(domNode);
+            const type = domNode.dataset.nodeType;
+            const text = event.target.innerText;
+
+            if (type === "attribute" && event.target.classList.contains("attribute-value")) {
+                text = text.substring(1, text.length - 1);
+            }
+
+            editDOMNode(domNode, text);
             event.preventDefault();
         });
     }
+
+    domNodes = domTree.querySelectorAll("details");
+
+    for (let domNode of domNodes) {
+        domNode.addEventListener("toggle", event => {
+            updateVisibleDOMNodes();
+        });
+    }
+
+    updateVisibleDOMNodes();
 };
 
 inspector.loadAccessibilityTree = tree => {
@@ -175,6 +199,97 @@ inspector.addAttributeToDOMNodeID = nodeID => {
     pendingEditDOMNode = null;
 };
 
+inspector.setStyleSheets = styleSheets => {
+    const styleSheetPicker = document.getElementById("style-sheet-picker");
+    const styleSheetSource = document.getElementById("style-sheet-source");
+    styleSheetPicker.replaceChildren();
+    styleSheetSource.innerHTML = "";
+
+    function addOption(styleSheet, text) {
+        const option = document.createElement("option");
+        option.innerText = text;
+        if (styleSheet.type) {
+            option.dataset["type"] = styleSheet.type;
+        }
+        if (styleSheet.domNodeId) {
+            option.dataset["domNodeId"] = styleSheet.domNodeId;
+        }
+        if (styleSheet.url) {
+            option.dataset["url"] = styleSheet.url;
+        }
+        styleSheetPicker.add(option);
+    }
+
+    if (styleSheets.length > 0) {
+        let styleElementIndex = 1;
+        for (const styleSheet of styleSheets) {
+            switch (styleSheet.type) {
+                case "StyleElement":
+                    addOption(styleSheet, `Style element #${styleElementIndex++}`);
+                    break;
+                case "LinkElement":
+                    addOption(styleSheet, styleSheet.url);
+                    break;
+                case "ImportRule":
+                    addOption(styleSheet, styleSheet.url);
+                    break;
+                case "UserAgent":
+                    addOption(styleSheet, `User agent: ${styleSheet.url}`);
+                    break;
+                case "UserStyle":
+                    addOption(styleSheet, "User style");
+                    break;
+            }
+        }
+        styleSheetPicker.disabled = false;
+    } else {
+        addOption({}, "No style sheets found");
+        styleSheetPicker.disabled = true;
+    }
+
+    styleSheetPicker.selectedIndex = 0;
+
+    if (!styleSheetPicker.disabled) {
+        loadStyleSheet();
+    }
+};
+
+const loadStyleSheet = () => {
+    const styleSheetPicker = document.getElementById("style-sheet-picker");
+    const styleSheetSource = document.getElementById("style-sheet-source");
+    const selectedOption = styleSheetPicker.selectedOptions[0];
+
+    styleSheetSource.innerHTML = "Loading...";
+    inspector.requestStyleSheetSource(
+        selectedOption.dataset["type"],
+        selectedOption.dataset["domNodeId"],
+        selectedOption.dataset["url"]
+    );
+};
+
+inspector.setStyleSheetSource = (identifier, sourceBase64) => {
+    const styleSheetPicker = document.getElementById("style-sheet-picker");
+    const styleSheetSource = document.getElementById("style-sheet-source");
+    const selectedOption = styleSheetPicker.selectedOptions[0];
+
+    // Make sure this is the source for the currently-selected style sheet.
+    // NOTE: These are != not !== intentionally.
+    if (
+        identifier.type != selectedOption.dataset["type"] ||
+        identifier.domNodeId != selectedOption.dataset["domNodeId"] ||
+        identifier.url != selectedOption.dataset["url"]
+    ) {
+        console.log(
+            JSON.stringify(identifier),
+            "doesn't match",
+            JSON.stringify(selectedOption.dataset)
+        );
+        return;
+    }
+
+    styleSheetSource.innerHTML = decodeBase64(sourceBase64);
+};
+
 inspector.createPropertyTables = (computedStyle, resolvedStyle, customProperties) => {
     const createPropertyTable = (tableID, properties) => {
         let oldTable = document.getElementById(tableID);
@@ -183,7 +298,20 @@ inspector.createPropertyTables = (computedStyle, resolvedStyle, customProperties
         newTable.setAttribute("id", tableID);
 
         Object.keys(properties)
-            .sort()
+            .sort((a, b) => {
+                let baseResult = a.localeCompare(b);
+                // Manually move vendor-prefixed items after non-prefixed ones.
+                if (a[0] === "-") {
+                    if (b[0] === "-") {
+                        return baseResult;
+                    }
+                    return 1;
+                }
+                if (b[0] === "-") {
+                    return -1;
+                }
+                return baseResult;
+            })
             .forEach(name => {
                 let row = newTable.insertRow();
 
@@ -200,6 +328,47 @@ inspector.createPropertyTables = (computedStyle, resolvedStyle, customProperties
     createPropertyTable("computed-style-table", JSON.parse(computedStyle));
     createPropertyTable("resolved-style-table", JSON.parse(resolvedStyle));
     createPropertyTable("custom-properties-table", JSON.parse(customProperties));
+};
+
+inspector.createFontList = fonts => {
+    let fontsJSON = JSON.parse(fonts);
+    if (!Array.isArray(fontsJSON)) return;
+
+    const listId = "fonts-list";
+    let oldList = document.getElementById(listId);
+
+    let newList = document.createElement("div");
+    newList.setAttribute("id", listId);
+    const createFontEntry = (listContainer, font) => {
+        let fontEntry = document.createElement("div");
+        fontEntry.classList.add("font");
+
+        let fontName = document.createElement("div");
+        fontName.classList.add("name");
+        fontName.innerText = font.name;
+        fontEntry.appendChild(fontName);
+
+        let fontSize = document.createElement("div");
+        fontSize.classList.add("size");
+        fontSize.innerText = font.size;
+        fontEntry.appendChild(fontSize);
+
+        let fontWeight = document.createElement("div");
+        fontWeight.classList.add("Weight");
+        fontWeight.innerText = font.weight;
+        fontEntry.appendChild(fontWeight);
+
+        let fontVariant = document.createElement("div");
+        fontVariant.classList.add("Variant");
+        fontVariant.innerText = font.variant;
+        fontEntry.appendChild(fontVariant);
+
+        listContainer.appendChild(fontEntry);
+    };
+
+    for (let font of fontsJSON) createFontEntry(newList, font);
+
+    oldList.parentNode.replaceChild(newList, oldList);
 };
 
 const inspectDOMNode = domNode => {
@@ -258,9 +427,6 @@ const createDOMEditor = (onHandleChange, onCancelChange) => {
 
     setTimeout(() => {
         input.focus();
-
-        // FIXME: Invoke `select` when it isn't just stubbed out.
-        // input.select();
     });
 
     return input;
@@ -273,7 +439,7 @@ const parseDOMAttributes = value => {
     return element.children[0].attributes;
 };
 
-const editDOMNode = domNode => {
+const editDOMNode = (domNode, textToSelect) => {
     if (selectedDOMNode === null) {
         return;
     }
@@ -311,6 +477,18 @@ const editDOMNode = domNode => {
         editor.value = domNode.innerText;
     }
 
+    setTimeout(() => {
+        if (typeof textToSelect !== "undefined") {
+            const index = editor.value.indexOf(textToSelect);
+            if (index !== -1) {
+                editor.setSelectionRange(index, index + textToSelect.length);
+                return;
+            }
+        }
+
+        editor.select();
+    });
+
     domNode.parentNode.replaceChild(editor, domNode);
 };
 
@@ -341,6 +519,30 @@ const addAttributeToDOMNode = domNode => {
     container.appendChild(editor);
 
     domNode.parentNode.insertBefore(container, domNode.parentNode.lastChild);
+};
+
+const updateVisibleDOMNodes = () => {
+    let domTree = document.getElementById("dom-tree");
+
+    visibleDOMNodes = [];
+
+    function recurseDOMNodes(node) {
+        for (let child of node.children) {
+            if (child.classList.contains("hoverable")) {
+                visibleDOMNodes.push(child);
+            }
+
+            if (child.tagName === "DIV") {
+                if (node.open) {
+                    recurseDOMNodes(child);
+                }
+            } else {
+                recurseDOMNodes(child);
+            }
+        }
+    }
+
+    recurseDOMNodes(domTree);
 };
 
 const requestContextMenu = (clientX, clientY, domNode) => {
@@ -514,6 +716,55 @@ document.addEventListener("DOMContentLoaded", () => {
     document.addEventListener("contextmenu", event => {
         requestContextMenu(event.clientX, event.clientY, event.target);
         event.preventDefault();
+    });
+
+    document.addEventListener("keydown", event => {
+        const UP_ARROW_KEYCODE = 38;
+        const DOWN_ARROW_KEYCODE = 40;
+        const RIGHT_ARROW_KEYCODE = 39;
+        const LEFT_ARROW_KEYCODE = 37;
+        const RETURN_KEYCODE = 13;
+        const SPACE_KEYCODE = 32;
+
+        const move = delta => {
+            let selectedIndex = visibleDOMNodes.indexOf(selectedDOMNode);
+            if (selectedIndex < 0) {
+                return;
+            }
+
+            let newIndex = selectedIndex + delta;
+
+            if (visibleDOMNodes[newIndex]) {
+                inspectDOMNode(visibleDOMNodes[newIndex]);
+            }
+        };
+
+        if (document.activeElement.tagName !== "INPUT") {
+            const isSummary = selectedDOMNode.parentNode.tagName === "SUMMARY";
+            const isDiv = selectedDOMNode.parentNode.tagName === "DIV";
+
+            if (event.keyCode == UP_ARROW_KEYCODE) {
+                move(-1);
+            } else if (event.keyCode == DOWN_ARROW_KEYCODE) {
+                move(1);
+            } else if (event.keyCode == RETURN_KEYCODE || event.keyCode == SPACE_KEYCODE) {
+                if (isSummary) {
+                    selectedDOMNode.parentNode.click();
+                }
+            } else if (event.keyCode == RIGHT_ARROW_KEYCODE) {
+                if (isSummary && selectedDOMNode.parentNode.parentNode.open === false) {
+                    selectedDOMNode.parentNode.click();
+                } else if (selectedDOMNode.parentNode.parentNode.open === true && !isDiv) {
+                    move(1);
+                }
+            } else if (event.keyCode == LEFT_ARROW_KEYCODE) {
+                if (isSummary && selectedDOMNode.parentNode.parentNode.open === true) {
+                    selectedDOMNode.parentNode.click();
+                } else if (selectedDOMNode.parentNode.parentNode.open === false || isDiv) {
+                    move(-1);
+                }
+            }
+        }
     });
 
     inspector.inspectorLoaded();

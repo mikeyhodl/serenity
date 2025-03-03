@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/API/MajorNumberAllocation.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/HID/Management.h>
 #include <Kernel/Devices/HID/MouseDevice.h>
 
@@ -12,18 +13,17 @@ namespace Kernel {
 
 ErrorOr<NonnullRefPtr<MouseDevice>> MouseDevice::try_to_initialize()
 {
-    return *TRY(DeviceManagement::try_create_device<MouseDevice>());
+    return TRY(Device::try_create_device<MouseDevice>());
 }
 
 MouseDevice::MouseDevice()
-    : HIDDevice(10, HIDManagement::the().generate_minor_device_number_for_mouse())
+    : HIDDevice(MajorAllocation::CharacterDeviceFamily::Mouse, HIDManagement::the().generate_minor_device_number_for_mouse())
 {
 }
 
 void MouseDevice::handle_mouse_packet_input_event(MousePacket packet)
 {
     m_entropy_source.add_random_event(packet);
-    HIDManagement::the().enqueue_mouse_packet({}, packet);
     {
         SpinlockLocker lock(m_queue_lock);
         m_queue.enqueue(packet);

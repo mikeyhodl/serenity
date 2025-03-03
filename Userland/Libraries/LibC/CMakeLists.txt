@@ -1,4 +1,6 @@
-set(LIBC_SOURCES
+set(SOURCES
+    arch/${SERENITY_ARCH}/fenv.cpp
+    arch/${SERENITY_ARCH}/setjmp.S
     arpa/inet.cpp
     assert.cpp
     ctype.cpp
@@ -51,7 +53,7 @@ set(LIBC_SOURCES
     stdlib.cpp
     string.cpp
     strings.cpp
-    stubs.cpp
+    sys/archctl.cpp
     sys/auxv.cpp
     sys/file.cpp
     sys/mman.cpp
@@ -63,7 +65,6 @@ set(LIBC_SOURCES
     sys/uio.cpp
     sys/wait.cpp
     syslog.cpp
-    termcap.cpp
     termios.cpp
     time.cpp
     times.cpp
@@ -75,133 +76,241 @@ set(LIBC_SOURCES
     wchar.cpp
     wctype.cpp
     wstdio.cpp
+
+    ${AK_SOURCES}
 )
 
-file(GLOB_RECURSE LIBC_HEADERS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS "*.h")
-list(APPEND LIBC_HEADERS "../LibELF/ELFABI.h" "../LibRegex/RegexDefs.h")
-
-add_custom_target(install_libc_headers)
-
-# Copy LibC's headers into the sysroot to satisfy libc++'s include priority requirements.
-foreach(RELATIVE_HEADER_PATH IN LISTS LIBC_HEADERS)
-    get_filename_component(directory ${RELATIVE_HEADER_PATH} DIRECTORY)
-    string(REPLACE "../" "" subdirectory "${directory}")
-    file(MAKE_DIRECTORY "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}/${subdirectory}")
-    add_custom_command(
-        TARGET install_libc_headers
-        PRE_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RELATIVE_HEADER_PATH}" "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}/${subdirectory}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        VERBATIM
+if (SERENITY_ARCH STREQUAL "x86_64")
+    list(APPEND SOURCES
+        arch/x86_64/memset.cpp
+        arch/x86_64/memset.S
     )
-endforeach()
-
-file(GLOB ELF_SOURCES CONFIGURE_DEPENDS "../LibELF/*.cpp")
-
-if ("${SERENITY_ARCH}" STREQUAL "aarch64")
-    set(LIBC_SOURCES ${LIBC_SOURCES} "arch/aarch64/fenv.cpp")
-    set(ASM_SOURCES "arch/aarch64/setjmp.S")
-    set(ELF_SOURCES ${ELF_SOURCES} ../LibELF/Arch/aarch64/entry.S ../LibELF/Arch/aarch64/plt_trampoline.S ../LibELF/Arch/aarch64/tls.S)
-    set(CRTI_SOURCE "arch/aarch64/crti.S")
-    set(CRTN_SOURCE "arch/aarch64/crtn.S")
-elseif ("${SERENITY_ARCH}" STREQUAL "x86_64")
-    set(LIBC_SOURCES ${LIBC_SOURCES} "arch/x86_64/memset.cpp" "arch/x86_64/fenv.cpp")
-    set(ASM_SOURCES "arch/x86_64/setjmp.S" "arch/x86_64/memset.S")
-    set(ELF_SOURCES ${ELF_SOURCES} ../LibELF/Arch/x86_64/entry.S ../LibELF/Arch/x86_64/plt_trampoline.S)
-    set(CRTI_SOURCE "arch/x86_64/crti.S")
-    set(CRTN_SOURCE "arch/x86_64/crtn.S")
-elseif ("${SERENITY_ARCH}" STREQUAL "riscv64")
-    set(LIBC_SOURCES ${LIBC_SOURCES} "arch/riscv64/fenv.cpp")
-    set(ASM_SOURCES "arch/riscv64/setjmp.S")
-    set(ELF_SOURCES ${ELF_SOURCES} ../LibELF/Arch/riscv64/entry.S ../LibELF/Arch/riscv64/plt_trampoline.S)
-    set(CRTI_SOURCE "arch/riscv64/crti.S")
-    set(CRTN_SOURCE "arch/riscv64/crtn.S")
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-warning-option")
+# FIXME: This, ideally, should be an exhaustive list of headers (transitively) used by libc's own
+#        headers. (Like, for example, we shouldn't include AK/Platform.h in them for no reason at
+#        all.)
+set(HEADERS
+    arch/${SERENITY_ARCH}/fenv.h
+    arch/fenv.h
+    arpa/inet.h
+    bits/dlfcn_integration.h
+    bits/FILE.h
+    bits/getopt.h
+    bits/mutex_locker.h
+    bits/posix1_lim.h
+    bits/pthread_cancel.h
+    bits/pthread_integration.h
+    bits/search.h
+    bits/sighow.h
+    bits/stdint.h
+    bits/stdio_file_implementation.h
+    bits/utimens.h
+    bits/wchar.h
+    bits/wchar_size.h
+    net/if.h
+    net/if_arp.h
+    net/route.h
+    netinet/if_ether.h
+    netinet/in.h
+    netinet/in_systm.h
+    netinet/ip.h
+    netinet/ip_icmp.h
+    netinet/tcp.h
+    sys/arch/${SERENITY_ARCH}/regs.h
+    sys/arch/regs.h
+    sys/archctl.h
+    sys/auxv.h
+    sys/cdefs.h
+    sys/device.h
+    sys/devices/gpu.h
+    sys/file.h
+    sys/internals.h
+    sys/ioctl.h
+    sys/mman.h
+    sys/param.h
+    sys/poll.h
+    sys/prctl.h
+    sys/ptrace.h
+    sys/resource.h
+    sys/select.h
+    sys/socket.h
+    sys/stat.h
+    sys/statvfs.h
+    sys/sysmacros.h
+    sys/time.h
+    sys/times.h
+    sys/ttydefaults.h
+    sys/types.h
+    sys/uio.h
+    sys/un.h
+    sys/utsname.h
+    sys/wait.h
+    alloca.h
+    assert.h
+    byteswap.h
+    complex.h
+    ctype.h
+    dirent.h
+    dlfcn.h
+    elf.h
+    endian.h
+    errno_codes.h
+    errno.h
+    fcntl.h
+    fd_set.h
+    fenv.h
+    float.h
+    fnmatch.h
+    getopt.h
+    glob.h
+    grp.h
+    ifaddrs.h
+    inttypes.h
+    langinfo.h
+    libgen.h
+    limits.h
+    link.h
+    locale.h
+    mallocdefs.h
+    math.h
+    memory.h
+    mntent.h
+    netdb.h
+    nl_types.h
+    paths.h
+    poll.h
+    pthread.h
+    pty.h
+    pwd.h
+    regex.h
+    resolv.h
+    sched.h
+    search.h
+    semaphore.h
+    serenity.h
+    setjmp.h
+    shadow.h
+    signal.h
+    spawn.h
+    stdarg.h
+    stdint.h
+    stdio_ext.h
+    stdio.h
+    stdlib.h
+    string.h
+    strings.h
+    sysexits.h
+    syslog.h
+    termios.h
+    time.h
+    ucontext.h
+    ulimit.h
+    unistd.h
+    utime.h
+    utmp.h
+    wchar.h
+    wctype.h
 
-# Note: We link all these against NoCoverage so that we don't break ports by requiring coverage symbols
-# in runtime/startup objects.
-# Since all native serenity applications use dynamic libraries, prevent coverage on libc.a as well
+    ../LibELF/ELFABI.h
+    ../LibRegex/RegexDefs.h
+)
 
+# ===== LibC headers =====
+# NOTE: We have to symlink LibC's headers into the sysroot to satisfy libc++'s include priority
+#       requirements.
+foreach(RELATIVE_HEADER_PATH IN LISTS HEADERS)
+    get_filename_component(directory ${RELATIVE_HEADER_PATH} DIRECTORY)
+    get_filename_component(name ${RELATIVE_HEADER_PATH} NAME)
+    string(REPLACE "../" "" subdirectory "${directory}")
+    file(MAKE_DIRECTORY "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}/${subdirectory}")
+    file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}/${RELATIVE_HEADER_PATH}" "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}/${subdirectory}/${name}" SYMBOLIC)
+endforeach()
+
+# ===== Start files =====
+# NOTE: We link all these against NoCoverage so that we don't break ports by requiring coverage
+#       symbols in runtime/startup objects.
 add_library(crt0 STATIC crt0.cpp)
-add_dependencies(crt0 install_libc_headers)
 target_link_libraries(crt0 PRIVATE NoCoverage)
 add_custom_command(
-    TARGET crt0
+    TARGET crt0 POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crt0> ${CMAKE_INSTALL_PREFIX}/usr/lib/crt0.o
 )
-add_library(crt0_shared STATIC crt0_shared.cpp)
-add_dependencies(crt0_shared install_libc_headers)
-target_link_libraries(crt0_shared PRIVATE NoCoverage)
-add_custom_command(
-    TARGET crt0_shared
-    COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crt0_shared> ${CMAKE_INSTALL_PREFIX}/usr/lib/crt0_shared.o
-)
 
-add_library(crti STATIC ${CRTI_SOURCE})
-target_link_libraries(crti PRIVATE NoCoverage)
-add_custom_command(
-    TARGET crti
-    COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crti> ${CMAKE_INSTALL_PREFIX}/usr/lib/crti.o
-)
+# FIXME: These files are never needed (and Clang driver never references them) but GCC might need
+#        some convincing that this is the case.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_library(crt0_shared STATIC crt0_shared.cpp)
+    target_link_libraries(crt0_shared PRIVATE NoCoverage)
+    add_custom_command(
+        TARGET crt0_shared POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crt0_shared> ${CMAKE_INSTALL_PREFIX}/usr/lib/crt0_shared.o
+    )
 
-add_library(crtn STATIC ${CRTN_SOURCE})
-target_link_libraries(crtn PRIVATE NoCoverage)
-add_custom_command(
-    TARGET crtn
-    COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crtn> ${CMAKE_INSTALL_PREFIX}/usr/lib/crtn.o
-)
+    add_library(crti STATIC arch/${SERENITY_ARCH}/crti.S)
+    target_link_libraries(crti PRIVATE NoCoverage)
+    add_custom_command(
+        TARGET crti POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crti> ${CMAKE_INSTALL_PREFIX}/usr/lib/crti.o
+    )
 
-set_source_files_properties (ssp_nonshared.cpp PROPERTIES COMPILE_FLAGS "-fno-stack-protector")
-add_library(ssp_nonshared STATIC ssp_nonshared.cpp)
-add_dependencies(ssp_nonshared install_libc_headers)
-target_link_libraries(ssp_nonshared PRIVATE NoCoverage)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libssp_nonshared.a DESTINATION ${CMAKE_INSTALL_PREFIX}/usr/lib/)
+    add_library(crtn STATIC arch/${SERENITY_ARCH}/crtn.S)
+    target_link_libraries(crtn PRIVATE NoCoverage)
+    add_custom_command(
+        TARGET crtn POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy $<TARGET_OBJECTS:crtn> ${CMAKE_INSTALL_PREFIX}/usr/lib/crtn.o
+    )
+endif()
 
-set(SOURCES ${LIBC_SOURCES} ${AK_SOURCES} ${ELF_SOURCES} ${ASM_SOURCES})
-
+# ===== LibC =====
 # Prevent GCC from removing null checks by marking the `FILE*` argument non-null
 set_source_files_properties(stdio.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin-fputc -fno-builtin-fputs -fno-builtin-fwrite")
 
 # Prevent naively implemented string functions (like strlen) from being "optimized" into a call to themselves.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set_source_files_properties(string.cpp wchar.cpp PROPERTIES COMPILE_FLAGS "-fno-tree-loop-distribution -fno-tree-loop-distribute-patterns")
+else()
+    set_source_files_properties(string.cpp wchar.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin")
 endif()
 
-set_source_files_properties(ssp.cpp PROPERTIES COMPILE_FLAGS "-fno-stack-protector")
-
-add_library(LibCStaticWithoutDeps STATIC ${SOURCES})
-target_link_libraries(LibCStaticWithoutDeps PUBLIC ssp LibTimeZone PRIVATE NoCoverage)
-add_dependencies(LibCStaticWithoutDeps LibSystem LibUBSanitizer)
-
-add_custom_target(LibCStatic
-        COMMAND ${CMAKE_AR} -x $<TARGET_FILE:LibCStaticWithoutDeps>
-        COMMAND ${CMAKE_AR} -x $<TARGET_FILE:LibSystemStatic>
-        COMMAND ${CMAKE_AR} -x $<TARGET_FILE:LibUBSanitizerStatic>
-        COMMAND ${CMAKE_AR} -rcs ${CMAKE_CURRENT_BINARY_DIR}/libc.a *.o
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS LibCStaticWithoutDeps LibSystemStatic LibUBSanitizerStatic
-        )
-
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libc.a DESTINATION ${CMAKE_INSTALL_PREFIX}/usr/lib/)
-file(GLOB TEMP_OBJ_FILES ${CMAKE_CURRENT_BINARY_DIR}/*.o)
-set_property(
-        TARGET LibCStatic
-        APPEND
-        PROPERTY ADDITIONAL_CLEAN_FILES ${TEMP_OBJ_FILES}
-)
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -nolibc")
 serenity_libc(LibC c)
-add_dependencies(LibC crti crt0 crt0_shared crtn install_libc_headers)
+add_dependencies(LibC crt0)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_dependencies(LibC crti crt0_shared crtn)
+endif()
 target_link_libraries(LibC PRIVATE LibSystem LibTimeZone)
-
-# We mark LibCStatic as a dependency of LibC because this triggers the build of the LibCStatic target
-add_dependencies(LibC LibCStatic)
+target_link_options(LibC PRIVATE -nolibc)
 
 # Provide a linker script instead of various other libraries that tells everything to link against LibC.
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libpthread.so" "INPUT(libc.so)")
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libdl.so" "INPUT(libc.so)")
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libm.so" "INPUT(libc.so)")
 file(WRITE "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}/libssp.so" "INPUT(libc.so)")
+
+# ===== LibC for DynamicLoader =====
+add_library(DynamicLoader_LibC STATIC ${SOURCES})
+target_link_libraries(DynamicLoader_LibC
+    PUBLIC DynamicLoader_CompileOptions
+    PRIVATE DynamicLoader_LibSystem
+)
+
+# ===== Compatibility with the GCC toolchain without TARGET_LIBC_PROVIDES_SSP =====
+# FIXME: Remove this on the next GCC toolchain version bump
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_custom_target(create_compat_ssp_libraries)
+    add_dependencies(Loader.so create_compat_ssp_libraries)
+
+    add_custom_command(TARGET create_compat_ssp_libraries
+        PRE_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E remove libssp.so
+        COMMAND "${CMAKE_AR}" cr libssp.a
+        WORKING_DIRECTORY "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}"
+    )
+
+    add_custom_command(TARGET create_compat_ssp_libraries
+        PRE_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E remove libssp_nonshared.a
+        COMMAND "${CMAKE_AR}" cr libssp_nonshared.a
+        WORKING_DIRECTORY "${CMAKE_STAGING_PREFIX}/${CMAKE_INSTALL_LIBDIR}"
+    )
+endif()

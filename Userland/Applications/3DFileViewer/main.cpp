@@ -131,8 +131,7 @@ private:
 
 void GLContextWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -150,7 +149,7 @@ void GLContextWidget::drop_event(GUI::DropEvent& event)
         if (url.scheme() != "file")
             continue;
 
-        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window(), url.serialize_path());
+        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window(), URL::percent_decode(url.serialize_path()));
         if (response.is_error())
             return;
         load_file(response.value().filename(), response.value().release_stream());

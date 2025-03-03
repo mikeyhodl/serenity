@@ -21,6 +21,7 @@ set(utility_srcs
     ../Utilities/file.cpp
     ../Utilities/find.cpp
     ../Utilities/id.cpp
+    ../Utilities/init.cpp
     ../Utilities/less.cpp
     ../Utilities/ln.cpp
     ../Utilities/ls.cpp
@@ -41,7 +42,7 @@ set(utility_srcs
 
 serenity_bin(BuggieBox)
 target_sources(BuggieBox PRIVATE main.cpp)
-target_link_libraries(BuggieBox PRIVATE LibMain LibShell LibArchive LibCompress LibCore LibCrypto LibFileSystem LibGfx LibLine LibRegex LibAudio LibURL)
+target_link_libraries(BuggieBox PRIVATE LibMain LibShellMinimal LibArchive LibCompress LibCore LibCrypto LibELF LibFileSystem LibGfx LibLine LibRegex LibAudio LibURL)
 
 foreach(file IN LISTS utility_srcs)
    buggiebox_utility(${file})

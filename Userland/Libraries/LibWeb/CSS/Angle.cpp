@@ -7,6 +7,7 @@
 #include "Angle.h"
 #include <AK/Math.h>
 #include <LibWeb/CSS/Percentage.h>
+#include <LibWeb/CSS/StyleValues/CSSMathValue.h>
 
 namespace Web::CSS {
 
@@ -81,6 +82,11 @@ Optional<Angle::Type> Angle::unit_from_name(StringView name)
         return Type::Turn;
     }
     return {};
+}
+
+Angle Angle::resolve_calculated(NonnullRefPtr<CSSMathValue> const& calculated, Layout::Node const&, Angle const& reference_value)
+{
+    return calculated->resolve_angle_percentage(reference_value).value();
 }
 
 }

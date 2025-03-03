@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <LibWeb/Bindings/HistoryPrototype.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
@@ -29,11 +30,14 @@ public:
     WebIDL::ExceptionOr<void> back();
     WebIDL::ExceptionOr<void> forward();
     WebIDL::ExceptionOr<u64> length() const;
+    WebIDL::ExceptionOr<Bindings::ScrollRestoration> scroll_restoration() const;
+    WebIDL::ExceptionOr<void> set_scroll_restoration(Bindings::ScrollRestoration);
     WebIDL::ExceptionOr<JS::Value> state() const;
 
     u64 m_index { 0 };
     u64 m_length { 0 };
 
+    JS::Value unsafe_state() const;
     void set_state(JS::Value s) { m_state = s; }
 
 private:

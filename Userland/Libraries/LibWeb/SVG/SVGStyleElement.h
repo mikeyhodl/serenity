@@ -12,7 +12,7 @@
 namespace Web::SVG {
 
 class SVGStyleElement final : public SVGElement {
-    WEB_PLATFORM_OBJECT(HTMLStyleElement, SVGElement);
+    WEB_PLATFORM_OBJECT(SVGStyleElement, SVGElement);
     JS_DECLARE_ALLOCATOR(SVGStyleElement);
 
 public:
@@ -27,6 +27,9 @@ public:
 
 private:
     SVGStyleElement(DOM::Document&, DOM::QualifiedName);
+
+    // ^DOM::Node
+    virtual bool is_svg_style_element() const override { return true; }
 
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;

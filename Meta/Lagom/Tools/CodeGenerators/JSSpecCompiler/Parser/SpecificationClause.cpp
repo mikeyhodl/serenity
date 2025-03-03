@@ -24,8 +24,11 @@ NonnullOwnPtr<SpecificationClause> SpecificationClause::create(SpecificationPars
             [&](AK::Empty const&) {
                 result = make<SpecificationClause>(move(specification_clause));
             },
-            [&](OneOf<ClauseHeader::AbstractOperation, ClauseHeader::Accessor, ClauseHeader::Method> auto const&) {
+            [&](OneOf<AbstractOperationDeclaration, AccessorDeclaration, MethodDeclaration> auto const&) {
                 result = make<SpecificationFunction>(move(specification_clause));
+            },
+            [&](ClauseHeader::PropertiesList const&) {
+                result = make<ObjectProperties>(move(specification_clause));
             });
 
         if (!result->post_initialize(element))

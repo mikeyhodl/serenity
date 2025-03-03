@@ -2,6 +2,7 @@
  * Copyright (c) 2021, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022-2023, MacDue <macdue@dueutil.tech>
  * Copyright (c) 2023-2024, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,8 +14,12 @@
 #include <LibCore/Environment.h>
 #include <LibCore/File.h>
 #include <LibCore/Process.h>
+#include <LibCore/Socket.h>
+#include <LibCore/SocketAddress.h>
+#include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <errno.h>
+#include <signal.h>
 #include <spawn.h>
 #include <unistd.h>
 
@@ -89,6 +94,10 @@ ErrorOr<Process> Process::spawn(ProcessSpawnOptions const& options)
                     action.path.characters(),
                     File::open_mode_to_options(action.mode | Core::File::OpenMode::KeepOnExec),
                     action.permissions));
+                return {};
+            },
+            [&](FileAction::CloseFile const& action) -> ErrorOr<void> {
+                CHECK(posix_spawn_file_actions_addclose(&spawn_actions, action.fd));
                 return {};
             }));
     }
@@ -173,7 +182,7 @@ ErrorOr<String> Process::get_name()
     if (rc != 0)
         return Error::from_syscall("get_process_name"sv, -rc);
     return String::from_utf8(StringView { buffer, strlen(buffer) });
-#elif defined(AK_LIBC_GLIBC) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID))
+#elif defined(AK_LIBC_GLIBC) || defined(AK_OS_LINUX)
     return String::from_utf8(StringView { program_invocation_name, strlen(program_invocation_name) });
 #elif defined(AK_OS_BSD_GENERIC) || defined(AK_OS_HAIKU)
     auto const* progname = getprogname();
@@ -283,7 +292,7 @@ ErrorOr<bool> Process::is_being_debugged()
 #    endif
 #endif
     // FIXME: Implement this for more platforms.
-    return Error::from_string_view("Platform does not support checking for debugger"sv);
+    return Error::from_string_literal("Platform does not support checking for debugger");
 }
 
 // Forces the process to sleep until a debugger is attached, then breaks.
@@ -345,6 +354,156 @@ ErrorOr<bool> Process::wait_for_termination()
 
     m_should_disown = false;
     return exited_with_code_0;
+}
+
+ErrorOr<IPCProcess::ProcessAndIPCSocket> IPCProcess::spawn_and_connect_to_process(ProcessSpawnOptions const& options)
+{
+    int socket_fds[2] {};
+    TRY(System::socketpair(AF_LOCAL, SOCK_STREAM, 0, socket_fds));
+
+    ArmedScopeGuard guard_fd_0 { [&] { MUST(System::close(socket_fds[0])); } };
+    ArmedScopeGuard guard_fd_1 { [&] { MUST(System::close(socket_fds[1])); } };
+
+    auto& file_actions = const_cast<ProcessSpawnOptions&>(options).file_actions;
+    file_actions.append(FileAction::CloseFile { socket_fds[0] });
+
+    auto takeover_string = MUST(String::formatted("{}:{}", options.name, socket_fds[1]));
+    TRY(Environment::set("SOCKET_TAKEOVER"sv, takeover_string, Environment::Overwrite::Yes));
+
+    auto process = TRY(Process::spawn(options));
+
+    auto ipc_socket = TRY(LocalSocket::adopt_fd(socket_fds[0]));
+    guard_fd_0.disarm();
+    TRY(ipc_socket->set_blocking(true));
+
+    return ProcessAndIPCSocket { move(process), move(ipc_socket) };
+}
+
+ErrorOr<Optional<pid_t>> IPCProcess::get_process_pid(StringView process_name, StringView pid_path)
+{
+    if (System::stat(pid_path).is_error())
+        return OptionalNone {};
+
+    Optional<pid_t> pid;
+    {
+        auto pid_file = File::open(pid_path, File::OpenMode::Read);
+        if (pid_file.is_error()) {
+            warnln("Could not open {} PID file '{}': {}", process_name, pid_path, pid_file.error());
+            return pid_file.release_error();
+        }
+
+        auto contents = pid_file.value()->read_until_eof();
+        if (contents.is_error()) {
+            warnln("Could not read {} PID file '{}': {}", process_name, pid_path, contents.error());
+            return contents.release_error();
+        }
+
+        pid = StringView { contents.value() }.to_number<pid_t>();
+    }
+
+    if (!pid.has_value()) {
+        warnln("{} PID file '{}' exists, but with an invalid PID", process_name, pid_path);
+        TRY(System::unlink(pid_path));
+        return OptionalNone {};
+    }
+    if (kill(*pid, 0) < 0) {
+        warnln("{} PID file '{}' exists with PID {}, but process cannot be found", process_name, pid_path, *pid);
+        TRY(System::unlink(pid_path));
+        return OptionalNone {};
+    }
+
+    return pid;
+}
+
+// This is heavily based on how SystemServer's Service creates its socket.
+ErrorOr<int> IPCProcess::create_ipc_socket(ByteString const& socket_path)
+{
+    if (!System::stat(socket_path).is_error())
+        TRY(System::unlink(socket_path));
+
+#ifdef SOCK_NONBLOCK
+    auto socket_fd = TRY(System::socket(AF_LOCAL, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
+#else
+    auto socket_fd = TRY(System::socket(AF_LOCAL, SOCK_STREAM, 0));
+
+    int option = 1;
+    TRY(System::ioctl(socket_fd, FIONBIO, &option));
+    TRY(System::fcntl(socket_fd, F_SETFD, FD_CLOEXEC));
+#endif
+
+#if !defined(AK_OS_BSD_GENERIC) && !defined(AK_OS_GNU_HURD)
+    TRY(System::fchmod(socket_fd, 0600));
+#endif
+
+    auto socket_address = SocketAddress::local(socket_path);
+    auto socket_address_un = socket_address.to_sockaddr_un().release_value();
+
+    TRY(System::bind(socket_fd, reinterpret_cast<sockaddr*>(&socket_address_un), sizeof(socket_address_un)));
+    TRY(System::listen(socket_fd, 16));
+
+    return socket_fd;
+}
+
+ErrorOr<IPCProcess::ProcessPaths> IPCProcess::paths_for_process(StringView process_name)
+{
+    auto runtime_directory = TRY(StandardPaths::runtime_directory());
+    auto socket_path = ByteString::formatted("{}/{}.socket", runtime_directory, process_name);
+    auto pid_path = ByteString::formatted("{}/{}.pid", runtime_directory, process_name);
+
+    return ProcessPaths { move(socket_path), move(pid_path) };
+}
+
+ErrorOr<IPCProcess::ProcessAndIPCSocket> IPCProcess::spawn_singleton_and_connect_to_process(ProcessSpawnOptions const& options)
+{
+    auto [socket_path, pid_path] = TRY(paths_for_process(options.name));
+    Process process { -1 };
+
+    if (auto existing_pid = TRY(get_process_pid(options.name, pid_path)); existing_pid.has_value()) {
+        process = Process { *existing_pid };
+    } else {
+        auto ipc_fd = TRY(create_ipc_socket(socket_path));
+
+        sigset_t original_set;
+        sigset_t setting_set;
+        sigfillset(&setting_set);
+        (void)pthread_sigmask(SIG_BLOCK, &setting_set, &original_set);
+
+        // FIXME: Roll this daemon implementation into `Process::disown`.
+        if (auto pid = TRY(System::fork()); pid == 0) {
+            (void)pthread_sigmask(SIG_SETMASK, &original_set, nullptr);
+            TRY(System::setsid());
+            TRY(System::signal(SIGCHLD, SIG_IGN));
+
+            auto& arguments = const_cast<Vector<ByteString>&>(options.arguments);
+            arguments.append("--pid-file"sv);
+            arguments.append(pid_path);
+
+            auto takeover_string = ByteString::formatted("{}:{}", options.name, TRY(System::dup(ipc_fd)));
+            TRY(Environment::set("SOCKET_TAKEOVER"sv, takeover_string, Environment::Overwrite::Yes));
+
+            auto process = TRY(Process::spawn(options));
+            {
+                auto pid_file = TRY(File::open(pid_path, File::OpenMode::Write));
+                TRY(pid_file->write_until_depleted(ByteString::number(process.pid())));
+            }
+
+            TRY(System::kill(getpid(), SIGTERM));
+        } else {
+            auto wait_err = System::waitpid(pid);
+            (void)pthread_sigmask(SIG_SETMASK, &original_set, nullptr);
+            TRY(wait_err);
+        }
+
+        auto pid = TRY(get_process_pid(options.name, pid_path));
+        VERIFY(pid.has_value());
+
+        process = Process { *pid };
+    }
+
+    auto ipc_socket = TRY(LocalSocket::connect(socket_path));
+    TRY(ipc_socket->set_blocking(true));
+
+    return ProcessAndIPCSocket { move(process), move(ipc_socket) };
 }
 
 }

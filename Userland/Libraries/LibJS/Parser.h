@@ -87,7 +87,7 @@ public:
 
     NonnullRefPtr<Statement const> parse_statement(AllowLabelledFunction allow_labelled_function = AllowLabelledFunction::No);
     NonnullRefPtr<BlockStatement const> parse_block_statement();
-    NonnullRefPtr<FunctionBody const> parse_function_body(Vector<FunctionParameter> const& parameters, FunctionKind function_kind, bool& contains_direct_call_to_eval);
+    NonnullRefPtr<FunctionBody const> parse_function_body(Vector<FunctionParameter> const& parameters, FunctionKind function_kind, FunctionParsingInsights&);
     NonnullRefPtr<ReturnStatement const> parse_return_statement();
 
     enum class IsForLoopVariableDeclaration {
@@ -96,7 +96,7 @@ public:
     };
 
     NonnullRefPtr<VariableDeclaration const> parse_variable_declaration(IsForLoopVariableDeclaration is_for_loop_variable_declaration = IsForLoopVariableDeclaration::No);
-    RefPtr<Identifier const> parse_lexical_binding();
+    [[nodiscard]] RefPtr<Identifier const> parse_lexical_binding(Optional<DeclarationKind> = {});
     NonnullRefPtr<UsingDeclaration const> parse_using_declaration(IsForLoopVariableDeclaration is_for_loop_variable_declaration = IsForLoopVariableDeclaration::No);
     NonnullRefPtr<Statement const> parse_for_statement();
 
@@ -209,9 +209,9 @@ public:
     };
 
     // Needs to mess with m_state, and we're not going to expose a non-const getter for that :^)
-    friend ThrowCompletionOr<ECMAScriptFunctionObject*> FunctionConstructor::create_dynamic_function(VM&, FunctionObject&, FunctionObject*, FunctionKind, MarkedVector<Value> const&);
+    friend ThrowCompletionOr<NonnullGCPtr<ECMAScriptFunctionObject>> FunctionConstructor::create_dynamic_function(VM&, FunctionObject&, FunctionObject*, FunctionKind, ReadonlySpan<String> parameter_args, String const& body_arg);
 
-    static Parser parse_function_body_from_string(ByteString const& body_string, u16 parse_options, Vector<FunctionParameter> const& parameters, FunctionKind kind, bool& contains_direct_call_to_eval);
+    static Parser parse_function_body_from_string(ByteString const& body_string, u16 parse_options, Vector<FunctionParameter> const& parameters, FunctionKind kind, FunctionParsingInsights&);
 
 private:
     friend class ScopePusher;
@@ -334,27 +334,14 @@ private:
         ParserState(Lexer, Program::Type);
     };
 
-    class PositionKeyTraits {
-    public:
-        static int hash(Position const& position)
-        {
-            return int_hash(position.line) ^ int_hash(position.column);
-        }
-
-        static bool equals(Position const& a, Position const& b)
-        {
-            return a.column == b.column && a.line == b.line;
-        }
-    };
-
-    NonnullRefPtr<Identifier const> create_identifier_and_register_in_current_scope(SourceRange range, DeprecatedFlyString string);
+    [[nodiscard]] NonnullRefPtr<Identifier const> create_identifier_and_register_in_current_scope(SourceRange range, DeprecatedFlyString string, Optional<DeclarationKind> = {});
 
     NonnullRefPtr<SourceCode const> m_source_code;
     Vector<Position> m_rule_starts;
     ParserState m_state;
     DeprecatedFlyString m_filename;
     Vector<ParserState> m_saved_state;
-    HashMap<Position, TokenMemoization, PositionKeyTraits> m_token_memoizations;
+    HashMap<size_t, TokenMemoization> m_token_memoizations;
     Program::Type m_program_type;
 };
 }

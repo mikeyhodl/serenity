@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLFrameSetElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLFrameSetElement.h>
 #include <LibWeb/HTML/Window.h>
@@ -25,9 +26,9 @@ void HTMLFrameSetElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLFrameSetElement);
 }
 
-void HTMLFrameSetElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLFrameSetElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    HTMLElement::attribute_changed(name, value);
+    HTMLElement::attribute_changed(name, old_value, value);
 
 #undef __ENUMERATE
 #define __ENUMERATE(attribute_name, event_name)                     \

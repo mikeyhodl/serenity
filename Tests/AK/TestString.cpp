@@ -163,6 +163,25 @@ TEST_CASE(invalid_utf8)
     EXPECT(string3.error().string_literal().contains("Input was not valid UTF-8"sv));
 }
 
+TEST_CASE(with_replacement_character)
+{
+    auto string1 = String::from_utf8_with_replacement_character("long string \xf4\x8f\xbf\xc0"sv, String::WithBOMHandling::No); // U+110000
+    Array<u8, 24> string1_expected { 0x6c, 0x6f, 0x6e, 0x67, 0x20, 0x73, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x20, 0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd };
+    EXPECT_EQ(string1.bytes(), string1_expected);
+
+    auto string3 = String::from_utf8_with_replacement_character("A valid string!"sv, String::WithBOMHandling::No);
+    EXPECT_EQ(string3, "A valid string!"sv);
+
+    auto string4 = String::from_utf8_with_replacement_character(""sv, String::WithBOMHandling::No);
+    EXPECT_EQ(string4, ""sv);
+
+    auto string5 = String::from_utf8_with_replacement_character("\xEF\xBB\xBFWHF!"sv, String::WithBOMHandling::Yes);
+    EXPECT_EQ(string5, "WHF!"sv);
+
+    auto string6 = String::from_utf8_with_replacement_character("\xEF\xBB\xBFWHF!"sv, String::WithBOMHandling::No);
+    EXPECT_EQ(string6, "\xEF\xBB\xBFWHF!"sv);
+}
+
 TEST_CASE(from_code_points)
 {
     for (u32 code_point = 0; code_point < 0x80; ++code_point) {
@@ -920,6 +939,133 @@ TEST_CASE(find_byte_offset)
     }
 }
 
+TEST_CASE(find_byte_offset_ignoring_case)
+{
+    {
+        auto string = ""_string;
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case(""sv).has_value(), false);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("1"sv).has_value(), false);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("2"sv).has_value(), false);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("23"sv).has_value(), false);
+    }
+    {
+        auto string = "1234567"_string;
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case(""sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("1"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("2"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("3"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("4"sv), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("5"sv), 4u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("6"sv), 5u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("7"sv), 6u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("34"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("45"sv), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("56"sv), 4u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("67"sv), 5u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("a"sv).has_value(), false);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("8"sv).has_value(), false);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("78"sv).has_value(), false);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("46"sv).has_value(), false);
+    }
+    {
+        auto string = "abCDef"_string;
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("A"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("B"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("c"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("d"sv), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("e"sv), 4u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("f"sv), 5u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("AbC"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("BcdE"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("cd"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("cD"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("E"sv), 4u);
+    }
+    {
+        auto string = "abßcd"_string;
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("SS"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("Ss"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ss"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("S"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("s"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ß"sv), 2u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSS"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSs"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bss"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bS"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bs"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bß"sv), 1u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSSc"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSsc"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bssc"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bßc"sv), 1u);
+        EXPECT(!string.find_byte_offset_ignoring_case("bSc"sv).has_value());
+        EXPECT(!string.find_byte_offset_ignoring_case("bsc"sv).has_value());
+    }
+    {
+        auto string = "abSScd"_string;
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("SS"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("Ss"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ss"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("S"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("s"sv), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ß"sv), 2u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSS"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSs"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bss"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bS"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bs"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bß"sv), 1u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSSc"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bSsc"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bssc"sv), 1u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("bßc"sv), 1u);
+        EXPECT(!string.find_byte_offset_ignoring_case("bSc"sv).has_value());
+        EXPECT(!string.find_byte_offset_ignoring_case("bsc"sv).has_value());
+    }
+    {
+        auto string = "ßSßs"_string;
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("SS"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("Ss"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ss"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("S"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("s"sv), 0u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ß"sv), 0u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("SS"sv, 2), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("Ss"sv, 2), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ss"sv, 2), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("S"sv, 2), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("s"sv, 2), 2u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ß"sv, 2), 2u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("SS"sv, 3), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("Ss"sv, 3), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ss"sv, 3), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("S"sv, 3), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("s"sv, 3), 3u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("ß"sv, 3), 3u);
+
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("S"sv, 5), 5u);
+        EXPECT_EQ(string.find_byte_offset_ignoring_case("s"sv, 5), 5u);
+        EXPECT(!string.find_byte_offset_ignoring_case("SS"sv, 5).has_value());
+        EXPECT(!string.find_byte_offset_ignoring_case("Ss"sv, 5).has_value());
+        EXPECT(!string.find_byte_offset_ignoring_case("ss"sv, 5).has_value());
+        EXPECT(!string.find_byte_offset_ignoring_case("ß"sv, 5).has_value());
+    }
+}
+
 TEST_CASE(repeated)
 {
     {
@@ -1260,4 +1406,28 @@ TEST_CASE(ends_with)
 
     EXPECT(emoji.ends_with(0x1F643));
     EXPECT(!emoji.ends_with(0x1F600));
+}
+
+TEST_CASE(to_ascii_lowercase)
+{
+    EXPECT_EQ("foobar"_string.to_ascii_lowercase(), "foobar"_string);
+    EXPECT_EQ("FooBar"_string.to_ascii_lowercase(), "foobar"_string);
+    EXPECT_EQ("FOOBAR"_string.to_ascii_lowercase(), "foobar"_string);
+
+    // NOTE: We expect to_ascii_lowercase() to return the same underlying string if no changes are needed.
+    auto long_string = "this is a long string that cannot use the short string optimization"_string;
+    auto lowercased = long_string.to_ascii_lowercase();
+    EXPECT_EQ(long_string.bytes().data(), lowercased.bytes().data());
+}
+
+TEST_CASE(to_ascii_uppercase)
+{
+    EXPECT_EQ("foobar"_string.to_ascii_uppercase(), "FOOBAR"_string);
+    EXPECT_EQ("FooBar"_string.to_ascii_uppercase(), "FOOBAR"_string);
+    EXPECT_EQ("FOOBAR"_string.to_ascii_uppercase(), "FOOBAR"_string);
+
+    // NOTE: We expect to_ascii_uppercase() to return the same underlying string if no changes are needed.
+    auto long_string = "THIS IS A LONG STRING THAT CANNOT USE THE SHORT STRING OPTIMIZATION"_string;
+    auto uppercased = long_string.to_ascii_uppercase();
+    EXPECT_EQ(long_string.bytes().data(), uppercased.bytes().data());
 }

@@ -597,6 +597,7 @@ TEST_CASE(ECMA262_parse)
         { "a{9007199254740992,9007199254740992}"sv, regex::Error::InvalidBraceContent },
         { "(?<a>a)(?<a>b)"sv, regex::Error::DuplicateNamedCapture },
         { "(?<a>a)(?<b>b)(?<a>c)"sv, regex::Error::DuplicateNamedCapture },
+        { "(?<a>(?<a>a))"sv, regex::Error::DuplicateNamedCapture },
         { "(?<1a>a)"sv, regex::Error::InvalidNameForCaptureGroup },
         { "(?<\\a>a)"sv, regex::Error::InvalidNameForCaptureGroup },
         { "(?<\ta>a)"sv, regex::Error::InvalidNameForCaptureGroup },
@@ -705,6 +706,15 @@ TEST_CASE(ECMA262_match)
         { "a$"sv, "a\r\n"sv, true, global_multiline.value() }, // $ should accept all LineTerminators in ECMA262 mode with Multiline.
         { "^a"sv, "\ra"sv, true, global_multiline.value() },
         { "^(.*?):[ \\t]*([^\\r\\n]*)$"sv, "content-length: 488\r\ncontent-type: application/json; charset=utf-8\r\n"sv, true, global_multiline.value() },
+        { "^\\?((&?category=[0-9]+)?(&?shippable=1)?(&?ad_type=demand)?(&?page=[0-9]+)?(&?locations=(r|d)_[0-9]+)?)+$"sv,
+            "?category=54&shippable=1&baby_age=p,0,1,3"sv, false }, // ladybird#968, ?+ should not loop forever.
+        { "([^\\s]+):\\s*([^;]+);"sv, "font-family: 'Inter';"sv, true }, // optimizer bug, blindly accepting inverted char classes [^x] as atomic rewrite opportunities.
+        { "(a)(?=a*\\1)"sv, "aaaa"sv, true, global_multiline.value() }, // Optimizer bug, ignoring references that weren't bound in the current or past block, ladybird#2281
+        { "[ a](b{2})"sv, "abb"sv, true }, // Optimizer bug, wrong Repeat basic block splits.
+        { "^ {0,3}(([\\`\\~])\\2{2,})\\s*([\\*_]*)\\s*([^\\*_\\s]*).*$"sv, ""sv, false }, // See above.
+        { "^(\\d{4}|[+-]\\d{6})(?:-?(\\d{2})(?:-?(\\d{2}))?)?(?:[ T]?(\\d{2}):?(\\d{2})(?::?(\\d{2})(?:[,.](\\d{1,}))?)?(?:(Z)|([+-])(\\d{2})(?::?(\\d{2}))?)?)?$"sv,
+            ""sv,
+            false, }, // See above, also ladybird#2931.
     };
     // clang-format on
 
@@ -800,6 +810,7 @@ TEST_CASE(ECMA262_unicode_sets_parser_error)
 
     constexpr _test tests[] {
         { "[[]"sv, regex::Error::InvalidPattern },
+        { "[[x[]]]"sv, regex::Error::NoError }, // #23691, should not crash on empty charclass within AndOr.
     };
 
     for (auto test : tests) {
@@ -980,6 +991,7 @@ TEST_CASE(theoretically_infinite_loop)
         "(a*?)*"sv, // Infinitely matching empty substrings, the outer loop should short-circuit.
         "(a*)*?"sv, // Should match exactly nothing.
         "(?:)*?"sv, // Should not generate an infinite fork loop.
+        "(a?)+$"sv, // Infinitely matching empty strings, but with '+' instead of '*'.
     };
     for (auto& pattern : patterns) {
         Regex<ECMA262> re(pattern);
@@ -1027,6 +1039,8 @@ TEST_CASE(optimizer_atomic_groups)
         // (b+)(b+) produces an intermediate block with no matching ops, the optimiser should ignore that block when looking for following matches and correctly detect the overlap between (b+) and (b+).
         // note that the second loop may be rewritten to a ForkReplace, but the first loop should not be rewritten.
         Tuple { "(b+)(b+)"sv, "bbb"sv, true },
+        // Don't treat [\S] as [\s]; see ladybird#2296.
+        Tuple { "([^\\s]+?)\\(([\\s\\S]*)\\)"sv, "a(b)"sv, true },
     };
 
     for (auto& test : tests) {
@@ -1057,7 +1071,7 @@ TEST_CASE(optimizer_char_class_lut)
 TEST_CASE(optimizer_alternation)
 {
     Array tests {
-        // Pattern, Subject, Expected length
+        // Pattern, Subject, Expected length [0 == fail]
         Tuple { "a|"sv, "a"sv, 1u },
         Tuple { "a|a|a|a|a|a|a|a|a|b"sv, "a"sv, 1u },
         Tuple { "ab|ac|ad|bc"sv, "bc"sv, 2u },
@@ -1067,13 +1081,21 @@ TEST_CASE(optimizer_alternation)
         Tuple { "^(\\d+|x)"sv, "42"sv, 2u },
         // `Repeat' does not add its insn size to the jump target.
         Tuple { "[0-9]{2}|[0-9]"sv, "92"sv, 2u },
+        // Don't ForkJump to the next instruction, rerunning it would produce the same result. see ladybird#2398.
+        Tuple { "(xxxxxxxxxxxxxxxxxxxxxxx|xxxxxxxxxxxxxxxxxxxxxxx)?b"sv, "xxxxxxxxxxxxxxxxxxxxxxx"sv, 0u },
+        // Don't take the jump in JumpNonEmpty with nonexistent checkpoints (also don't crash).
+        Tuple { "(?!\\d*|[g-ta-r]+|[h-l]|\\S|\\S|\\S){,9}|\\S{7,8}|\\d|(?<wnvdfimiwd>)|[c-mj-tb-o]*|\\s"sv, "rjvogg7pm|li4nmct mjb2|pk7s8e0"sv, 0u },
     };
 
     for (auto& test : tests) {
         Regex<ECMA262> re(test.get<0>());
         auto result = re.match(test.get<1>());
-        EXPECT(result.success);
-        EXPECT_EQ(result.matches.first().view.length(), test.get<2>());
+        if (test.get<2>() != 0) {
+            EXPECT(result.success);
+            EXPECT_EQ(result.matches.first().view.length(), test.get<2>());
+        } else {
+            EXPECT(!result.success);
+        }
     }
 }
 

@@ -161,6 +161,11 @@ String StringBuilder::to_string_without_validation() const
     return String::from_utf8_without_validation(string_view().bytes());
 }
 
+FlyString StringBuilder::to_fly_string_without_validation() const
+{
+    return FlyString::from_utf8_without_validation(string_view().bytes());
+}
+
 ErrorOr<FlyString> StringBuilder::to_fly_string() const
 {
     return FlyString::from_utf8(string_view());
@@ -228,7 +233,19 @@ void StringBuilder::append_code_point(u32 code_point)
 #ifndef KERNEL
 ErrorOr<void> StringBuilder::try_append(Utf16View const& utf16_view)
 {
+    // NOTE: This may under-allocate in the presence of surrogate pairs.
+    //       That's okay, appending will still grow the buffer as needed.
+    TRY(will_append(utf16_view.length_in_code_units()));
+
     for (size_t i = 0; i < utf16_view.length_in_code_units();) {
+        // OPTIMIZATION: Fast path for ASCII characters.
+        auto code_unit = utf16_view.data()[i];
+        if (code_unit <= 0x7f) {
+            append(static_cast<char>(code_unit));
+            ++i;
+            continue;
+        }
+
         auto code_point = utf16_view.code_point_at(i);
         TRY(try_append_code_point(code_point));
 

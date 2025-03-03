@@ -13,22 +13,19 @@
 namespace JSSpecCompiler {
 
 struct ClauseHeader {
-    struct AbstractOperation {
-        StringView name;
-        Vector<FunctionArgument> arguments;
+    enum class ObjectType {
+        Constructor,
+        Prototype,
+        Instance,
     };
 
-    struct Accessor {
-        Vector<StringView> qualified_name;
-    };
-
-    struct Method {
-        Vector<StringView> qualified_name;
-        Vector<FunctionArgument> arguments;
+    struct PropertiesList {
+        QualifiedName name;
+        ObjectType object_type;
     };
 
     StringView section_number;
-    Variant<AK::Empty, AbstractOperation, Accessor, Method> header;
+    Variant<AK::Empty, AbstractOperationDeclaration, AccessorDeclaration, MethodDeclaration, PropertiesList> header;
 };
 
 struct TextParseError { };
@@ -102,11 +99,12 @@ private:
     TextParseErrorOr<Tree> parse_if(Tree then_branch);
     TextParseErrorOr<Tree> parse_else(Tree else_branch);
 
-    TextParseErrorOr<Vector<StringView>> parse_qualified_name();
+    TextParseErrorOr<QualifiedName> parse_qualified_name();
     TextParseErrorOr<Vector<FunctionArgument>> parse_function_arguments_in_declaration();
-    TextParseErrorOr<ClauseHeader::AbstractOperation> parse_abstract_operation_declaration();
-    TextParseErrorOr<ClauseHeader::Method> parse_method_declaration();
-    TextParseErrorOr<ClauseHeader::Accessor> parse_accessor_declaration();
+    TextParseErrorOr<AbstractOperationDeclaration> parse_abstract_operation_declaration();
+    TextParseErrorOr<MethodDeclaration> parse_method_declaration();
+    TextParseErrorOr<AccessorDeclaration> parse_accessor_declaration();
+    TextParseErrorOr<ClauseHeader::PropertiesList> parse_properties_list_declaration();
 
     SpecificationParsingContext& m_ctx;
     Vector<Token> const& m_tokens;

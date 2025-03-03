@@ -13,6 +13,7 @@
 #include <AK/StringView.h>
 #include <AK/Types.h>
 #include <Kernel/FileSystem/BlockBasedFileSystem.h>
+#include <Kernel/FileSystem/FileSystemSpecificOption.h>
 #include <Kernel/FileSystem/ISO9660FS/Definitions.h>
 #include <Kernel/FileSystem/ISO9660FS/DirectoryEntry.h>
 #include <Kernel/FileSystem/Inode.h>
@@ -29,11 +30,13 @@ class ISO9660FS final : public BlockBasedFileSystem {
     friend ISO9660DirectoryIterator;
 
 public:
-    static ErrorOr<NonnullRefPtr<FileSystem>> try_create(OpenFileDescription&, ReadonlyBytes);
+    static ErrorOr<NonnullRefPtr<FileSystem>> try_create(OpenFileDescription&, FileSystemSpecificOptions const&);
 
     virtual ~ISO9660FS() override;
     virtual StringView class_name() const override { return "ISO9660FS"sv; }
     virtual Inode& root_inode() override;
+
+    virtual ErrorOr<void> rename(Inode& old_parent_inode, StringView old_basename, Inode& new_parent_inode, StringView new_basename) override;
 
     virtual unsigned total_block_count() const override;
     virtual unsigned total_inode_count() const override;

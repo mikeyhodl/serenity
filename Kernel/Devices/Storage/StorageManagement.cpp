@@ -5,30 +5,29 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/NeverDestroyed.h>
 #include <AK/Platform.h>
 #include <AK/Singleton.h>
 #include <AK/StringView.h>
 #include <AK/UUID.h>
-#if ARCH(X86_64)
-#    include <Kernel/Arch/x86_64/ISABus/IDEController.h>
-#    include <Kernel/Arch/x86_64/PCI/IDELegacyModeController.h>
-#endif
 #if ARCH(AARCH64)
 #    include <Kernel/Arch/aarch64/RPi/SDHostController.h>
 #endif
+#include <Kernel/API/DeviceFileTypes.h>
 #include <Kernel/Boot/CommandLine.h>
 #include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Bus/PCI/Controller/VolumeManagementDevice.h>
 #include <Kernel/Devices/BlockDevice.h>
-#include <Kernel/Devices/DeviceManagement.h>
-#include <Kernel/Devices/Storage/ATA/AHCI/Controller.h>
-#include <Kernel/Devices/Storage/ATA/GenericIDE/Controller.h>
+#include <Kernel/Devices/Device.h>
+#include <Kernel/Devices/Storage/AHCI/Controller.h>
 #include <Kernel/Devices/Storage/NVMe/NVMeController.h>
 #include <Kernel/Devices/Storage/SD/PCISDHostController.h>
 #include <Kernel/Devices/Storage/SD/SDHostController.h>
 #include <Kernel/Devices/Storage/StorageManagement.h>
+#include <Kernel/Devices/Storage/VirtIO/VirtIOBlockController.h>
 #include <Kernel/FileSystem/Ext2FS/FileSystem.h>
+#include <Kernel/FileSystem/MountFile.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/Library/Panic.h>
 #include <LibPartition/EBRPartitionTable.h>
@@ -42,16 +41,20 @@ static Atomic<u32> s_storage_device_minor_number;
 static Atomic<u32> s_partition_device_minor_number;
 static Atomic<u32> s_controller_id;
 
-static Atomic<u32> s_relative_ata_controller_id;
+static Atomic<u32> s_relative_ahci_controller_id;
 static Atomic<u32> s_relative_nvme_controller_id;
 static Atomic<u32> s_relative_sd_controller_id;
+
+static NeverDestroyed<Vector<DeviceTree::DeviceRecipe<NonnullRefPtr<StorageController>>>> s_recipes;
+
+static constexpr int root_mount_flags = 0;
 
 static constexpr StringView partition_uuid_prefix = "PARTUUID:"sv;
 
 static constexpr StringView partition_number_prefix = "part"sv;
 static constexpr StringView block_device_prefix = "block"sv;
 
-static constexpr StringView ata_device_prefix = "ata"sv;
+static constexpr StringView ahci_device_prefix = "ahci"sv;
 static constexpr StringView nvme_device_prefix = "nvme"sv;
 static constexpr StringView logical_unit_number_device_prefix = "lun"sv;
 static constexpr StringView sd_device_prefix = "sd"sv;
@@ -67,10 +70,10 @@ u32 StorageManagement::generate_relative_nvme_controller_id(Badge<NVMeController
     return controller_id;
 }
 
-u32 StorageManagement::generate_relative_ata_controller_id(Badge<ATAController>)
+u32 StorageManagement::generate_relative_ahci_controller_id(Badge<AHCIController>)
 {
-    auto controller_id = s_relative_ata_controller_id.load();
-    s_relative_ata_controller_id++;
+    auto controller_id = s_relative_ahci_controller_id.load();
+    s_relative_ahci_controller_id++;
     return controller_id;
 }
 
@@ -93,7 +96,12 @@ void StorageManagement::remove_device(StorageDevice& device)
     m_storage_devices.remove(device);
 }
 
-UNMAP_AFTER_INIT void StorageManagement::enumerate_pci_controllers(bool force_pio, bool nvme_poll)
+void StorageManagement::add_recipe(DeviceTree::DeviceRecipe<NonnullRefPtr<StorageController>> recipe)
+{
+    s_recipes->append(move(recipe));
+}
+
+UNMAP_AFTER_INIT void StorageManagement::enumerate_pci_controllers(bool nvme_poll)
 {
     VERIFY(m_controllers.is_empty());
 
@@ -108,29 +116,12 @@ UNMAP_AFTER_INIT void StorageManagement::enumerate_pci_controllers(bool force_pi
             }
         }));
 
+        RefPtr<VirtIOBlockController> virtio_controller;
+
         auto const& handle_mass_storage_device = [&](PCI::DeviceIdentifier const& device_identifier) {
             using SubclassID = PCI::MassStorage::SubclassID;
 
             auto subclass_code = static_cast<SubclassID>(device_identifier.subclass_code().value());
-#if ARCH(X86_64)
-            if (subclass_code == SubclassID::IDEController && kernel_command_line().is_ide_enabled()) {
-                if (auto ide_controller_or_error = PCIIDELegacyModeController::initialize(device_identifier, force_pio); !ide_controller_or_error.is_error())
-                    m_controllers.append(ide_controller_or_error.release_value());
-                else
-                    dmesgln("Unable to initialize IDE controller: {}", ide_controller_or_error.error());
-            }
-#elif ARCH(AARCH64)
-            (void)force_pio;
-            TODO_AARCH64();
-#elif ARCH(RISCV64)
-            (void)force_pio;
-            if (subclass_code == SubclassID::IDEController && kernel_command_line().is_ide_enabled()) {
-                TODO_RISCV64();
-            }
-#else
-#    error Unknown architecture
-#endif
-
             if (subclass_code == SubclassID::SATAController
                 && device_identifier.prog_if() == PCI::MassStorage::SATAProgIF::AHCI) {
                 if (auto ahci_controller_or_error = AHCIController::initialize(device_identifier); !ahci_controller_or_error.is_error())
@@ -144,6 +135,16 @@ UNMAP_AFTER_INIT void StorageManagement::enumerate_pci_controllers(bool force_pi
                     dmesgln("Unable to initialize NVMe controller: {}", controller.error());
                 } else {
                     m_controllers.append(controller.release_value());
+                }
+            }
+            if (VirtIOBlockController::is_handled(device_identifier)) {
+                if (virtio_controller.is_null()) {
+                    auto controller = make_ref_counted<VirtIOBlockController>();
+                    m_controllers.append(controller);
+                    virtio_controller = controller;
+                }
+                if (auto res = virtio_controller->add_device(device_identifier); res.is_error()) {
+                    dmesgln("Unable to initialize VirtIO block device: {}", res.error());
                 }
             }
         };
@@ -189,16 +190,16 @@ UNMAP_AFTER_INIT void StorageManagement::enumerate_storage_devices()
 
 UNMAP_AFTER_INIT void StorageManagement::dump_storage_devices_and_partitions() const
 {
-    dbgln("StorageManagement: Detected {} storage devices", m_storage_devices.size_slow());
+    critical_dmesgln("StorageManagement: Detected {} storage devices", m_storage_devices.size_slow());
     for (auto const& storage_device : m_storage_devices) {
         auto const& partitions = storage_device.partitions();
         if (partitions.is_empty()) {
-            dbgln("  Device: block{}:{} (no partitions)", storage_device.major(), storage_device.minor());
+            critical_dmesgln("  Device: block{}:{} (no partitions)", storage_device.major(), storage_device.minor());
         } else {
-            dbgln("  Device: block{}:{} ({} partitions)", storage_device.major(), storage_device.minor(), partitions.size());
+            critical_dmesgln("  Device: block{}:{} ({} partitions)", storage_device.major(), storage_device.minor(), partitions.size());
             unsigned partition_number = 1;
             for (auto const& partition : partitions) {
-                dbgln("    Partition: {}, block{}:{} (UUID {})", partition_number, partition->major(), partition->minor(), partition->metadata().unique_guid().to_string());
+                critical_dmesgln("    Partition: {}, block{}:{} (UUID {})", partition_number, partition->major(), partition->minor(), partition->metadata().unique_guid().to_string());
                 partition_number++;
             }
         }
@@ -221,7 +222,7 @@ ErrorOr<void> StorageManagement::enumerate_device_partitions(StorageDevice& devi
 {
     auto partition_table = TRY(try_to_initialize_partition_table(device));
     for (auto partition_metadata : partition_table->partitions()) {
-        auto disk_partition = StorageDevicePartition::create(device, generate_partition_minor_number(), partition_metadata);
+        auto disk_partition = TRY(StorageDevicePartition::create(device, generate_partition_minor_number(), partition_metadata));
         device.add_partition(disk_partition);
     }
 
@@ -297,7 +298,7 @@ UNMAP_AFTER_INIT void StorageManagement::resolve_partition_from_boot_device_para
     auto partition_number = possible_partition_number.value();
     if (chosen_storage_device.partitions().size() <= partition_number)
         PANIC("StorageManagement: Invalid partition number parameter.");
-    m_boot_block_device = chosen_storage_device.partitions()[partition_number];
+    m_boot_block_device = *chosen_storage_device.partitions()[partition_number];
 }
 
 UNMAP_AFTER_INIT void StorageManagement::determine_hardware_relative_boot_device(StringView relative_hardware_prefix, Function<bool(StorageDevice const&)> filter_device_callback)
@@ -326,7 +327,7 @@ UNMAP_AFTER_INIT void StorageManagement::determine_hardware_relative_boot_device
 
 UNMAP_AFTER_INIT void StorageManagement::determine_ata_boot_device()
 {
-    determine_hardware_relative_boot_device(ata_device_prefix, [](StorageDevice const& device) -> bool {
+    determine_hardware_relative_boot_device(ahci_device_prefix, [](StorageDevice const& device) -> bool {
         return device.command_set() == StorageDevice::CommandSet::ATA;
     });
 }
@@ -353,7 +354,7 @@ UNMAP_AFTER_INIT void StorageManagement::determine_block_boot_device()
     // Note: We simply fetch the corresponding BlockDevice with the major and minor parameters.
     // We don't try to accept and resolve a partition number as it will make this code much more
     // complicated. This rule is also explained in the boot_device_addressing(7) manual page.
-    auto device = DeviceManagement::the().get_device(parameters_view[0], parameters_view[1]);
+    auto device = Device::acquire_by_type_and_major_minor_numbers(DeviceNodeType::Block, parameters_view[0], parameters_view[1]);
     if (device && device->is_block_device())
         m_boot_block_device = *static_ptr_cast<BlockDevice>(device);
 }
@@ -400,7 +401,7 @@ UNMAP_AFTER_INIT bool StorageManagement::determine_boot_device(StringView boot_a
         return m_boot_block_device;
     }
 
-    if (m_boot_argument.starts_with(ata_device_prefix)) {
+    if (m_boot_argument.starts_with(ahci_device_prefix)) {
         determine_ata_boot_device();
         return m_boot_block_device;
     }
@@ -429,22 +430,21 @@ UNMAP_AFTER_INIT void StorageManagement::determine_boot_device_with_partition_uu
             if (partition->metadata().unique_guid().is_zero())
                 continue;
             if (partition->metadata().unique_guid() == partition_uuid) {
-                m_boot_block_device = partition;
+                m_boot_block_device = *partition;
                 break;
             }
         }
     }
 }
 
-LockRefPtr<BlockDevice> StorageManagement::boot_block_device() const
+RefPtr<BlockDevice> StorageManagement::boot_block_device() const
 {
-    return m_boot_block_device.strong_ref();
+    auto device = m_boot_block_device.strong_ref();
+    if (!device)
+        return nullptr;
+    return *device;
 }
 
-MajorNumber StorageManagement::storage_type_major_number()
-{
-    return 3;
-}
 MinorNumber StorageManagement::generate_storage_minor_number()
 {
     return s_storage_device_minor_number.fetch_add(1);
@@ -460,49 +460,53 @@ u32 StorageManagement::generate_controller_id()
     return s_controller_id.fetch_add(1);
 }
 
-NonnullRefPtr<FileSystem> StorageManagement::root_filesystem() const
+ErrorOr<NonnullRefPtr<VFSRootContext>> StorageManagement::create_first_vfs_root_context() const
 {
+    auto vfs_root_context = TRY(VFSRootContext::create_with_empty_ramfs());
+
+    auto const* fs_type_initializer = TRY(VirtualFileSystem::find_filesystem_type_initializer("ext2"sv));
+    VERIFY(fs_type_initializer);
+    auto mount_file = TRY(MountFile::create(*fs_type_initializer, root_mount_flags));
+
     auto boot_device_description = boot_block_device();
     if (!boot_device_description) {
         dump_storage_devices_and_partitions();
         PANIC("StorageManagement: Couldn't find a suitable device to boot from");
     }
-    auto description_or_error = OpenFileDescription::try_create(boot_device_description.release_nonnull());
-    VERIFY(!description_or_error.is_error());
+    auto description = TRY(OpenFileDescription::try_create(boot_device_description.release_nonnull()));
 
-    Array<u8, PAGE_SIZE> mount_specific_data;
-    mount_specific_data.fill(0);
-    auto file_system = Ext2FS::try_create(description_or_error.release_value(), mount_specific_data.span()).release_value();
+    auto fs = TRY(FileBackedFileSystem::create_and_append_filesystems_list_from_mount_file_and_description(mount_file, description));
 
-    if (auto result = file_system->initialize(); result.is_error()) {
-        dump_storage_devices_and_partitions();
-        PANIC("StorageManagement: Couldn't open root filesystem: {}", result.error());
-    }
-    return file_system;
+    // NOTE: Fake a mounted count of 1 so the called VirtualFileSystem function in the
+    // next pivot_root logic block thinks everything is OK.
+    fs->mounted_count().with([](auto& mounted_count) {
+        mounted_count++;
+    });
+
+    TRY(VirtualFileSystem::pivot_root_by_copying_mounted_fs_instance(*vfs_root_context, *fs, root_mount_flags));
+    // NOTE: Return the mounted count to normal now we have it really mounted.
+    fs->mounted_count().with([](auto& mounted_count) {
+        mounted_count--;
+    });
+    return vfs_root_context;
 }
 
-UNMAP_AFTER_INIT void StorageManagement::initialize(bool force_pio, bool poll)
+UNMAP_AFTER_INIT void StorageManagement::initialize(bool poll)
 {
     VERIFY(s_storage_device_minor_number == 0);
-    if (PCI::Access::is_disabled()) {
-#if ARCH(X86_64)
-        // Note: If PCI is disabled, we assume that at least we have an ISA IDE controller
-        // to probe and use
-        auto isa_ide_controller = MUST(ISAIDEController::initialize());
-        m_controllers.append(isa_ide_controller);
-#endif
-    } else {
-        enumerate_pci_controllers(force_pio, poll);
+    if (!PCI::Access::is_disabled()) {
+        enumerate_pci_controllers(poll);
     }
 
-#if ARCH(AARCH64)
-    auto& rpi_sdhc = RPi::SDHostController::the();
-    if (auto maybe_error = rpi_sdhc.initialize(); maybe_error.is_error()) {
-        dmesgln("Unable to initialize RaspberryPi's SD Host Controller: {}", maybe_error.error());
-    } else {
-        m_controllers.append(rpi_sdhc);
+    for (auto& recipe : *s_recipes) {
+        auto device_or_error = recipe.create_device();
+        if (device_or_error.is_error()) {
+            dmesgln("StorageManagement: Failed to create storage controller for device \"{}\" with driver {}: {}", recipe.node_name, recipe.driver_name, device_or_error.release_error());
+            continue;
+        }
+
+        m_controllers.append(device_or_error.release_value());
     }
-#endif
 
     enumerate_storage_devices();
     enumerate_disk_partitions();
@@ -512,5 +516,4 @@ StorageManagement& StorageManagement::the()
 {
     return *s_the;
 }
-
 }

@@ -1,5 +1,55 @@
--webkit-appearance: auto
+-webkit-text-fill-color: rgb(0, 0, 0)
 accent-color: auto
+border-collapse: separate
+border-spacing: 0px
+caption-side: top
+clip-rule: nonzero
+color: rgb(0, 0, 0)
+cursor: auto
+direction: ltr
+fill: rgb(0, 0, 0)
+fill-opacity: 1
+fill-rule: nonzero
+font-family: serif
+font-feature-settings: normal
+font-language-override: normal
+font-size: 16px
+font-style: normal
+font-variant: normal
+font-variation-settings: normal
+font-weight: 400
+font-width: normal
+image-rendering: auto
+letter-spacing: normal
+line-height: normal
+list-style-image: none
+list-style-position: outside
+list-style-type: disc
+math-depth: 0
+math-shift: normal
+math-style: normal
+pointer-events: auto
+quotes: auto
+stroke: none
+stroke-linecap: butt
+stroke-linejoin: miter
+stroke-miterlimit: 4
+stroke-opacity: 1
+stroke-width: 1px
+tab-size: 8
+text-align: start
+text-anchor: start
+text-decoration-line: none
+text-indent: 0px
+text-justify: auto
+text-shadow: none
+text-transform: none
+visibility: visible
+white-space: normal
+word-break: normal
+word-spacing: normal
+word-wrap: normal
+writing-mode: horizontal-tb
 align-content: normal
 align-items: normal
 align-self: auto
@@ -28,14 +78,12 @@ border-bottom-left-radius: 0px
 border-bottom-right-radius: 0px
 border-bottom-style: none
 border-bottom-width: medium
-border-collapse: separate
 border-left-color: rgb(0, 0, 0)
 border-left-style: none
 border-left-width: medium
 border-right-color: rgb(0, 0, 0)
 border-right-style: none
 border-right-width: medium
-border-spacing: 0px
 border-top-color: rgb(0, 0, 0)
 border-top-left-radius: 0px
 border-top-right-radius: 0px
@@ -44,47 +92,39 @@ border-top-width: medium
 bottom: auto
 box-shadow: none
 box-sizing: content-box
-caption-side: top
 clear: none
 clip: auto
-color: rgb(0, 0, 0)
+clip-path: none
 column-count: auto
 column-gap: auto
+column-span: none
+column-width: auto
 content: normal
-cursor: auto
+content-visibility: visible
+counter-increment: none
+counter-reset: none
+counter-set: none
 cx: 0px
 cy: 0px
-direction: ltr
 display: block
-fill: rgb(0, 0, 0)
-fill-opacity: 1
-fill-rule: nonzero
+filter: none
 flex-basis: auto
 flex-direction: row
 flex-grow: 0
 flex-shrink: 1
 flex-wrap: nowrap
 float: none
-font-family: serif
-font-size: 16px
-font-stretch: normal
-font-style: normal
-font-variant: normal
-font-weight: 400
 grid-auto-columns: auto
 grid-auto-flow: row
 grid-auto-rows: auto
 grid-column-end: auto
-grid-column-gap: auto
 grid-column-start: auto
 grid-row-end: auto
-grid-row-gap: auto
 grid-row-start: auto
-grid-template-areas: 
-grid-template-columns: 
-grid-template-rows: 
-height: 1445px
-image-rendering: auto
+grid-template-areas: none
+grid-template-columns: auto
+grid-template-rows: auto
+height: 2142px
 inline-size: auto
 inset-block-end: auto
 inset-block-start: auto
@@ -94,11 +134,6 @@ justify-content: normal
 justify-items: legacy
 justify-self: auto
 left: auto
-letter-spacing: normal
-line-height: normal
-list-style-image: none
-list-style-position: outside
-list-style-type: disc
 margin-block-end: 8px
 margin-block-start: 8px
 margin-bottom: 8px
@@ -109,9 +144,6 @@ margin-right: 8px
 margin-top: 8px
 mask: none
 mask-type: luminance
-math-depth: 0
-math-shift: normal
-math-style: normal
 max-height: none
 max-inline-size: none
 max-width: none
@@ -136,43 +168,34 @@ padding-inline-start: 0px
 padding-left: 0px
 padding-right: 0px
 padding-top: 0px
-pointer-events: auto
 position: static
-quotes: auto
 r: 0px
 right: auto
+rotate: none
 row-gap: auto
 rx: auto
 ry: auto
+scrollbar-gutter: auto
 scrollbar-width: auto
 stop-color: rgb(0, 0, 0)
 stop-opacity: 1
-stroke: none
-stroke-opacity: 1
-stroke-width: 1px
 table-layout: auto
-text-align: left
-text-anchor: start
 text-decoration-color: rgb(0, 0, 0)
-text-decoration-line: none
 text-decoration-style: solid
 text-decoration-thickness: auto
-text-indent: 0px
-text-justify: auto
-text-shadow: none
-text-transform: none
+text-overflow: clip
 top: auto
 transform: none
 transform-box: view-box
 transform-origin: 50% 50%
 transition-delay: 0s
+transition-duration: 0s
+transition-property: all
+transition-timing-function: ease
+unicode-bidi: normal
 user-select: auto
 vertical-align: baseline
-visibility: visible
-white-space: normal
-width: auto
-word-spacing: normal
-word-wrap: normal
+width: 784px
 x: 0px
 y: 0px
 z-index: auto

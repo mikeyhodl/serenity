@@ -11,6 +11,8 @@
 #include <AK/Vector.h>
 #include <LibCompress/Zlib.h>
 #include <LibGfx/ImageFormats/PNGLoader.h>
+#include <LibGfx/ImageFormats/TIFFLoader.h>
+#include <LibGfx/ImageFormats/TIFFMetadata.h>
 #include <LibGfx/Painter.h>
 
 namespace Gfx {
@@ -197,6 +199,8 @@ struct PNGLoadingContext {
     Optional<EmbeddedICCProfile> embedded_icc_profile;
     Optional<ByteBuffer> decompressed_icc_profile;
     Optional<RenderingIntent> sRGB_rendering_intent;
+
+    OwnPtr<ExifMetadata> exif_metadata;
 
     Checked<int> compute_row_size_for_width(int width)
     {
@@ -621,6 +625,8 @@ static bool decode_png_image_data_chunk(PNGLoadingContext& context)
     while (!streamer.at_end() && !context.has_seen_iend) {
         if (auto result = process_chunk(streamer, context); result.is_error()) {
             context.state = PNGLoadingContext::State::Error;
+            // FIXME: Return this to caller instead of logging it.
+            dbgln("PNGLoader: Error processing chunk: {}", result.error());
             return false;
         }
 
@@ -649,6 +655,8 @@ static bool decode_png_animation_data_chunks(PNGLoadingContext& context, u32 req
     Streamer streamer(context.data_current_ptr, data_remaining);
     while (!streamer.at_end() && !context.has_seen_iend) {
         if (auto result = process_chunk(streamer, context); result.is_error()) {
+            // FIXME: Return this to caller instead of logging it.
+            dbgln("PNGLoader: Error processing chunk: {}", result.error());
             context.state = PNGLoadingContext::State::Error;
             return false;
         }
@@ -1118,8 +1126,10 @@ static ErrorOr<void> process_fcTL(ReadonlyBytes data, PNGLoadingContext& context
         return Error::from_string_literal("fcTL chunk has an abnormal size");
 
     auto const& fcTL = *bit_cast<fcTL_Chunk* const>(data.data());
-    if (fcTL.sequence_number != context.animation_next_expected_seq)
+    if (fcTL.sequence_number != context.animation_next_expected_seq) {
+        dbgln_if(PNG_DEBUG, "Expected fcTL sequence number: {}, got: {}", context.animation_next_expected_seq, fcTL.sequence_number);
         return Error::from_string_literal("Unexpected sequence number");
+    }
 
     context.animation_next_expected_seq++;
 
@@ -1156,8 +1166,10 @@ static ErrorOr<void> process_fdAT(ReadonlyBytes data, PNGLoadingContext& context
         return Error::from_string_literal("fdAT chunk has an abnormal size");
 
     u32 sequence_number = *bit_cast<NetworkOrdered<u32> const*>(data.data());
-    if (sequence_number != context.animation_next_expected_seq)
+    if (sequence_number != context.animation_next_expected_seq) {
+        dbgln_if(PNG_DEBUG, "Expected fdAT sequence number: {}, got: {}", context.animation_next_expected_seq, sequence_number);
         return Error::from_string_literal("Unexpected sequence number");
+    }
     context.animation_next_expected_seq++;
 
     if (context.animation_frames.is_empty())
@@ -1165,6 +1177,12 @@ static ErrorOr<void> process_fdAT(ReadonlyBytes data, PNGLoadingContext& context
     auto& current_animation_frame = context.animation_frames[context.animation_frames.size() - 1];
     auto compressed_data = data.slice(4);
     current_animation_frame.compressed_data.append(compressed_data.data(), compressed_data.size());
+    return {};
+}
+
+static ErrorOr<void> process_eXIf(ReadonlyBytes bytes, PNGLoadingContext& context)
+{
+    context.exif_metadata = TRY(TIFFImageDecoderPlugin::read_exif_metadata(bytes));
     return {};
 }
 
@@ -1235,6 +1253,8 @@ static ErrorOr<void> process_chunk(Streamer& streamer, PNGLoadingContext& contex
         return process_fcTL(chunk_data, context);
     if (chunk_type == "fdAT"sv)
         return process_fdAT(chunk_data, context);
+    if (chunk_type == "eXIf"sv)
+        return process_eXIf(chunk_data, context);
     if (chunk_type == "IEND"sv)
         process_IEND(chunk_data, context);
     return {};
@@ -1436,6 +1456,13 @@ ErrorOr<ImageFrameDescriptor> PNGImageDecoderPlugin::frame(size_t index, Optiona
     ImageFrameDescriptor descriptor { animation_frame.bitmap };
     set_descriptor_duration(descriptor, animation_frame);
     return descriptor;
+}
+
+Optional<Metadata const&> PNGImageDecoderPlugin::metadata()
+{
+    if (m_context->exif_metadata)
+        return *m_context->exif_metadata;
+    return OptionalNone {};
 }
 
 ErrorOr<Optional<ReadonlyBytes>> PNGImageDecoderPlugin::icc_data()

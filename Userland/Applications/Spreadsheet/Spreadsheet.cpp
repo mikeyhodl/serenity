@@ -167,7 +167,7 @@ JS::ThrowCompletionOr<JS::Value> Sheet::evaluate(StringView source, Cell* on_beh
         name);
 
     if (script_or_error.is_error())
-        return vm().throw_completion<JS::SyntaxError>(TRY_OR_THROW_OOM(vm(), script_or_error.error().first().to_string()));
+        return vm().throw_completion<JS::SyntaxError>(script_or_error.error().first().to_string());
 
     return vm().bytecode_interpreter().run(script_or_error.value());
 }
@@ -265,7 +265,7 @@ Optional<Position> Sheet::position_from_url(const URL::URL& url) const
     }
 
     // FIXME: Figure out a way to do this cross-process.
-    VERIFY(url.serialize_path() == ByteString::formatted("/{}", getpid()));
+    VERIFY(URL::percent_decode(url.serialize_path()) == ByteString::formatted("/{}", getpid()));
 
     return parse_cell_name(url.fragment().value_or(String {}));
 }
@@ -455,7 +455,7 @@ RefPtr<Sheet> Sheet::from_json(JsonObject const& object, Workbook& workbook)
             auto conditional_formats = obj.get_array("conditional_formats"sv);
             auto cformats = cell->conditional_formats();
             if (conditional_formats.has_value()) {
-                conditional_formats->for_each([&](const auto& fmt_val) {
+                conditional_formats->for_each([&](auto const& fmt_val) {
                     if (!fmt_val.is_object())
                         return IterationDecision::Continue;
 

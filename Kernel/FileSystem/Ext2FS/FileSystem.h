@@ -10,6 +10,7 @@
 #include <AK/HashMap.h>
 #include <Kernel/FileSystem/BlockBasedFileSystem.h>
 #include <Kernel/FileSystem/Ext2FS/Definitions.h>
+#include <Kernel/FileSystem/FileSystemSpecificOption.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/Library/KBuffer.h>
 #include <Kernel/UnixTypes.h>
@@ -37,7 +38,7 @@ public:
     };
     AK_ENUM_BITWISE_FRIEND_OPERATORS(FeaturesReadOnly);
 
-    static ErrorOr<NonnullRefPtr<FileSystem>> try_create(OpenFileDescription&, ReadonlyBytes);
+    static ErrorOr<NonnullRefPtr<FileSystem>> try_create(OpenFileDescription&, FileSystemSpecificOptions const&);
 
     virtual ~Ext2FS() override;
 
@@ -49,13 +50,19 @@ public:
     virtual bool supports_watchers() const override { return true; }
     virtual bool supports_backing_loop_devices() const override { return true; }
 
+    virtual ErrorOr<void> rename(Inode& old_parent_inode, StringView old_basename, Inode& new_parent_inode, StringView new_basename) override;
+
     virtual u8 internal_file_type_to_directory_entry_type(DirectoryEntryView const& entry) const override;
 
     FeaturesOptional get_features_optional() const;
     FeaturesReadOnly get_features_readonly() const;
 
+    u32 i_blocks_increment() { return m_i_blocks_increment; }
+
     virtual StringView class_name() const override { return "Ext2FS"sv; }
     virtual Inode& root_inode() override;
+
+    using BlockList = HashMap<BlockBasedFileSystem::BlockIndex, BlockBasedFileSystem::BlockIndex>;
 
 private:
     AK_TYPEDEF_DISTINCT_ORDERED_ID(unsigned, GroupIndex);
@@ -74,7 +81,10 @@ private:
 
     ErrorOr<NonnullRefPtr<Ext2FSInode>> build_root_inode() const;
 
-    ErrorOr<void> write_ext2_inode(InodeIndex, ext2_inode const&);
+    // NOTE: The large Ext2 inode structure is strictly superset of the classic 128-byte inode structure,
+    // so the this function simply ignores all the extra data if the filesystem doesn't support large inodes.
+    ErrorOr<void> write_ext2_inode(InodeIndex, ext2_inode_large const&);
+
     bool find_block_containing_inode(InodeIndex, BlockIndex& block_index, unsigned& offset) const;
 
     ErrorOr<void> flush_super_block();
@@ -103,17 +113,8 @@ private:
     void uncache_inode(InodeIndex);
     ErrorOr<void> free_inode(Ext2FSInode&);
 
-    struct BlockListShape {
-        unsigned direct_blocks { 0 };
-        unsigned indirect_blocks { 0 };
-        unsigned doubly_indirect_blocks { 0 };
-        unsigned triply_indirect_blocks { 0 };
-        unsigned meta_blocks { 0 };
-    };
-
-    BlockListShape compute_block_list_shape(unsigned blocks) const;
-
     u64 m_block_group_count { 0 };
+    u32 m_i_blocks_increment { 0 };
 
     mutable ext2_super_block m_super_block {};
     mutable OwnPtr<KBuffer> m_cached_group_descriptor_table;

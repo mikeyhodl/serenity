@@ -6,7 +6,7 @@
  */
 
 #include "Debugger.h"
-#include <LibDebug/StackFrameUtils.h>
+#include <AK/StackUnwinder.h>
 
 namespace HackStudio {
 
@@ -187,7 +187,7 @@ int Debugger::debugger_loop(Debug::DebugSession::DesiredInitialDebugeeState init
         }
         remove_temporary_breakpoints();
         VERIFY(optional_regs.has_value());
-        const PtraceRegisters& regs = optional_regs.value();
+        PtraceRegisters const& regs = optional_regs.value();
 
         auto source_position = m_debug_session->get_source_position(regs.ip());
         if (!source_position.has_value())
@@ -313,10 +313,23 @@ void Debugger::do_step_over(PtraceRegisters const& regs)
 
 void Debugger::insert_temporary_breakpoint_at_return_address(PtraceRegisters const& regs)
 {
-    auto frame_info = Debug::StackFrameUtils::get_info(*m_debug_session, regs.bp());
-    VERIFY(frame_info.has_value());
-    FlatPtr return_address = frame_info.value().return_address;
-    insert_temporary_breakpoint(return_address);
+    Optional<FlatPtr> return_address;
+    MUST(AK::unwind_stack_from_frame_pointer(
+        regs.bp(),
+        [this](FlatPtr address) -> ErrorOr<FlatPtr> {
+            auto maybe_value = m_debug_session->peek(address);
+            if (!maybe_value.has_value())
+                return EFAULT;
+
+            return maybe_value.value();
+        },
+        [&return_address](AK::StackFrame stack_frame) -> ErrorOr<IterationDecision> {
+            return_address = stack_frame.return_address;
+            return IterationDecision::Break;
+        }));
+
+    VERIFY(return_address.has_value());
+    insert_temporary_breakpoint(return_address.value());
 }
 
 void Debugger::insert_temporary_breakpoint(FlatPtr address)

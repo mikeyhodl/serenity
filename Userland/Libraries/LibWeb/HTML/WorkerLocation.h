@@ -24,13 +24,14 @@ public:
     WebIDL::ExceptionOr<String> host() const;
     WebIDL::ExceptionOr<String> hostname() const;
     WebIDL::ExceptionOr<String> port() const;
-    WebIDL::ExceptionOr<String> pathname() const;
+    String pathname() const;
     WebIDL::ExceptionOr<String> search() const;
     WebIDL::ExceptionOr<String> hash() const;
 
 private:
     explicit WorkerLocation(WorkerGlobalScope&);
 
+    virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
     JS::NonnullGCPtr<WorkerGlobalScope> m_global_scope;

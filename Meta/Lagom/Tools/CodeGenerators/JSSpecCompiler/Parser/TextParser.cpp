@@ -644,14 +644,14 @@ TextParseErrorOr<Tree> TextParser::parse_step_with_substeps(Tree substeps)
 }
 
 // <qualified_name> :== <word> (. <word>)*
-TextParseErrorOr<Vector<StringView>> TextParser::parse_qualified_name()
+TextParseErrorOr<QualifiedName> TextParser::parse_qualified_name()
 {
     Vector<StringView> qualified_name;
     qualified_name.append(TRY(consume_token_with_type(TokenType::Word)).data);
     while (true) {
         auto token_or_error = consume_token_with_type(TokenType::MemberAccess);
         if (token_or_error.is_error())
-            return qualified_name;
+            return QualifiedName { qualified_name };
         qualified_name.append(TRY(consume_token_with_type(TokenType::Word)).data);
     }
 }
@@ -702,12 +702,14 @@ TextParseErrorOr<Vector<FunctionArgument>> TextParser::parse_function_arguments_
 }
 
 // <ao_declaration> :== <word> <function_arguments> $
-TextParseErrorOr<ClauseHeader::AbstractOperation> TextParser::parse_abstract_operation_declaration()
+TextParseErrorOr<AbstractOperationDeclaration> TextParser::parse_abstract_operation_declaration()
 {
     auto rollback = rollback_point();
 
-    ClauseHeader::AbstractOperation function_definition;
-    function_definition.name = TRY(consume_token_with_type(TokenType::Word)).data;
+    auto name = TRY(consume_token_with_type(TokenType::Word)).data;
+
+    AbstractOperationDeclaration function_definition;
+    function_definition.name = MUST(FlyString::from_utf8(name));
     function_definition.arguments = TRY(parse_function_arguments_in_declaration());
     TRY(expect_eof());
 
@@ -716,25 +718,66 @@ TextParseErrorOr<ClauseHeader::AbstractOperation> TextParser::parse_abstract_ope
 }
 
 // <accessor_declaration> :== get <qualified_name> $
-TextParseErrorOr<ClauseHeader::Accessor> TextParser::parse_accessor_declaration()
+TextParseErrorOr<AccessorDeclaration> TextParser::parse_accessor_declaration()
 {
     auto rollback = rollback_point();
 
     TRY(consume_word("get"sv));
-    ClauseHeader::Accessor accessor;
-    accessor.qualified_name = TRY(parse_qualified_name());
+    AccessorDeclaration accessor;
+    accessor.name = TRY(parse_qualified_name());
     TRY(expect_eof());
 
     rollback.disarm();
     return accessor;
 }
 
-TextParseErrorOr<ClauseHeader::Method> TextParser::parse_method_declaration()
+// <properties_list_declaration> :== | Properties of the <qualified_name> Prototype Object $
+//                                   | Properties of the <qualified_name> Constructor $
+//                                   | Properties of <qualified_name> Instances $
+//                                   | The <qualified_name> Constructor $
+TextParseErrorOr<ClauseHeader::PropertiesList> TextParser::parse_properties_list_declaration()
 {
     auto rollback = rollback_point();
 
-    ClauseHeader::Method method;
-    method.qualified_name = TRY(parse_qualified_name());
+    ClauseHeader::PropertiesList properties_list;
+
+    if (!consume_word("The"sv).is_error()) {
+        properties_list.name = TRY(parse_qualified_name());
+        properties_list.object_type = ClauseHeader::ObjectType::Constructor;
+        TRY(consume_word("Constructor"sv));
+    } else {
+        TRY(consume_words({ "Properties"sv, "of"sv }));
+
+        bool has_the = !consume_word("the"sv).is_error();
+
+        properties_list.name = TRY(parse_qualified_name());
+
+        if (!has_the) {
+            TRY(consume_word("Instances"sv));
+            properties_list.object_type = ClauseHeader::ObjectType::Instance;
+        } else {
+            if (consume_word("Prototype"sv).is_error()) {
+                TRY(consume_word("Constructor"sv));
+                properties_list.object_type = ClauseHeader::ObjectType::Constructor;
+            } else {
+                TRY(consume_word("Object"sv));
+                properties_list.object_type = ClauseHeader::ObjectType::Prototype;
+            }
+        }
+    }
+
+    TRY(expect_eof());
+
+    rollback.disarm();
+    return properties_list;
+}
+
+TextParseErrorOr<MethodDeclaration> TextParser::parse_method_declaration()
+{
+    auto rollback = rollback_point();
+
+    MethodDeclaration method;
+    method.name = TRY(parse_qualified_name());
     method.arguments = TRY(parse_function_arguments_in_declaration());
     TRY(expect_eof());
 
@@ -761,6 +804,9 @@ TextParseErrorOr<ClauseHeader> TextParser::parse_clause_header(ClauseHasAoidAttr
             return result;
         } else if (auto method = parse_method_declaration(); !method.is_error()) {
             result.header = method.release_value();
+            return result;
+        } else if (auto properties_list = parse_properties_list_declaration(); !properties_list.is_error()) {
+            result.header = properties_list.release_value();
             return result;
         }
     }

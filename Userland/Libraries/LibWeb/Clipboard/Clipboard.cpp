@@ -6,6 +6,7 @@
 
 #include <LibJS/Runtime/Realm.h>
 #include <LibTextCodec/Decoder.h>
+#include <LibWeb/Bindings/ClipboardPrototype.h>
 #include <LibWeb/Bindings/HostDefined.h>
 #include <LibWeb/Clipboard/Clipboard.h>
 #include <LibWeb/FileAPI/Blob.h>
@@ -43,7 +44,7 @@ void Clipboard::initialize(JS::Realm& realm)
 static String os_specific_well_known_format(StringView mime_type_string)
 {
     // NOTE: Here we always takes the Linux case, and defer to the chrome layer to handle OS specific implementations.
-    auto mime_type = MUST(MimeSniff::MimeType::parse(mime_type_string));
+    auto mime_type = MimeSniff::MimeType::parse(mime_type_string);
 
     // 1. Let wellKnownFormat be an empty string.
     String well_known_format {};
@@ -110,7 +111,7 @@ static void write_blobs_and_option_to_clipboard(JS::Realm& realm, ReadonlySpan<J
 
         // 3. Let payload be the result of UTF-8 decoding item’s underlying byte sequence.
         auto decoder = TextCodec::decoder_for("UTF-8"sv);
-        auto payload = MUST(TextCodec::convert_input_to_utf8_using_given_decoder_unless_there_is_a_byte_order_mark(*decoder, item->bytes()));
+        auto payload = MUST(TextCodec::convert_input_to_utf8_using_given_decoder_unless_there_is_a_byte_order_mark(*decoder, item->raw_bytes()));
 
         // 4. Insert payload and presentationStyle into the system clipboard using formatString as the native clipboard format.
         window.page().client().page_did_insert_clipboard_entry(move(payload), move(presentation_style), move(format_string));
@@ -158,17 +159,17 @@ JS::NonnullGCPtr<JS::Promise> Clipboard::write_text(String data)
         if (!result) {
             // 1. Queue a global task on the permission task source, given realm’s global object, to reject p with
             //    "NotAllowedError" DOMException in realm.
-            queue_global_task(HTML::Task::Source::Permissions, realm.global_object(), [&realm, promise]() mutable {
+            queue_global_task(HTML::Task::Source::Permissions, realm.global_object(), JS::create_heap_function(realm.heap(), [&realm, promise]() mutable {
                 HTML::TemporaryExecutionContext execution_context { Bindings::host_defined_environment_settings_object(realm) };
-                WebIDL::reject_promise(realm, promise, WebIDL::NotAllowedError::create(realm, "Clipboard writing is only allowed through user activation"_fly_string));
-            });
+                WebIDL::reject_promise(realm, promise, WebIDL::NotAllowedError::create(realm, "Clipboard writing is only allowed through user activation"_string));
+            }));
 
             // 2. Abort these steps.
             return;
         }
 
         // 1. Queue a global task on the clipboard task source, given realm’s global object, to perform the below steps:
-        queue_global_task(HTML::Task::Source::Clipboard, realm.global_object(), [&realm, promise, data = move(data)]() mutable {
+        queue_global_task(HTML::Task::Source::Clipboard, realm.global_object(), JS::create_heap_function(realm.heap(), [&realm, promise, data = move(data)]() mutable {
             // 1. Let itemList be an empty sequence<Blob>.
             Vector<JS::NonnullGCPtr<FileAPI::Blob>> item_list;
 
@@ -189,7 +190,7 @@ JS::NonnullGCPtr<JS::Promise> Clipboard::write_text(String data)
             // 6. Resolve p.
             HTML::TemporaryExecutionContext execution_context { Bindings::host_defined_environment_settings_object(realm) };
             WebIDL::resolve_promise(realm, promise, JS::js_undefined());
-        });
+        }));
     });
 
     // 4. Return p.

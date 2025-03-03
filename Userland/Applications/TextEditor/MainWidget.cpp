@@ -8,7 +8,6 @@
 #include "MainWidget.h"
 #include <AK/Optional.h>
 #include <AK/StringBuilder.h>
-#include <Applications/TextEditor/TextEditorWindowGML.h>
 #include <LibCMake/CMakeCache/SyntaxHighlighter.h>
 #include <LibCMake/SyntaxHighlighter.h>
 #include <LibConfig/Client.h>
@@ -40,18 +39,16 @@
 #include <LibMarkdown/Document.h>
 #include <LibMarkdown/SyntaxHighlighter.h>
 #include <LibSQL/AST/SyntaxHighlighter.h>
+#include <LibShell/SyntaxHighlighter.h>
 #include <LibURL/URL.h>
 #include <LibWeb/CSS/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWebView/OutOfProcessWebView.h>
-#include <Shell/SyntaxHighlighter.h>
 
 namespace TextEditor {
 
-MainWidget::MainWidget()
+ErrorOr<void> MainWidget::initialize()
 {
-    load_from_gml(text_editor_window_gml).release_value_but_fixme_should_propagate_errors();
-
     m_toolbar = *find_descendant_of_type_named<GUI::Toolbar>("toolbar");
     m_toolbar_container = *find_descendant_of_type_named<GUI::ToolbarContainer>("toolbar_container");
 
@@ -337,6 +334,8 @@ MainWidget::MainWidget()
 
     m_toolbar->add_action(m_editor->undo_action());
     m_toolbar->add_action(m_editor->redo_action());
+
+    return {};
 }
 
 WebView::OutOfProcessWebView& MainWidget::ensure_web_view()
@@ -836,8 +835,7 @@ bool MainWidget::request_close()
 
 void MainWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -857,7 +855,7 @@ void MainWidget::drop_event(GUI::DropEvent& event)
         if (!request_close())
             return;
 
-        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window(), urls.first().serialize_path());
+        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window(), URL::percent_decode(urls.first().serialize_path()));
         if (response.is_error())
             return;
         if (auto result = read_file(response.value().filename(), response.value().stream()); result.is_error())
@@ -912,18 +910,16 @@ void MainWidget::update_markdown_preview()
 {
     auto document = Markdown::Document::parse(m_editor->text());
     if (document) {
+        // FIXME: Retain original scroll after loading new preview
         auto html = document->render_to_html();
-        auto current_scroll_pos = m_page_view->visible_content_rect();
         m_page_view->load_html(html);
-        m_page_view->scroll_into_view(current_scroll_pos, true, true);
     }
 }
 
 void MainWidget::update_html_preview()
 {
-    auto current_scroll_pos = m_page_view->visible_content_rect();
+    // FIXME: Retain original scroll after loading new preview
     m_page_view->load_html(m_editor->text());
-    m_page_view->scroll_into_view(current_scroll_pos, true, true);
 }
 
 void MainWidget::update_statusbar()

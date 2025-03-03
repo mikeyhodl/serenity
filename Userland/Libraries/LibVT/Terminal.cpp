@@ -35,7 +35,9 @@ void Terminal::clear()
     for (size_t i = 0; i < rows(); ++i)
         active_buffer()[i]->clear();
     set_cursor(0, 0);
-    m_client.terminal_did_perform_possibly_partial_clear();
+
+    if (!m_use_alternate_screen_buffer)
+        m_client.terminal_did_perform_possibly_partial_clear();
 }
 
 void Terminal::clear_history()
@@ -300,6 +302,9 @@ void Terminal::SGR(Parameters params)
             case 7:
                 m_current_state.attribute.flags |= Attribute::Flags::Negative;
                 break;
+            case 8:
+                m_current_state.attribute.flags |= Attribute::Flags::Concealed;
+                break;
             case 22:
                 m_current_state.attribute.flags &= ~Attribute::Flags::Bold;
                 break;
@@ -314,6 +319,9 @@ void Terminal::SGR(Parameters params)
                 break;
             case 27:
                 m_current_state.attribute.flags &= ~Attribute::Flags::Negative;
+                break;
+            case 28:
+                m_current_state.attribute.flags &= ~Attribute::Flags::Concealed;
                 break;
             case 30:
             case 31:

@@ -14,17 +14,20 @@ void WebWorkerClient::die()
     // FIXME: Notify WorkerAgent that the worker is ded
 }
 
+void WebWorkerClient::did_close_worker()
+{
+    if (on_worker_close)
+        on_worker_close();
+}
+
 WebWorkerClient::WebWorkerClient(NonnullOwnPtr<Core::LocalSocket> socket)
     : IPC::ConnectionToServer<WebWorkerClientEndpoint, WebWorkerServerEndpoint>(*this, move(socket))
 {
 }
 
-WebView::SocketPair WebWorkerClient::dup_sockets()
+IPC::File WebWorkerClient::dup_socket()
 {
-    WebView::SocketPair pair;
-    pair.socket = MUST(Core::System::dup(socket().fd().value()));
-    pair.fd_passing_socket = MUST(Core::System::dup(fd_passing_socket().fd().value()));
-    return pair;
+    return MUST(IPC::File::clone_fd(socket().fd().value()));
 }
 
 }

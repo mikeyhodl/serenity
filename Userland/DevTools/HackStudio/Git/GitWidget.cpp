@@ -43,11 +43,11 @@ GitWidget::GitWidget()
         [this](auto const& file) { stage_file(file); },
         Gfx::Bitmap::load_from_file("/res/icons/16x16/plus.png"sv).release_value_but_fixme_should_propagate_errors());
     m_unstaged_files->on_selection_change = [this] {
-        const auto& index = m_unstaged_files->selection().first();
+        auto const& index = m_unstaged_files->selection().first();
         if (!index.is_valid())
             return;
 
-        const auto& selected = index.data().as_string();
+        auto const& selected = index.data().as_string();
         show_diff(selected);
     };
 
@@ -159,13 +159,13 @@ void GitWidget::show_diff(ByteString const& file_path)
     if (!m_git_repo->is_tracked(file_path)) {
         auto file = Core::File::open(file_path, Core::File::OpenMode::Read).release_value_but_fixme_should_propagate_errors();
         auto content = file->read_until_eof().release_value_but_fixme_should_propagate_errors();
-        m_view_diff_callback("", Diff::generate_only_additions(content));
+        m_view_diff_callback("", Diff::generate_only_additions(content), file_path);
         return;
     }
     auto const& original_content = m_git_repo->original_file_content(file_path);
     auto const& diff = m_git_repo->unstaged_diff(file_path);
     VERIFY(original_content.has_value() && diff.has_value());
-    m_view_diff_callback(original_content.value(), diff.value());
+    m_view_diff_callback(original_content.value(), diff.value(), file_path);
 }
 
 void GitWidget::change_repo(ByteString const& repo_root)

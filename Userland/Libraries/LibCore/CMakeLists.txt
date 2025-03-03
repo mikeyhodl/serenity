@@ -1,42 +1,69 @@
+# These are the minimal set of sources needed to build the code generators. We separate them to allow
+# LibCore to depend on generated sources.
 set(SOURCES
-    AnonymousBuffer.cpp
     ArgsParser.cpp
-    Command.cpp
     ConfigFile.cpp
-    DateTime.cpp
     Directory.cpp
     DirectoryEntry.cpp
     DirIterator.cpp
-    ElapsedTimer.cpp
     Environment.cpp
+    File.cpp
+    SessionManagement.cpp
+    StandardPaths.cpp
+    System.cpp
+    Version.cpp
+)
+
+serenity_lib(LibCoreMinimal coreminimal)
+target_link_libraries(LibCoreMinimal PRIVATE LibSystem)
+
+if (NOT BUILD_LAGOM AND NOT SERENITYOS)
+    return()
+endif()
+
+if (SERENITYOS)
+    add_library(DynamicLoader_LibCoreArgsParser 
+        ArgsParser.cpp
+        Version.cpp)
+    target_link_libraries(DynamicLoader_LibCoreArgsParser PUBLIC DynamicLoader_CompileOptions)
+endif()
+
+# These are the minimal set of sources needed to build LibLine and LibShellMinimal. We separate them to allow
+# LibLine and LibShellMinimal to build without LibURL being included.
+set(SOURCES
+    DateTime.cpp
+    ElapsedTimer.cpp
     Event.cpp
     EventLoop.cpp
     EventLoopImplementation.cpp
     EventLoopImplementationUnix.cpp
     EventReceiver.cpp
-    File.cpp
+    ThreadEventQueue.cpp
+    Timer.cpp
+    Notifier.cpp
+)
+
+serenity_lib(LibCoreBasic corebasic)
+target_link_libraries(LibCoreBasic PRIVATE LibCoreMinimal LibTimeZone)
+
+set(SOURCES
+    AnonymousBuffer.cpp
+    Command.cpp
     LockFile.cpp
     MappedFile.cpp
     MimeData.cpp
     NetworkJob.cpp
-    Notifier.cpp
     Process.cpp
     ProcessStatisticsReader.cpp
     Resource.cpp
     ResourceImplementation.cpp
     ResourceImplementationFile.cpp
     SecretString.cpp
-    SessionManagement.cpp
     Socket.cpp
     SOCKSProxyClient.cpp
-    StandardPaths.cpp
-    System.cpp
     SystemServerTakeover.cpp
     TCPServer.cpp
-    ThreadEventQueue.cpp
-    Timer.cpp
     UDPServer.cpp
-    Version.cpp
 )
 if (NOT ANDROID AND NOT WIN32 AND NOT EMSCRIPTEN)
     list(APPEND SOURCES
@@ -50,19 +77,36 @@ if (NOT WIN32 AND NOT EMSCRIPTEN)
     list(APPEND SOURCES LocalServer.cpp)
 endif()
 
-# FIXME: Implement Core::FileWatcher for macOS, *BSD, and Windows.
+# FIXME: Implement Core::FileWatcher for *BSD and Windows.
 if (SERENITYOS)
-    list(APPEND SOURCES FileWatcherSerenity.cpp)
+    list(APPEND SOURCES
+        FileWatcherSerenity.cpp
+        Platform/ProcessStatisticsSerenity.cpp
+    )
 elseif (LINUX AND NOT EMSCRIPTEN)
-    list(APPEND SOURCES FileWatcherLinux.cpp)
+    list(APPEND SOURCES
+        FileWatcherLinux.cpp
+        Platform/ProcessStatisticsLinux.cpp
+    )
 elseif (APPLE AND NOT IOS)
-    list(APPEND SOURCES FileWatcherMacOS.mm)
+    list(APPEND SOURCES
+        FileWatcherMacOS.mm
+        Platform/ProcessStatisticsMach.cpp
+    )
 else()
-    list(APPEND SOURCES FileWatcherUnimplemented.cpp)
+    list(APPEND SOURCES
+        FileWatcherUnimplemented.cpp
+        Platform/ProcessStatisticsUnimplemented.cpp
+    )
+endif()
+
+if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "GNU")
+    list(APPEND SOURCES MachPort.cpp)
 endif()
 
 serenity_lib(LibCore core)
-target_link_libraries(LibCore PRIVATE LibCrypt LibSystem LibURL)
+target_link_libraries(LibCore PRIVATE LibCrypt LibSystem LibTimeZone LibURL)
+target_link_libraries(LibCore PUBLIC LibCoreMinimal LibCoreBasic)
 
 if (APPLE)
     target_link_libraries(LibCore PUBLIC "-framework CoreFoundation")

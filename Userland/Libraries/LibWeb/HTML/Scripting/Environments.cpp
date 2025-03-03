@@ -8,6 +8,7 @@
 
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/Fetch/Infrastructure/FetchRecord.h>
 #include <LibWeb/HTML/PromiseRejectionEvent.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
@@ -16,8 +17,17 @@
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/SecureContexts/AbstractOperations.h>
+#include <LibWeb/StorageAPI/StorageManager.h>
 
 namespace Web::HTML {
+
+Environment::~Environment() = default;
+
+void Environment::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(target_browsing_context);
+}
 
 EnvironmentSettingsObject::EnvironmentSettingsObject(NonnullOwnPtr<JS::ExecutionContext> realm_execution_context)
     : m_realm_execution_context(move(realm_execution_context))
@@ -42,10 +52,11 @@ void EnvironmentSettingsObject::initialize(JS::Realm& realm)
 void EnvironmentSettingsObject::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(target_browsing_context);
+    visitor.visit(m_responsible_event_loop);
     visitor.visit(m_module_map);
-    visitor.ignore(m_outstanding_rejected_promises_weak_set);
     m_realm_execution_context->visit_edges(visitor);
+    visitor.visit(m_fetch_group);
+    visitor.visit(m_storage_manager);
 }
 
 JS::ExecutionContext& EnvironmentSettingsObject::realm_execution_context()
@@ -84,8 +95,8 @@ EventLoop& EnvironmentSettingsObject::responsible_event_loop()
 
     auto& vm = global_object().vm();
     auto& event_loop = verify_cast<Bindings::WebEngineCustomData>(vm.custom_data())->event_loop;
-    m_responsible_event_loop = &event_loop;
-    return event_loop;
+    m_responsible_event_loop = event_loop;
+    return *event_loop;
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#check-if-we-can-run-script
@@ -194,89 +205,6 @@ void EnvironmentSettingsObject::clean_up_after_running_callback()
 
     // 4. Remove settings from the backup incumbent settings object stack.
     event_loop.pop_backup_incumbent_settings_object_stack({});
-}
-
-void EnvironmentSettingsObject::push_onto_outstanding_rejected_promises_weak_set(JS::Promise* promise)
-{
-    m_outstanding_rejected_promises_weak_set.append(promise);
-}
-
-bool EnvironmentSettingsObject::remove_from_outstanding_rejected_promises_weak_set(JS::Promise* promise)
-{
-    return m_outstanding_rejected_promises_weak_set.remove_first_matching([&](JS::Promise* promise_in_set) {
-        return promise == promise_in_set;
-    });
-}
-
-void EnvironmentSettingsObject::push_onto_about_to_be_notified_rejected_promises_list(JS::NonnullGCPtr<JS::Promise> promise)
-{
-    m_about_to_be_notified_rejected_promises_list.append(JS::make_handle(promise));
-}
-
-bool EnvironmentSettingsObject::remove_from_about_to_be_notified_rejected_promises_list(JS::NonnullGCPtr<JS::Promise> promise)
-{
-    return m_about_to_be_notified_rejected_promises_list.remove_first_matching([&](auto& promise_in_list) {
-        return promise == promise_in_list;
-    });
-}
-
-// https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
-void EnvironmentSettingsObject::notify_about_rejected_promises(Badge<EventLoop>)
-{
-    // 1. Let list be a copy of settings object's about-to-be-notified rejected promises list.
-    auto list = m_about_to_be_notified_rejected_promises_list;
-
-    // 2. If list is empty, return.
-    if (list.is_empty())
-        return;
-
-    // 3. Clear settings object's about-to-be-notified rejected promises list.
-    m_about_to_be_notified_rejected_promises_list.clear();
-
-    // 4. Let global be settings object's global object.
-    // We need this as an event target for the unhandledrejection event below
-    auto& global = verify_cast<DOM::EventTarget>(global_object());
-
-    // 5. Queue a global task on the DOM manipulation task source given global to run the following substep:
-    queue_global_task(Task::Source::DOMManipulation, global, [this, &global, list = move(list)] {
-        auto& realm = global.realm();
-
-        // 1. For each promise p in list:
-        for (auto const& promise : list) {
-
-            // 1. If p's [[PromiseIsHandled]] internal slot is true, continue to the next iteration of the loop.
-            if (promise->is_handled())
-                continue;
-
-            // 2. Let notHandled be the result of firing an event named unhandledrejection at global, using PromiseRejectionEvent, with the cancelable attribute initialized to true,
-            //    the promise attribute initialized to p, and the reason attribute initialized to the value of p's [[PromiseResult]] internal slot.
-            PromiseRejectionEventInit event_init {
-                {
-                    .bubbles = false,
-                    .cancelable = true,
-                    .composed = false,
-                },
-                // Sadly we can't use .promise and .reason here, as we can't use the designator on the initialization of DOM::EventInit above.
-                /* .promise = */ JS::make_handle(*promise),
-                /* .reason = */ promise->result(),
-            };
-
-            auto promise_rejection_event = PromiseRejectionEvent::create(realm, HTML::EventNames::unhandledrejection, event_init);
-
-            bool not_handled = global.dispatch_event(*promise_rejection_event);
-
-            // 3. If notHandled is false, then the promise rejection is handled. Otherwise, the promise rejection is not handled.
-
-            // 4. If p's [[PromiseIsHandled]] internal slot is false, add p to settings object's outstanding rejected promises weak set.
-            if (!promise->is_handled())
-                m_outstanding_rejected_promises_weak_set.append(*promise);
-
-            // This algorithm results in promise rejections being marked as handled or not handled. These concepts parallel handled and not handled script errors.
-            // If a rejection is still not handled after this, then the rejection may be reported to a developer console.
-            if (not_handled)
-                HTML::report_exception_to_console(promise->result(), realm, ErrorInPromise::Yes);
-        }
-    });
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-script
@@ -505,6 +433,13 @@ SerializedEnvironmentSettingsObject EnvironmentSettingsObject::serialize()
     object.cross_origin_isolated_capability = cross_origin_isolated_capability();
 
     return object;
+}
+
+JS::NonnullGCPtr<StorageAPI::StorageManager> EnvironmentSettingsObject::storage_manager()
+{
+    if (!m_storage_manager)
+        m_storage_manager = realm().heap().allocate<StorageAPI::StorageManager>(realm(), realm());
+    return *m_storage_manager;
 }
 
 }

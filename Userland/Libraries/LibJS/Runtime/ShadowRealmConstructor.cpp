@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021-2023, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2024, Shannon Booth <shannon@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -39,40 +40,32 @@ ThrowCompletionOr<Value> ShadowRealmConstructor::call()
 }
 
 // 3.2.1 ShadowRealm ( ), https://tc39.es/proposal-shadowrealm/#sec-shadowrealm
+// https://github.com/tc39/proposal-shadowrealm/pull/410
 ThrowCompletionOr<NonnullGCPtr<Object>> ShadowRealmConstructor::construct(FunctionObject& new_target)
 {
     auto& vm = this->vm();
 
-    // 3. Let realmRec be CreateRealm().
-    auto realm = MUST_OR_THROW_OOM(Realm::create(vm));
+    // 2. Let O be ? OrdinaryCreateFromConstructor(NewTarget, "%ShadowRealm.prototype%", « [[ShadowRealm]] »).
+    auto object = TRY(ordinary_create_from_constructor<ShadowRealm>(vm, new_target, &Intrinsics::shadow_realm_prototype));
 
-    // 5. Let context be a new execution context.
-    auto context = ExecutionContext::create(vm.heap());
+    // 3. Let callerContext be the running execution context.
+    // 4. Perform ? InitializeHostDefinedRealm().
+    // 5. Let innerContext be the running execution context.
+    auto inner_context = TRY(Realm::initialize_host_defined_realm(vm, nullptr, nullptr));
 
-    // 6. Set the Function of context to null.
-    context->function = nullptr;
+    // 6. Remove innerContext from the execution context stack and restore callerContext as the running execution context.
+    vm.pop_execution_context();
 
-    // 7. Set the Realm of context to realmRec.
-    context->realm = realm;
+    // 7. Let realmRec be the Realm of innerContext.
+    auto& realm_record = *inner_context->realm;
 
-    // 8. Set the ScriptOrModule of context to null.
-    // Note: This is already the default value.
+    // 8. Set O.[[ShadowRealm]] to realmRec.
+    object->set_shadow_realm(realm_record);
 
-    // 2. Let O be ? OrdinaryCreateFromConstructor(NewTarget, "%ShadowRealm.prototype%", « [[ShadowRealm]], [[ExecutionContext]] »).
-    // 4. Set O.[[ShadowRealm]] to realmRec.
-    // 9. Set O.[[ExecutionContext]] to context.
-    auto object = TRY(ordinary_create_from_constructor<ShadowRealm>(vm, new_target, &Intrinsics::shadow_realm_prototype, *realm, move(context)));
+    // 9. Perform ? HostInitializeShadowRealm(realmRec).
+    TRY(vm.host_initialize_shadow_realm(realm_record, move(inner_context), object));
 
-    // 10. Perform ? SetRealmGlobalObject(realmRec, undefined, undefined).
-    realm->set_global_object(nullptr, nullptr);
-
-    // 11. Perform ? SetDefaultGlobalBindings(O.[[ShadowRealm]]).
-    auto& global_object = set_default_global_bindings(object->shadow_realm());
-
-    // FIXME: 12. Perform ? HostInitializeShadowRealm(O.[[ShadowRealm]]).
-    global_object.initialize(object->shadow_realm());
-
-    // 13. Return O.
+    // 10. Return O.
     return object;
 }
 

@@ -47,6 +47,7 @@ struct NavigationResult {
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#navigation-api-method-tracker
 struct NavigationAPIMethodTracker final : public JS::Cell {
     JS_CELL(NavigationAPIMethodTracker, JS::Cell);
+    JS_DECLARE_ALLOCATOR(NavigationAPIMethodTracker);
 
     NavigationAPIMethodTracker(JS::NonnullGCPtr<Navigation> navigation,
         Optional<String> key,
@@ -109,7 +110,7 @@ public:
     // Abstract Operations
     bool has_entries_and_events_disabled() const;
     i64 get_the_navigation_api_entry_index(SessionHistoryEntry const&) const;
-    void abort_the_ongoing_navigation(Optional<JS::NonnullGCPtr<WebIDL::DOMException>> error = {});
+    void abort_the_ongoing_navigation(JS::GCPtr<WebIDL::DOMException> error = {});
     bool fire_a_traverse_navigate_event(JS::NonnullGCPtr<SessionHistoryEntry> destination_she, UserNavigationInvolvement = UserNavigationInvolvement::None);
     bool fire_a_push_replace_reload_navigate_event(
         Bindings::NavigationType,
@@ -190,5 +191,6 @@ private:
 };
 
 HistoryHandlingBehavior to_history_handling_behavior(Bindings::NavigationHistoryBehavior);
+Bindings::NavigationHistoryBehavior to_navigation_history_behavior(HistoryHandlingBehavior);
 
 }

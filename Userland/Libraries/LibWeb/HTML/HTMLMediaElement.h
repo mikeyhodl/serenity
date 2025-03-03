@@ -11,7 +11,6 @@
 #include <AK/Optional.h>
 #include <AK/Time.h>
 #include <AK/Variant.h>
-#include <Kernel/API/KeyCode.h>
 #include <LibGfx/Rect.h>
 #include <LibJS/Heap/MarkedVector.h>
 #include <LibJS/SafeFunction.h>
@@ -20,6 +19,7 @@
 #include <LibWeb/HTML/EventLoop/Task.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/PixelUnits.h>
+#include <LibWeb/UIEvents/KeyCode.h>
 #include <LibWeb/WebIDL/DOMException.h>
 #include <math.h>
 
@@ -40,10 +40,11 @@ public:
 
     virtual bool is_focusable() const override { return true; }
 
-    void queue_a_media_element_task(JS::SafeFunction<void()> steps);
+    // NOTE: The function is wrapped in a JS::HeapFunction immediately.
+    void queue_a_media_element_task(Function<void()>);
 
     JS::GCPtr<MediaError> error() const { return m_error; }
-    WebIDL::ExceptionOr<void> set_decoder_error(String error_message);
+    void set_decoder_error(String error_message);
 
     String const& current_src() const { return m_current_src; }
     WebIDL::ExceptionOr<void> select_resource();
@@ -58,7 +59,7 @@ public:
 
     [[nodiscard]] JS::NonnullGCPtr<TimeRanges> buffered() const;
 
-    WebIDL::ExceptionOr<Bindings::CanPlayTypeResult> can_play_type(StringView type) const;
+    Bindings::CanPlayTypeResult can_play_type(StringView type) const;
 
     enum class ReadyState : u16 {
         HaveNothing,
@@ -98,12 +99,17 @@ public:
     bool muted() const { return m_muted; }
     void set_muted(bool);
 
+    void page_mute_state_changed(Badge<Page>);
+
     double effective_media_volume() const;
 
     JS::NonnullGCPtr<AudioTrackList> audio_tracks() const { return *m_audio_tracks; }
     JS::NonnullGCPtr<VideoTrackList> video_tracks() const { return *m_video_tracks; }
+    JS::NonnullGCPtr<TextTrackList> text_tracks() const { return *m_text_tracks; }
 
-    WebIDL::ExceptionOr<void> handle_keydown(Badge<Web::EventHandler>, KeyCode);
+    JS::NonnullGCPtr<TextTrack> add_text_track(Bindings::TextTrackKind kind, String const& label, String const& language);
+
+    WebIDL::ExceptionOr<bool> handle_keydown(Badge<Web::EventHandler>, UIEvents::KeyCode, u32 modifiers);
 
     enum class MouseTrackingComponent {
         Timeline,
@@ -132,9 +138,10 @@ protected:
     HTMLMediaElement(DOM::Document&, DOM::QualifiedName);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void finalize() override;
     virtual void visit_edges(Cell::Visitor&) override;
 
-    virtual void attribute_changed(FlyString const& name, Optional<String> const& value) override;
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
     virtual void removed_from(DOM::Node*) override;
     virtual void children_changed() override;
 
@@ -158,7 +165,7 @@ private:
     Task::Source media_element_event_task_source() const { return m_media_element_event_task_source.source; }
 
     WebIDL::ExceptionOr<void> load_element();
-    WebIDL::ExceptionOr<void> fetch_resource(URL::URL const&, Function<void(String)> failure_callback);
+    WebIDL::ExceptionOr<void> fetch_resource(URL::URL const&, ESCAPING Function<void(String)> failure_callback);
     static bool verify_response(JS::NonnullGCPtr<Fetch::Infrastructure::Response>, ByteRange const&);
     WebIDL::ExceptionOr<void> process_media_data(Function<void(String)> failure_callback);
     WebIDL::ExceptionOr<void> handle_media_source_failure(Span<JS::NonnullGCPtr<WebIDL::Promise>> promises, String error_message);
@@ -193,11 +200,11 @@ private:
 
     // https://html.spec.whatwg.org/multipage/media.html#reject-pending-play-promises
     template<typename ErrorType>
-    void reject_pending_play_promises(ReadonlySpan<JS::NonnullGCPtr<WebIDL::Promise>> promises, FlyString const& message)
+    void reject_pending_play_promises(ReadonlySpan<JS::NonnullGCPtr<WebIDL::Promise>> promises, String message)
     {
         auto& realm = this->realm();
 
-        auto error = ErrorType::create(realm, message);
+        auto error = ErrorType::create(realm, move(message));
         reject_pending_play_promises(promises, error);
     }
 
@@ -239,7 +246,7 @@ private:
     double m_duration { NAN };
 
     // https://html.spec.whatwg.org/multipage/media.html#list-of-pending-play-promises
-    JS::MarkedVector<JS::NonnullGCPtr<WebIDL::Promise>> m_pending_play_promises;
+    Vector<JS::NonnullGCPtr<WebIDL::Promise>> m_pending_play_promises;
 
     // https://html.spec.whatwg.org/multipage/media.html#dom-media-paused
     bool m_paused { true };
@@ -255,6 +262,9 @@ private:
 
     // https://html.spec.whatwg.org/multipage/media.html#dom-media-videotracks
     JS::GCPtr<VideoTrackList> m_video_tracks;
+
+    // https://html.spec.whatwg.org/multipage/media.html#dom-media-texttracks
+    JS::GCPtr<TextTrackList> m_text_tracks;
 
     // https://html.spec.whatwg.org/multipage/media.html#media-data
     ByteBuffer m_media_data;

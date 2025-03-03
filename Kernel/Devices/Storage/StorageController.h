@@ -13,7 +13,7 @@
 #include <Kernel/Library/LockRefPtr.h>
 #include <Kernel/Locking/Mutex.h>
 #include <Kernel/Memory/PhysicalAddress.h>
-#include <Kernel/Memory/PhysicalPage.h>
+#include <Kernel/Memory/PhysicalRAMPage.h>
 #include <Kernel/Security/Random.h>
 #include <Kernel/Tasks/WaitQueue.h>
 
@@ -33,9 +33,6 @@ public:
     u32 hardware_relative_controller_id() const { return m_hardware_relative_controller_id; }
 
 protected:
-    virtual ErrorOr<void> reset() = 0;
-    virtual ErrorOr<void> shutdown() = 0;
-
     virtual void complete_current_request(AsyncDeviceRequest::RequestResult) = 0;
 
     explicit StorageController(u32 hardware_relative_controller_id);

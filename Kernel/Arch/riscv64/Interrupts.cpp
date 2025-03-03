@@ -13,14 +13,21 @@
 #include <Kernel/Arch/PageFault.h>
 #include <Kernel/Arch/TrapFrame.h>
 #include <Kernel/Arch/riscv64/InterruptManagement.h>
+#include <Kernel/Arch/riscv64/Timer.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
 #include <Kernel/Interrupts/SharedIRQHandler.h>
 #include <Kernel/Interrupts/UnhandledInterruptHandler.h>
+#include <Kernel/Library/StdLib.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Thread.h>
+#include <Kernel/Tasks/ThreadTracer.h>
 
 namespace Kernel {
 
+extern "C" void syscall_handler(TrapFrame const*);
+
 // FIXME: Share this array with x86_64/aarch64 somehow and consider if this really needs to use raw pointers and not OwnPtrs
-static Array<GenericInterruptHandler*, 64> s_interrupt_handlers;
+static Array<GenericInterruptHandler*, GENERIC_INTERRUPT_HANDLERS_COUNT> s_interrupt_handlers;
 
 void dump_registers(RegisterState const& regs)
 {
@@ -40,25 +47,50 @@ extern "C" void trap_handler(TrapFrame& trap_frame)
 {
     auto scause = trap_frame.regs->scause;
 
+    // We have to increment sepc for these exceptions, as we otherwise would return to the instruction causing the trap.
+    // sepc has to be incremented before interrupts are re-enabled, as code triggered by interrupts also can cause sepc to be updated.
+    if (scause == RISCV64::CSR::SCAUSE::EnvironmentCallFromUMode) {
+        trap_frame.regs->sepc += 4;
+    } else if (scause == RISCV64::CSR::SCAUSE::Breakpoint) {
+        u32 break_instruction;
+        if (!copy_from_user(&break_instruction, bit_cast<u32*>(trap_frame.regs->sepc), sizeof(break_instruction)).is_error()) {
+            // Increment sepc based on the instruction length of the breakpoint instruction.
+            if ((break_instruction & 0b11) == 0b11)
+                trap_frame.regs->sepc += 4;
+            else
+                trap_frame.regs->sepc += 2;
+        }
+    }
+
     if ((to_underlying(scause) & RISCV64::CSR::SCAUSE_INTERRUPT_MASK) != 0) {
         // Interrupt
 
         Processor::current().enter_trap(trap_frame, true);
 
-        auto interrupt_number = to_underlying(scause) & ~RISCV64::CSR::SCAUSE_INTERRUPT_MASK;
-
-        auto* handler = s_interrupt_handlers[interrupt_number];
-        VERIFY(handler);
-        handler->increment_call_count();
-        handler->handle_interrupt(*trap_frame.regs);
-        handler->eoi();
+        if (scause == RISCV64::CSR::SCAUSE::SupervisorTimerInterrupt) {
+            RISCV64::Timer::the().handle_interrupt();
+        } else if (scause == RISCV64::CSR::SCAUSE::SupervisorExternalInterrupt) {
+            for (auto& interrupt_controller : InterruptManagement::the().controllers()) {
+                u8 pending_interrupt = 0;
+                while ((pending_interrupt = interrupt_controller->pending_interrupt())) {
+                    auto* handler = s_interrupt_handlers[pending_interrupt];
+                    VERIFY(handler);
+                    handler->increment_call_count();
+                    handler->handle_interrupt();
+                    handler->eoi();
+                }
+            }
+        } else {
+            TODO_RISCV64();
+        }
 
         Processor::current().exit_trap(trap_frame);
     } else {
         // Exception
 
         Processor::current().enter_trap(trap_frame, false);
-        Processor::enable_interrupts();
+        if (trap_frame.regs->sstatus.SPIE == 1)
+            Processor::enable_interrupts();
 
         using enum RISCV64::CSR::SCAUSE;
         switch (scause) {
@@ -94,20 +126,29 @@ extern "C" void trap_handler(TrapFrame& trap_frame)
             else if (scause == StoreOrAMOPageFault)
                 fault.set_access(PageFault::Access::Write);
 
-            // FIXME: RISC-V doesn't tell you *why* a memory access failed, only the original access type (r/w/x).
-            //        So either detect the correct type by walking the page table or rewrite MM to not depend on the processor-provided reason.
-            fault.set_type(PageFault::Type::ProtectionViolation);
+            // RISC-V doesn't tell you the reason why a page fault occurred, so we don't use PageFault::set_type() here.
+            // The RISC-V implementation of Region::handle_fault() works without a correct PageFault::type().
 
             fault.handle(*trap_frame.regs);
             break;
         }
 
         case EnvironmentCallFromUMode:
-            TODO_RISCV64();
+            syscall_handler(&trap_frame);
             break;
 
         case Breakpoint:
-            TODO_RISCV64();
+            if (trap_frame.regs->previous_mode() == ExecutionMode::User) {
+                auto* current_thread = Thread::current();
+                auto& current_process = current_thread->process();
+
+                if (auto* tracer = current_process.tracer())
+                    tracer->set_regs(*trap_frame.regs);
+
+                current_thread->send_urgent_signal_to_self(SIGTRAP);
+            } else {
+                handle_crash(*trap_frame.regs, "Unexpected breakpoint trap", SIGTRAP, false);
+            }
             break;
 
         default:
@@ -121,9 +162,11 @@ extern "C" void trap_handler(TrapFrame& trap_frame)
 
 // FIXME: Share the code below with Arch/x86_64/Interrupts.cpp
 //        While refactoring, the interrupt handlers can also be moved into the InterruptManagement class.
-GenericInterruptHandler& get_interrupt_handler(u8)
+GenericInterruptHandler& get_interrupt_handler(u8 interrupt_number)
 {
-    TODO_RISCV64();
+    auto*& handler_slot = s_interrupt_handlers[interrupt_number];
+    VERIFY(handler_slot != nullptr);
+    return *handler_slot;
 }
 
 // Sets the reserved flag on `number_of_irqs` if it finds unused interrupt handler on

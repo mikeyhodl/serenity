@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "IDLGenerators.h"
 #include "Namespaces.h"
 #include <AK/Debug.h>
 #include <AK/LexicalPath.h>
@@ -16,26 +17,11 @@
 #include <LibIDL/IDLParser.h>
 #include <LibIDL/Types.h>
 
-extern Vector<StringView> s_header_search_paths;
-
-namespace IDL {
-void generate_namespace_header(IDL::Interface const&, StringBuilder&);
-void generate_namespace_implementation(IDL::Interface const&, StringBuilder&);
-void generate_constructor_header(IDL::Interface const&, StringBuilder&);
-void generate_constructor_implementation(IDL::Interface const&, StringBuilder&);
-void generate_prototype_header(IDL::Interface const&, StringBuilder&);
-void generate_prototype_implementation(IDL::Interface const&, StringBuilder&);
-void generate_iterator_prototype_header(IDL::Interface const&, StringBuilder&);
-void generate_iterator_prototype_implementation(IDL::Interface const&, StringBuilder&);
-void generate_global_mixin_header(IDL::Interface const&, StringBuilder&);
-void generate_global_mixin_implementation(IDL::Interface const&, StringBuilder&);
-}
-
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
     StringView path;
-    StringView import_base_path;
+    Vector<ByteString> import_base_paths;
     StringView output_path = "-"sv;
     StringView depfile_path;
     StringView depfile_prefix;
@@ -47,7 +33,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         .short_name = 'i',
         .value_name = "path",
         .accept_value = [&](StringView s) {
-            s_header_search_paths.append(s);
+            IDL::g_header_search_paths.append(s);
             return true;
         },
     });
@@ -55,7 +41,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(depfile_path, "Path to write dependency file to", "depfile", 'd', "depfile-path");
     args_parser.add_option(depfile_prefix, "Prefix to prepend to relative paths in dependency file", "depfile-prefix", 'p', "depfile-prefix");
     args_parser.add_positional_argument(path, "IDL file", "idl-file");
-    args_parser.add_positional_argument(import_base_path, "Import base path", "import-base-path", Core::ArgsParser::Required::No);
+    args_parser.add_positional_argument(import_base_paths, "Import base path", "import-base-path", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
     auto idl_file = TRY(Core::File::open(path, Core::File::OpenMode::Read));
@@ -65,10 +51,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto data = TRY(idl_file->read_until_eof());
 
-    if (import_base_path.is_null())
-        import_base_path = lexical_path.dirname();
+    if (import_base_paths.is_empty())
+        import_base_paths.append(lexical_path.dirname());
 
-    IDL::Parser parser(path, data, import_base_path);
+    IDL::Parser parser(path, data, move(import_base_paths));
     auto& interface = parser.parse();
 
     // If the interface name is the same as its namespace, qualify the name in the generated code.

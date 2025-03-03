@@ -17,6 +17,32 @@
 #include <float.h>
 #include <math.h>
 
+TEST_CASE(fmod)
+{
+    EXPECT_EQ(fmod(+0.0, 1.0), 0.0);
+    EXPECT_EQ(fmod(-0.0, 1.0), -0.0);
+
+    EXPECT_EQ(fmod(42.0, __builtin_huge_val()), 42.0);
+
+    // x has smaller exponent than y
+    EXPECT_EQ(fmod(1.0, 3.0), 1.0);
+    EXPECT_EQ(fmod(1.0, -3.0), 1.0);
+    EXPECT_EQ(fmod(-1.0, 3.0), -1.0);
+    EXPECT_EQ(fmod(-1.0, -3.0), -1.0);
+
+    // x has same exponent as y
+    EXPECT_EQ(fmod(2.0, 3.0), 2.0);
+    EXPECT_EQ(fmod(2.0, -3.0), 2.0);
+    EXPECT_EQ(fmod(-2.0, 3.0), -2.0);
+    EXPECT_EQ(fmod(-2.0, -3.0), -2.0);
+
+    // x has larger exponent than y
+    EXPECT_EQ(fmod(5.0, 3.0), 2.0);
+    EXPECT_EQ(fmod(5.0, -3.0), 2.0);
+    EXPECT_EQ(fmod(-5.0, 3.0), -2.0);
+    EXPECT_EQ(fmod(-5.0, -3.0), -2.0);
+}
+
 TEST_CASE(atan2)
 {
     EXPECT_APPROXIMATE(atan2(-1, -0.0e0), -M_PI_2);
@@ -54,12 +80,6 @@ TEST_CASE(trig)
     EXPECT_APPROXIMATE(atan(5.5), 1.390943);
     EXPECT_APPROXIMATE(atan(-5.5), -1.390943);
     EXPECT_APPROXIMATE(atan(555.5), 1.568996);
-}
-
-TEST_CASE(other)
-{
-    EXPECT_EQ(trunc(9999999999999.5), 9999999999999.0);
-    EXPECT_EQ(trunc(-9999999999999.5), -9999999999999.0);
 }
 
 TEST_CASE(exponents)
@@ -272,22 +292,77 @@ TEST_CASE(acos)
 
 TEST_CASE(floor)
 {
-    EXPECT_EQ(floor(0.125), 0);
-    EXPECT_EQ(floor(-0.125), -1.0);
-    EXPECT_EQ(floor(0.5), 0);
-    EXPECT_EQ(floor(-0.5), -1.0);
-    EXPECT_EQ(floor(0.25), 0);
-    EXPECT_EQ(floor(-0.25), -1.0);
-    EXPECT_EQ(floor(-3.0 / 2.0), -2.0);
+    // NOTE: We run tests for all three float types since architecture-specific code may vary significantly between types.
+#define TEST_FLOOR_FOR(suffix)                \
+    EXPECT_EQ(floor##suffix(0.125f), 0.f);    \
+    EXPECT_EQ(floor##suffix(-0.125f), -1.0f); \
+    EXPECT_EQ(floor##suffix(0.5f), 0.f);      \
+    EXPECT_EQ(floor##suffix(-0.5f), -1.0f);   \
+    EXPECT_EQ(floor##suffix(0.25f), 0.f);     \
+    EXPECT_EQ(floor##suffix(-0.25f), -1.0f);  \
+    EXPECT_EQ(floor##suffix(-3.0f / 2.0f), -2.0f);
+
+    TEST_FLOOR_FOR();
+    TEST_FLOOR_FOR(f);
+    TEST_FLOOR_FOR(l);
+
+    EXPECT_EQ(floor(-9999999999999.5), -10000000000000.0);
+    EXPECT_EQ(floor(9999999999999.5), 9999999999999.0);
 }
 
 TEST_CASE(ceil)
 {
-    EXPECT_EQ(ceil(0.125), 1.0);
-    EXPECT_EQ(ceil(-0.125), 0);
-    EXPECT_EQ(ceil(0.5), 1.0);
-    EXPECT_EQ(ceil(-0.5), 0);
-    EXPECT_EQ(ceil(0.25), 1.0);
-    EXPECT_EQ(ceil(-0.25), 0);
-    EXPECT_EQ(ceil(-3.0 / 2.0), -1.0);
+#define TEST_CEIL_FOR(suffix)                            \
+    EXPECT_EQ(ceil##suffix(0.125##suffix), 1.0##suffix); \
+    EXPECT_EQ(ceil##suffix(-0.125##suffix), 0.##suffix); \
+    EXPECT_EQ(ceil##suffix(0.5##suffix), 1.0##suffix);   \
+    EXPECT_EQ(ceil##suffix(-0.5##suffix), 0.##suffix);   \
+    EXPECT_EQ(ceil##suffix(0.25##suffix), 1.0##suffix);  \
+    EXPECT_EQ(ceil##suffix(-0.25##suffix), 0.##suffix);  \
+    EXPECT_EQ(ceil##suffix(-3.0##suffix / 2.0##suffix), -1.0##suffix);
+
+    TEST_CEIL_FOR();
+    TEST_CEIL_FOR(f);
+    TEST_CEIL_FOR(l);
+
+    EXPECT_EQ(ceil(9999999999999.5), 10000000000000.0);
+    EXPECT_EQ(ceil(-9999999999999.5), -9999999999999.0);
+}
+
+TEST_CASE(trunc)
+{
+#define TEST_TRUNC_FOR(suffix)                            \
+    EXPECT_EQ(trunc##suffix(0.125##suffix), 0.##suffix);  \
+    EXPECT_EQ(trunc##suffix(-0.125##suffix), 0.##suffix); \
+    EXPECT_EQ(trunc##suffix(0.5##suffix), 0.##suffix);    \
+    EXPECT_EQ(trunc##suffix(-0.5##suffix), 0.##suffix);   \
+    EXPECT_EQ(trunc##suffix(0.25##suffix), 0.##suffix);   \
+    EXPECT_EQ(trunc##suffix(-0.25##suffix), 0.##suffix);  \
+    EXPECT_EQ(trunc##suffix(-3.0##suffix / 2.0##suffix), -1.0##suffix);
+
+    TEST_TRUNC_FOR();
+    TEST_TRUNC_FOR(f);
+    TEST_TRUNC_FOR(l);
+
+    EXPECT_EQ(trunc(9999999999999.5), 9999999999999.0);
+    EXPECT_EQ(trunc(-9999999999999.5), -9999999999999.0);
+}
+
+TEST_CASE(round)
+{
+#define TEST_ROUND_FOR(suffix)                            \
+    EXPECT_EQ(round##suffix(0.125##suffix), 0.##suffix);  \
+    EXPECT_EQ(round##suffix(-0.125##suffix), 0.##suffix); \
+    EXPECT_EQ(round##suffix(0.5##suffix), 1.0##suffix);   \
+    EXPECT_EQ(round##suffix(-0.5##suffix), -1.0##suffix); \
+    EXPECT_EQ(round##suffix(0.25##suffix), 0.##suffix);   \
+    EXPECT_EQ(round##suffix(-0.25##suffix), 0.##suffix);  \
+    EXPECT_EQ(round##suffix(-3.0##suffix / 2.0##suffix), -2.0##suffix);
+
+    TEST_ROUND_FOR();
+    TEST_ROUND_FOR(f);
+    TEST_ROUND_FOR(l);
+
+    EXPECT_EQ(round(9999999999999.5), 10000000000000.0);
+    EXPECT_EQ(round(-9999999999999.5), -10000000000000.0);
 }

@@ -11,12 +11,15 @@
 #include <AK/Debug.h>
 #include <LibTextCodec/Decoder.h>
 #include <LibURL/URL.h>
+#include <LibWeb/Bindings/HTMLLinkElementPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
+#include <LibWeb/DOM/DOMTokenList.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
 #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
+#include <LibWeb/Fetch/Infrastructure/FetchController.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
 #include <LibWeb/HTML/EventNames.h>
@@ -46,12 +49,24 @@ void HTMLLinkElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLLinkElement);
 }
 
+void HTMLLinkElement::removed_from(Node* old_parent)
+{
+    Base::removed_from(old_parent);
+    if (m_loaded_style_sheet) {
+        document_or_shadow_root_style_sheets().remove_a_css_style_sheet(*m_loaded_style_sheet);
+        m_loaded_style_sheet = nullptr;
+    }
+}
+
 void HTMLLinkElement::inserted()
 {
     HTMLElement::inserted();
 
-    // FIXME: Handle alternate stylesheets properly
-    if (m_relationship & Relationship::Stylesheet && !(m_relationship & Relationship::Alternate)) {
+    if (!document().browsing_context()) {
+        return;
+    }
+
+    if (m_relationship & Relationship::Stylesheet) {
         // https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet:fetch-and-process-the-linked-resource
         // The appropriate times to fetch and process this type of link are:
         //  - When the external resource link is created on a link element that is already browsing-context connected.
@@ -76,20 +91,52 @@ void HTMLLinkElement::inserted()
     }
 }
 
+// https://html.spec.whatwg.org/multipage/semantics.html#dom-link-as
+String HTMLLinkElement::as() const
+{
+    String attribute_value = get_attribute_value(HTML::AttributeNames::as);
+
+    if (attribute_value.equals_ignoring_ascii_case("fetch"sv)
+        || attribute_value.equals_ignoring_ascii_case("image"sv)
+        || attribute_value.equals_ignoring_ascii_case("script"sv)
+        || attribute_value.equals_ignoring_ascii_case("style"sv)
+        || attribute_value.equals_ignoring_ascii_case("video"sv)
+        || attribute_value.equals_ignoring_ascii_case("audio"sv)
+        || attribute_value.equals_ignoring_ascii_case("track"sv)
+        || attribute_value.equals_ignoring_ascii_case("font"sv))
+        return attribute_value.to_lowercase().release_value();
+
+    return String {};
+}
+
+WebIDL::ExceptionOr<void> HTMLLinkElement::set_as(String const& value)
+{
+    return set_attribute(HTML::AttributeNames::as, move(value));
+}
+
+// https://html.spec.whatwg.org/multipage/semantics.html#dom-link-rellist
+JS::NonnullGCPtr<DOM::DOMTokenList> HTMLLinkElement::rel_list()
+{
+    // The relList IDL attribute must reflect the rel content attribute.
+    if (!m_rel_list)
+        m_rel_list = DOM::DOMTokenList::create(*this, HTML::AttributeNames::rel);
+    return *m_rel_list;
+}
+
 bool HTMLLinkElement::has_loaded_icon() const
 {
     return m_relationship & Relationship::Icon && resource() && resource()->is_loaded() && resource()->has_encoded_data();
 }
 
-void HTMLLinkElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLLinkElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    HTMLElement::attribute_changed(name, value);
+    HTMLElement::attribute_changed(name, old_value, value);
 
     // 4.6.7 Link types - https://html.spec.whatwg.org/multipage/links.html#linkTypes
     if (name == HTML::AttributeNames::rel) {
         m_relationship = 0;
         // Keywords are always ASCII case-insensitive, and must be compared as such.
-        auto lowercased_value = MUST(Infra::to_ascii_lowercase(value.value_or(String {})));
+        auto lowercased_value = value.value_or(String {}).to_ascii_lowercase();
         // To determine which link types apply to a link, a, area, or form element,
         // the element's rel attribute must be split on ASCII whitespace.
         // The resulting tokens are the keywords for the link types that apply to that element.
@@ -108,28 +155,41 @@ void HTMLLinkElement::attribute_changed(FlyString const& name, Optional<String> 
             else if (part == "icon"sv)
                 m_relationship |= Relationship::Icon;
         }
+
+        if (m_rel_list)
+            m_rel_list->associated_attribute_changed(value.value_or(String {}));
     }
 
-    // FIXME: Handle alternate stylesheets properly
-    if (m_relationship & Relationship::Stylesheet && !(m_relationship & Relationship::Alternate)) {
+    // https://html.spec.whatwg.org/multipage/semantics.html#the-link-element:explicitly-enabled
+    // Whenever the disabled attribute is removed, set the link element's explicitly enabled attribute to true.
+    if (!value.has_value() && name == HTML::AttributeNames::disabled)
+        m_explicitly_enabled = true;
+
+    if (m_relationship & Relationship::Stylesheet) {
         if (name == HTML::AttributeNames::disabled && m_loaded_style_sheet)
-            document_or_shadow_root_style_sheets().remove_sheet(*m_loaded_style_sheet);
+            document_or_shadow_root_style_sheets().remove_a_css_style_sheet(*m_loaded_style_sheet);
 
         // https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet:fetch-and-process-the-linked-resource
         // The appropriate times to fetch and process this type of link are:
         if (
-            // AD-HOC: When the rel attribute changes
-            name == AttributeNames::rel ||
-            // - When the href attribute of the link element of an external resource link that is already browsing-context connected is changed.
-            name == AttributeNames::href ||
-            // - When the disabled attribute of the link element of an external resource link that is already browsing-context connected is set, changed, or removed.
-            name == AttributeNames::disabled ||
-            // - When the crossorigin attribute of the link element of an external resource link that is already browsing-context connected is set, changed, or removed.
-            name == AttributeNames::crossorigin
-            // FIXME: - When the type attribute of the link element of an external resource link that is already browsing-context connected is set or changed to a value that does not or no longer matches the Content-Type metadata of the previous obtained external resource, if any.
-            // FIXME: - When the type attribute of the link element of an external resource link that is already browsing-context connected, but was previously not obtained due to the type attribute specifying an unsupported type, is removed or changed.
-        ) {
+            is_browsing_context_connected()
+            && (
+                // AD-HOC: When the rel attribute changes
+                name == AttributeNames::rel ||
+                // - When the href attribute of the link element of an external resource link that is already browsing-context connected is changed.
+                name == AttributeNames::href ||
+                // - When the disabled attribute of the link element of an external resource link that is already browsing-context connected is set, changed, or removed.
+                name == AttributeNames::disabled ||
+                // - When the crossorigin attribute of the link element of an external resource link that is already browsing-context connected is set, changed, or removed.
+                name == AttributeNames::crossorigin
+                // FIXME: - When the type attribute of the link element of an external resource link that is already browsing-context connected is set or changed to a value that does not or no longer matches the Content-Type metadata of the previous obtained external resource, if any.
+                // FIXME: - When the type attribute of the link element of an external resource link that is already browsing-context connected, but was previously not obtained due to the type attribute specifying an unsupported type, is removed or changed.
+                )) {
             fetch_and_process_linked_resource();
+        }
+
+        if (name == HTML::AttributeNames::media && m_loaded_style_sheet) {
+            m_loaded_style_sheet->set_media(value.value_or(String {}));
         }
     }
 }
@@ -165,10 +225,11 @@ HTMLLinkElement::LinkProcessingOptions HTMLLinkElement::create_link_options()
     // FIXME: destination                      the result of translating the state of el's as attribute
     // crossorigin                      the state of el's crossorigin content attribute
     options.crossorigin = cors_setting_attribute_from_keyword(get_attribute(AttributeNames::crossorigin));
-    // FIXME: referrer policy                  the state of el's referrerpolicy content attribute
+    // referrer policy                  the state of el's referrerpolicy content attribute
+    options.referrer_policy = ReferrerPolicy::from_string(get_attribute(AttributeNames::referrerpolicy).value_or(""_string)).value_or(ReferrerPolicy::ReferrerPolicy::EmptyString);
     // FIXME: source set                       el's source set
-    // base URL                         document's URL
-    options.base_url = document.url();
+    // base URL                         document's document base URL
+    options.base_url = document.base_url();
     // origin                           document's origin
     options.origin = document.origin();
     // environment                      document's relevant settings object
@@ -178,6 +239,8 @@ HTMLLinkElement::LinkProcessingOptions HTMLLinkElement::create_link_options()
     // document                         document
     options.document = &document;
     // FIXME: cryptographic nonce metadata     The current value of el's [[CryptographicNonce]] internal slot
+    // fetch priority                   the state of el's fetchpriority content attribute
+    options.fetch_priority = Fetch::Infrastructure::request_priority_from_string(get_attribute_value(HTML::AttributeNames::fetchpriority)).value_or(Fetch::Infrastructure::Request::Priority::Auto);
 
     // 3. If el has an href attribute, then set options's href to the value of el's href attribute.
     if (auto maybe_href = get_attribute(AttributeNames::href); maybe_href.has_value())
@@ -202,33 +265,39 @@ HTMLLinkElement::LinkProcessingOptions HTMLLinkElement::create_link_options()
 JS::GCPtr<Fetch::Infrastructure::Request> HTMLLinkElement::create_link_request(HTMLLinkElement::LinkProcessingOptions const& options)
 {
     // 1. Assert: options's href is not the empty string.
+    VERIFY(!options.href.is_empty());
 
-    // FIXME: 2. If options's destination is not a destination, then return null.
+    // FIXME: 2. If options's destination is null, then return null.
 
-    // 3. Parse a URL given options's href, relative to options's base URL. If that fails, then return null. Otherwise, let url be the resulting URL record.
+    // 3. Let url be the result of encoding-parsing a URL given options's href, relative to options's base URL.
     auto url = options.base_url.complete_url(options.href);
+
+    // 4. If url is failure, then return null.
     if (!url.is_valid())
         return nullptr;
 
-    // 4. Let request be the result of creating a potential-CORS request given url, options's destination, and options's crossorigin.
+    // 5. Let request be the result of creating a potential-CORS request given url, options's destination, and options's crossorigin.
     auto request = create_potential_CORS_request(vm(), url, options.destination, options.crossorigin);
 
-    // 5. Set request's policy container to options's policy container.
+    // 6. Set request's policy container to options's policy container.
     request->set_policy_container(options.policy_container);
 
-    // 6. Set request's integrity metadata to options's integrity.
+    // 7. Set request's integrity metadata to options's integrity.
     request->set_integrity_metadata(options.integrity);
 
-    // 7. Set request's cryptographic nonce metadata to options's cryptographic nonce metadata.
+    // 8. Set request's cryptographic nonce metadata to options's cryptographic nonce metadata.
     request->set_cryptographic_nonce_metadata(options.cryptographic_nonce_metadata);
 
-    // 8. Set request's referrer policy to options's referrer policy.
+    // 9. Set request's referrer policy to options's referrer policy.
     request->set_referrer_policy(options.referrer_policy);
 
-    // 9. Set request's client to options's environment.
+    // 10. Set request's client to options's environment.
     request->set_client(options.environment);
 
-    // 10. Return request.
+    // 11. Set request's priority to options's fetch priority.
+    request->set_priority(options.fetch_priority);
+
+    // 12. Return request.
     return request;
 }
 
@@ -295,14 +364,16 @@ void HTMLLinkElement::default_fetch_and_process_linked_resource()
         process_linked_resource(success, response, body_bytes);
     };
 
-    Fetch::Fetching::fetch(realm(), *request, Fetch::Infrastructure::FetchAlgorithms::create(vm(), move(fetch_algorithms_input))).release_value_but_fixme_should_propagate_errors();
+    if (m_fetch_controller)
+        m_fetch_controller->abort(realm(), {});
+    m_fetch_controller = MUST(Fetch::Fetching::fetch(realm(), *request, Fetch::Infrastructure::FetchAlgorithms::create(vm(), move(fetch_algorithms_input))));
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet:process-the-linked-resource
 void HTMLLinkElement::process_stylesheet_resource(bool success, Fetch::Infrastructure::Response const& response, Variant<Empty, Fetch::Infrastructure::FetchAlgorithms::ConsumeBodyFailureTag, ByteBuffer> body_bytes)
 {
     // 1. If the resource's Content-Type metadata is not text/css, then set success to false.
-    auto extracted_mime_type = response.header_list()->extract_mime_type().release_value_but_fixme_should_propagate_errors();
+    auto extracted_mime_type = response.header_list()->extract_mime_type();
     if (!extracted_mime_type.has_value() || extracted_mime_type->essence() != "text/css") {
         success = false;
     }
@@ -312,7 +383,7 @@ void HTMLLinkElement::process_stylesheet_resource(bool success, Fetch::Infrastru
 
     // 3. If el has an associated CSS style sheet, remove the CSS style sheet.
     if (m_loaded_style_sheet) {
-        document_or_shadow_root_style_sheets().remove_sheet(*m_loaded_style_sheet);
+        document_or_shadow_root_style_sheets().remove_a_css_style_sheet(*m_loaded_style_sheet);
         m_loaded_style_sheet = nullptr;
     }
 
@@ -322,7 +393,7 @@ void HTMLLinkElement::process_stylesheet_resource(bool success, Fetch::Infrastru
         //        type
         //            text/css
         //        location
-        //            The resulting URL string determined during the fetch and process the linked resource algorithm.
+        //            response's URL list[0]
         //        owner node
         //            element
         //        media
@@ -369,9 +440,21 @@ void HTMLLinkElement::process_stylesheet_resource(bool success, Fetch::Infrastru
                 m_loaded_style_sheet = parse_css_stylesheet(CSS::Parser::ParsingContext(document(), *response.url()), decoded_string);
 
                 if (m_loaded_style_sheet) {
-                    m_loaded_style_sheet->set_owner_node(this);
-                    m_loaded_style_sheet->set_media(attribute(HTML::AttributeNames::media).value_or({}));
-                    document().style_sheets().add_sheet(*m_loaded_style_sheet);
+                    Optional<String> location;
+                    if (!response.url_list().is_empty())
+                        location = MUST(response.url_list().first().to_string());
+
+                    document().style_sheets().create_a_css_style_sheet(
+                        "text/css"_string,
+                        this,
+                        attribute(HTML::AttributeNames::media).value_or({}),
+                        in_a_document_tree() ? attribute(HTML::AttributeNames::title).value_or({}) : String {},
+                        m_relationship & Relationship::Alternate && !m_explicitly_enabled,
+                        true,
+                        move(location),
+                        nullptr,
+                        nullptr,
+                        *m_loaded_style_sheet);
                 } else {
                     dbgln_if(CSS_LOADER_DEBUG, "HTMLLinkElement: Failed to parse stylesheet: {}", resource()->url());
                 }
@@ -443,21 +526,26 @@ void HTMLLinkElement::resource_did_load_favicon()
     document().check_favicon_after_loading_link_resource();
 }
 
-static bool decode_favicon(ReadonlyBytes favicon_data, URL::URL const& favicon_url, JS::GCPtr<Navigable> navigable)
+static NonnullRefPtr<Core::Promise<Web::Platform::DecodedImage>> decode_favicon(ReadonlyBytes favicon_data, URL::URL const& favicon_url, JS::NonnullGCPtr<DOM::Document> document)
 {
-    auto decoded_image = Platform::ImageCodecPlugin::the().decode_image(favicon_data);
-    if (!decoded_image.has_value() || decoded_image->frames.is_empty()) {
-        dbgln_if(IMAGE_DECODER_DEBUG, "Could not decode favicon {}", favicon_url);
-        return false;
-    }
+    auto on_failed_decode = [favicon_url]([[maybe_unused]] Error& error) {
+        dbgln_if(IMAGE_DECODER_DEBUG, "Failed to decode favicon {}: {}", favicon_url, error);
+    };
 
-    auto favicon_bitmap = decoded_image->frames[0].bitmap;
-    dbgln_if(IMAGE_DECODER_DEBUG, "Decoded favicon, {}", favicon_bitmap->size());
+    auto on_successful_decode = [document = JS::Handle(document)](Web::Platform::DecodedImage& decoded_image) -> ErrorOr<void> {
+        auto favicon_bitmap = decoded_image.frames[0].bitmap;
+        dbgln_if(IMAGE_DECODER_DEBUG, "Decoded favicon, {}", favicon_bitmap->size());
 
-    if (navigable && navigable->is_traversable())
-        navigable->traversable_navigable()->page().client().page_did_change_favicon(*favicon_bitmap);
+        auto navigable = document->navigable();
+        if (navigable && navigable->is_traversable())
+            navigable->traversable_navigable()->page().client().page_did_change_favicon(*favicon_bitmap);
 
-    return favicon_bitmap;
+        return {};
+    };
+
+    auto promise = Platform::ImageCodecPlugin::the().decode_image(favicon_data, move(on_successful_decode), move(on_failed_decode));
+
+    return promise;
 }
 
 bool HTMLLinkElement::load_favicon_and_use_if_window_is_active()
@@ -465,7 +553,10 @@ bool HTMLLinkElement::load_favicon_and_use_if_window_is_active()
     if (!has_loaded_icon())
         return false;
 
-    return decode_favicon(resource()->encoded_data(), resource()->url(), navigable());
+    // FIXME: Refactor the caller(s) to handle the async nature of image loading
+    auto promise = decode_favicon(resource()->encoded_data(), resource()->url(), document());
+    auto result = promise->await();
+    return !result.is_error();
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#rel-icon:the-link-element-3
@@ -498,15 +589,20 @@ WebIDL::ExceptionOr<void> HTMLLinkElement::load_fallback_favicon_if_needed(JS::N
         auto& realm = document->realm();
         auto global = JS::NonnullGCPtr { realm.global_object() };
 
-        auto process_body = [document, request](auto body) {
-            decode_favicon(body, request->url(), document->navigable());
-        };
-        auto process_body_error = [](auto) {
-        };
+        auto process_body = JS::create_heap_function(realm.heap(), [document, request](ByteBuffer body) {
+            (void)decode_favicon(body, request->url(), document);
+        });
+        auto process_body_error = JS::create_heap_function(realm.heap(), [](JS::Value) {
+        });
+
+        // Check for failed favicon response
+        if (!Fetch::Infrastructure::is_ok_status(response->status()) || !response->body()) {
+            return;
+        }
 
         // 3. Use response's unsafe response as an icon as if it had been declared using the icon keyword.
         if (auto body = response->unsafe_response()->body())
-            body->fully_read(realm, move(process_body), move(process_body_error), global).release_value_but_fixme_should_propagate_errors();
+            body->fully_read(realm, process_body, process_body_error, global);
     };
 
     TRY(Fetch::Fetching::fetch(realm, request, Fetch::Infrastructure::FetchAlgorithms::create(vm, move(fetch_algorithms_input))));
@@ -516,7 +612,9 @@ WebIDL::ExceptionOr<void> HTMLLinkElement::load_fallback_favicon_if_needed(JS::N
 void HTMLLinkElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
+    visitor.visit(m_fetch_controller);
     visitor.visit(m_loaded_style_sheet);
+    visitor.visit(m_rel_list);
 }
 
 }

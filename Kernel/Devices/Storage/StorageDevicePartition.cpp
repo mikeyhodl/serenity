@@ -4,24 +4,22 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/API/MajorNumberAllocation.h>
 #include <Kernel/Debug.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Storage/StorageDevice.h>
 #include <Kernel/Devices/Storage/StorageDevicePartition.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 
 namespace Kernel {
 
-NonnullLockRefPtr<StorageDevicePartition> StorageDevicePartition::create(StorageDevice& device, MinorNumber minor_number, Partition::DiskPartitionMetadata metadata)
+ErrorOr<NonnullRefPtr<StorageDevicePartition>> StorageDevicePartition::create(StorageDevice& device, MinorNumber minor_number, Partition::DiskPartitionMetadata metadata)
 {
-    auto partition_or_error = DeviceManagement::try_create_device<StorageDevicePartition>(device, minor_number, metadata);
-    // FIXME: Find a way to propagate errors
-    VERIFY(!partition_or_error.is_error());
-    return partition_or_error.release_value();
+    return TRY(Device::try_create_device<StorageDevicePartition>(device, minor_number, metadata));
 }
 
 StorageDevicePartition::StorageDevicePartition(StorageDevice& device, MinorNumber minor_number, Partition::DiskPartitionMetadata metadata)
-    : BlockDevice(100, minor_number, device.block_size())
+    : BlockDevice(MajorAllocation::BlockDeviceFamily::StoragePartition, minor_number, device.block_size())
     , m_device(device)
     , m_metadata(metadata)
 {

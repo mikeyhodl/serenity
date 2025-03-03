@@ -63,10 +63,13 @@ static void print_syscall(PtraceRegisters& regs, size_t depth)
     (void)end_color;
     TODO_AARCH64();
 #elif ARCH(RISCV64)
-    (void)regs;
-    (void)begin_color;
-    (void)end_color;
-    TODO_RISCV64();
+    outln("=> {}SC_{}({:#x}, {:#x}, {:#x}){}",
+        begin_color,
+        Syscall::to_string((Syscall::Function)regs.x[16]),
+        regs.x[9],
+        regs.x[10],
+        regs.x[11],
+        end_color);
 #else
 #    error Unknown architecture
 #endif
@@ -80,7 +83,7 @@ static NonnullOwnPtr<HashMap<FlatPtr, X86::Instruction>> instrument_code()
             if (section.name() != ".text")
                 return IterationDecision::Continue;
 
-            X86::SimpleInstructionStream stream((const u8*)((uintptr_t)lib.file->data() + section.offset()), section.size());
+            X86::SimpleInstructionStream stream((u8 const*)((uintptr_t)lib.file->data() + section.offset()), section.size());
             X86::Disassembler disassembler(stream);
             for (;;) {
                 auto offset = stream.offset();
@@ -143,13 +146,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
 
 #if ARCH(X86_64)
-        const FlatPtr ip = regs.value().rip;
+        FlatPtr const ip = regs.value().rip;
 #elif ARCH(AARCH64)
-        const FlatPtr ip = 0; // FIXME
+        FlatPtr const ip = 0; // FIXME
         TODO_AARCH64();
 #elif ARCH(RISCV64)
-        const FlatPtr ip = 0; // FIXME
-        TODO_RISCV64();
+        FlatPtr const ip = regs.value().pc;
 #else
 #    error Unknown architecture
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2023-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,11 +11,13 @@
 #include <LibGfx/ImageFormats/PNGWriter.h>
 #include <LibGfx/ShareableBitmap.h>
 #include <LibURL/URL.h>
+#include <LibWebView/ViewImplementation.h>
 
 #import <Application/ApplicationDelegate.h>
 #import <UI/Inspector.h>
 #import <UI/InspectorController.h>
 #import <UI/LadybirdWebView.h>
+#import <UI/SearchPanel.h>
 #import <UI/Tab.h>
 #import <UI/TabController.h>
 #import <Utilities/Conversions.h>
@@ -32,9 +34,9 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
 @property (nonatomic, strong) NSString* title;
 @property (nonatomic, strong) NSImage* favicon;
 
-@property (nonatomic, strong) InspectorController* inspector_controller;
+@property (nonatomic, strong) SearchPanel* search_panel;
 
-@property (nonatomic, assign) URL::URL last_url;
+@property (nonatomic, strong) InspectorController* inspector_controller;
 
 @end
 
@@ -85,13 +87,24 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
         [self setTitleVisibility:NSWindowTitleHidden];
         [self setIsVisible:YES];
 
-        auto* scroll_view = [[NSScrollView alloc] initWithFrame:[self frame]];
-        [scroll_view setHasVerticalScroller:YES];
-        [scroll_view setHasHorizontalScroller:YES];
+        self.search_panel = [[SearchPanel alloc] init];
+        [self.search_panel setHidden:YES];
+
+        auto* scroll_view = [[NSScrollView alloc] init];
+        [scroll_view setHasVerticalScroller:NO];
+        [scroll_view setHasHorizontalScroller:NO];
         [scroll_view setLineScroll:24];
 
         [scroll_view setContentView:self.web_view];
         [scroll_view setDocumentView:[[NSView alloc] init]];
+
+        auto* stack_view = [NSStackView stackViewWithViews:@[
+            self.search_panel,
+            scroll_view,
+        ]];
+
+        [stack_view setOrientation:NSUserInterfaceLayoutOrientationVertical];
+        [stack_view setSpacing:0];
 
         [[NSNotificationCenter defaultCenter]
             addObserver:self
@@ -99,13 +112,35 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
                    name:NSViewBoundsDidChangeNotification
                  object:[scroll_view contentView]];
 
-        [self setContentView:scroll_view];
+        [self setContentView:stack_view];
+
+        [[self.search_panel leadingAnchor] constraintEqualToAnchor:[self.contentView leadingAnchor]].active = YES;
     }
 
     return self;
 }
 
 #pragma mark - Public methods
+
+- (void)find:(id)sender
+{
+    [self.search_panel find:sender];
+}
+
+- (void)findNextMatch:(id)sender
+{
+    [self.search_panel findNextMatch:sender];
+}
+
+- (void)findPreviousMatch:(id)sender
+{
+    [self.search_panel findPreviousMatch:sender];
+}
+
+- (void)useSelectionForFind:(id)sender
+{
+    [self.search_panel useSelectionForFind:sender];
+}
 
 - (void)tabWillClose
 {
@@ -147,6 +182,11 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
 
 - (void)updateTabTitleAndFavicon
 {
+    static constexpr CGFloat TITLE_FONT_SIZE = 12;
+    static constexpr CGFloat FAVICON_SIZE = 16;
+
+    NSFont* title_font = [NSFont systemFontOfSize:TITLE_FONT_SIZE];
+
     auto* favicon_attachment = [[NSTextAttachment alloc] init];
     favicon_attachment.image = self.favicon;
 
@@ -158,20 +198,20 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
                               value:[NSColor clearColor]
                               range:NSMakeRange(0, [favicon_attribute length])];
 
-    // By default, the text attachment will be aligned to the bottom of the string. We have to manually
-    // try to center it vertically.
-    // FIXME: Figure out a way to programmatically arrive at a good NSBaselineOffsetAttributeName. Using
-    //        half the distance between the font's line height and the height of the favicon produces a
-    //        value that results in the title being aligned too low still.
+    // adjust the favicon image to middle center the title text
+    CGFloat offset_y = (title_font.capHeight - FAVICON_SIZE) / 2.f;
+    [favicon_attachment setBounds:CGRectMake(0, offset_y, FAVICON_SIZE, FAVICON_SIZE)];
+
     auto* title_attributes = @{
         NSForegroundColorAttributeName : [NSColor textColor],
-        NSBaselineOffsetAttributeName : @3
+        NSFontAttributeName : title_font
     };
 
     auto* title_attribute = [[NSAttributedString alloc] initWithString:self.title
                                                             attributes:title_attributes];
 
-    auto* spacing_attribute = [[NSAttributedString alloc] initWithString:@"  "];
+    auto* spacing_attribute = [[NSAttributedString alloc] initWithString:@"  "
+                                                              attributes:title_attributes];
 
     auto* title_and_favicon = [[NSMutableAttributedString alloc] init];
     [title_and_favicon appendAttributedString:favicon_attribute];
@@ -179,6 +219,51 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
     [title_and_favicon appendAttributedString:title_attribute];
 
     [[self tab] setAttributedTitle:title_and_favicon];
+}
+
+- (void)togglePageMuteState:(id)button
+{
+    auto& view = [[self web_view] view];
+    view.toggle_page_mute_state();
+
+    switch (view.audio_play_state()) {
+    case Web::HTML::AudioPlayState::Paused:
+        [[self tab] setAccessoryView:nil];
+        break;
+
+    case Web::HTML::AudioPlayState::Playing:
+        [button setImage:[self iconForPageMuteState]];
+        [button setToolTip:[self toolTipForPageMuteState]];
+        break;
+    }
+}
+
+- (NSImage*)iconForPageMuteState
+{
+    auto& view = [[self web_view] view];
+
+    switch (view.page_mute_state()) {
+    case Web::HTML::MuteState::Muted:
+        return [NSImage imageNamed:NSImageNameTouchBarAudioOutputVolumeOffTemplate];
+    case Web::HTML::MuteState::Unmuted:
+        return [NSImage imageNamed:NSImageNameTouchBarAudioOutputVolumeHighTemplate];
+    }
+
+    VERIFY_NOT_REACHED();
+}
+
+- (NSString*)toolTipForPageMuteState
+{
+    auto& view = [[self web_view] view];
+
+    switch (view.page_mute_state()) {
+    case Web::HTML::MuteState::Muted:
+        return @"Unmute tab";
+    case Web::HTML::MuteState::Unmuted:
+        return @"Mute tab";
+    }
+
+    VERIFY_NOT_REACHED();
 }
 
 - (void)onContentScroll:(NSNotification*)notification
@@ -223,15 +308,11 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
 
 - (void)onLoadStart:(URL::URL const&)url isRedirect:(BOOL)is_redirect
 {
-    if (url != self.last_url) {
-        self.last_url = url;
-    }
-
-    [[self tabController] onLoadStart:url isRedirect:is_redirect];
-
     self.title = Ladybird::string_to_ns_string(url.serialize());
     self.favicon = [Tab defaultFavicon];
     [self updateTabTitleAndFavicon];
+
+    [[self tabController] onLoadStart:url isRedirect:is_redirect];
 
     if (self.inspector_controller != nil) {
         auto* inspector = (Inspector*)[self.inspector_controller window];
@@ -247,6 +328,18 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
     }
 }
 
+- (void)onURLChange:(URL::URL const&)url
+{
+    [[self tabController] onURLChange:url];
+}
+
+- (void)onBackNavigationEnabled:(BOOL)back_enabled
+       forwardNavigationEnabled:(BOOL)forward_enabled
+{
+    [[self tabController] onBackNavigationEnabled:back_enabled
+                         forwardNavigationEnabled:forward_enabled];
+}
+
 - (void)onTitleChange:(ByteString const&)title
 {
     [[self tabController] onTitleChange:title];
@@ -257,8 +350,6 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
 
 - (void)onFaviconChange:(Gfx::Bitmap const&)bitmap
 {
-    static constexpr size_t FAVICON_SIZE = 16;
-
     auto png = Gfx::PNGWriter::encode(bitmap);
     if (png.is_error()) {
         return;
@@ -269,25 +360,38 @@ static constexpr CGFloat const WINDOW_HEIGHT = 800;
 
     auto* favicon = [[NSImage alloc] initWithData:data];
     [favicon setResizingMode:NSImageResizingModeStretch];
-    [favicon setSize:NSMakeSize(FAVICON_SIZE, FAVICON_SIZE)];
 
     self.favicon = favicon;
     [self updateTabTitleAndFavicon];
 }
 
-- (void)onNavigateBack
+- (void)onAudioPlayStateChange:(Web::HTML::AudioPlayState)play_state
 {
-    [[self tabController] navigateBack:nil];
+    auto& view = [[self web_view] view];
+
+    switch (play_state) {
+    case Web::HTML::AudioPlayState::Paused:
+        if (view.page_mute_state() == Web::HTML::MuteState::Unmuted) {
+            [[self tab] setAccessoryView:nil];
+        }
+        break;
+
+    case Web::HTML::AudioPlayState::Playing:
+        auto* button = [NSButton buttonWithImage:[self iconForPageMuteState]
+                                          target:self
+                                          action:@selector(togglePageMuteState:)];
+        [button setToolTip:[self toolTipForPageMuteState]];
+
+        [[self tab] setAccessoryView:button];
+        break;
+    }
 }
 
-- (void)onNavigateForward
+- (void)onFindInPageResult:(size_t)current_match_index
+           totalMatchCount:(Optional<size_t> const&)total_match_count
 {
-    [[self tabController] navigateForward:nil];
-}
-
-- (void)onReload
-{
-    [[self tabController] reload:nil];
+    [self.search_panel onFindInPageResult:current_match_index
+                          totalMatchCount:total_match_count];
 }
 
 #pragma mark - NSWindow

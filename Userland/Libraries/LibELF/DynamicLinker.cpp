@@ -18,6 +18,7 @@
 #include <AK/Vector.h>
 #include <Kernel/API/VirtualMemoryAnnotations.h>
 #include <Kernel/API/prctl_numbers.h>
+#include <LibELF/Arch/tls.h>
 #include <LibELF/AuxiliaryVector.h>
 #include <LibELF/DynamicLinker.h>
 #include <LibELF/DynamicLoader.h>
@@ -30,6 +31,7 @@
 #include <link.h>
 #include <pthread.h>
 #include <string.h>
+#include <sys/internals.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <syscall.h>
@@ -37,24 +39,26 @@
 
 namespace ELF {
 
-static HashMap<ByteString, NonnullRefPtr<ELF::DynamicLoader>> s_loaders;
 static ByteString s_main_program_path;
 
-// Dependencies have to always be added after the object that depends on them in `s_global_objects`.
-// This is needed for calling the destructors in the correct order.
+// The order of objects here corresponds to the "load order" from POSIX specification.
 static OrderedHashMap<ByteString, NonnullRefPtr<ELF::DynamicObject>> s_global_objects;
 
-using EntryPointFunction = int (*)(int, char**, char**);
 using LibCExitFunction = void (*)(int);
 using DlIteratePhdrCallbackFunction = int (*)(struct dl_phdr_info*, size_t, void*);
 using DlIteratePhdrFunction = int (*)(DlIteratePhdrCallbackFunction, void*);
 using CallFiniFunctionsFunction = void (*)();
 
-extern "C" [[noreturn]] void _invoke_entry(int argc, char** argv, char** envp, EntryPointFunction entry);
+struct TLSData {
+    size_t total_tls_size { 0 };
+    void* tls_template { nullptr };
+    size_t tls_template_size { 0 };
+    size_t alignment { 0 };
+    size_t static_tls_region_size { 0 };
+    size_t static_tls_region_alignment { 0 };
+};
+static TLSData s_tls_data;
 
-static size_t s_current_tls_offset = 0;
-static size_t s_total_tls_size = 0;
-static size_t s_allocated_tls_block_size = 0;
 static char** s_envp = nullptr;
 static __pthread_mutex_t s_loader_lock = __PTHREAD_MUTEX_INITIALIZER;
 static ByteString s_cwd;
@@ -65,54 +69,24 @@ static StringView s_ld_library_path;
 static StringView s_main_program_pledge_promises;
 static ByteString s_loader_pledge_promises;
 
-class MagicWeakSymbol : public RefCounted<MagicWeakSymbol> {
-    AK_MAKE_NONCOPYABLE(MagicWeakSymbol);
-    AK_MAKE_NONMOVABLE(MagicWeakSymbol);
-
-public:
-    template<typename T>
-    MagicWeakSymbol(unsigned int type, T value)
-    {
-        m_storage = reinterpret_cast<uintptr_t>(value);
-        m_lookup_result.size = 8;
-        m_lookup_result.type = type;
-        m_lookup_result.address = VirtualAddress { &m_storage };
-        m_lookup_result.bind = STB_GLOBAL;
-    }
-
-    auto lookup_result() const
-    {
-        return m_lookup_result;
-    }
-
-private:
-    DynamicObject::SymbolLookupResult m_lookup_result;
-    uintptr_t m_storage;
-};
-
-static HashMap<StringView, NonnullRefPtr<MagicWeakSymbol>> s_magic_weak_symbols;
+static HashMap<StringView, DynamicObject::SymbolLookupResult> s_magic_functions;
 
 Optional<DynamicObject::SymbolLookupResult> DynamicLinker::lookup_global_symbol(StringView name)
 {
-    Optional<DynamicObject::SymbolLookupResult> weak_result;
-
     auto symbol = DynamicObject::HashSymbol { name };
 
     for (auto& lib : s_global_objects) {
         auto res = lib.value->lookup_symbol(symbol);
         if (!res.has_value())
             continue;
-        if (res.value().bind == STB_GLOBAL)
+        if (res.value().bind == STB_GLOBAL || res.value().bind == STB_WEAK)
             return res;
-        if (res.value().bind == STB_WEAK && !weak_result.has_value())
-            weak_result = res;
         // We don't want to allow local symbols to be pulled in to other modules
     }
 
-    if (auto magic_lookup = s_magic_weak_symbols.get(name); magic_lookup.has_value())
-        weak_result = (*magic_lookup)->lookup_result();
-
-    return weak_result;
+    if (auto magic_lookup = s_magic_functions.get(name); magic_lookup.has_value())
+        return *magic_lookup;
+    return {};
 }
 
 static Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> map_library(ByteString const& filepath, int fd)
@@ -121,12 +95,20 @@ static Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> map_library(ByteStri
 
     auto loader = TRY(ELF::DynamicLoader::try_create(fd, filepath));
 
-    s_loaders.set(filepath, *loader);
+    static size_t s_current_tls_offset = 0;
 
-    s_current_tls_offset -= loader->tls_size_of_current_object();
-    if (loader->tls_alignment_of_current_object())
-        s_current_tls_offset = align_down_to(s_current_tls_offset, loader->tls_alignment_of_current_object());
-    loader->set_tls_offset(s_current_tls_offset);
+    if constexpr (TLS_VARIANT == 1) {
+        if (loader->tls_alignment_of_current_object() != 0)
+            s_current_tls_offset = align_up_to(s_current_tls_offset, loader->tls_alignment_of_current_object());
+        loader->set_tls_offset(s_current_tls_offset);
+
+        s_current_tls_offset += loader->tls_size_of_current_object();
+    } else if constexpr (TLS_VARIANT == 2) {
+        s_current_tls_offset -= loader->tls_size_of_current_object();
+        if (loader->tls_alignment_of_current_object() != 0)
+            s_current_tls_offset = align_down_to(s_current_tls_offset, loader->tls_alignment_of_current_object());
+        loader->set_tls_offset(s_current_tls_offset);
+    }
 
     // This actually maps the library at the intended and final place.
     auto main_library_object = loader->map();
@@ -188,15 +170,12 @@ static Result<NonnullRefPtr<DynamicLoader>, DlErrorMessage> map_library(ByteStri
     return map_library(path, fd);
 }
 
-static Vector<ByteString> get_dependencies(ByteString const& path)
+static Vector<ByteString> get_dependencies(NonnullRefPtr<DynamicLoader> const& loader)
 {
-    VERIFY(path.starts_with('/'));
-
-    auto name = LexicalPath::basename(path);
-    auto lib = s_loaders.get(path).value();
+    auto name = LexicalPath::basename(loader->filepath());
     Vector<ByteString> dependencies;
 
-    lib->for_each_needed_library([&dependencies, &name](auto needed_name) {
+    loader->for_each_needed_library([&dependencies, &name](auto needed_name) {
         if (name == needed_name)
             return;
         dependencies.append(needed_name);
@@ -204,61 +183,135 @@ static Vector<ByteString> get_dependencies(ByteString const& path)
     return dependencies;
 }
 
-static Result<void, DlErrorMessage> map_dependencies(ByteString const& path)
+struct DependencyOrdering {
+    Vector<NonnullRefPtr<DynamicLoader>> load_order;
+    // In addition to "load order" (and "dependency order") from POSIX, we also define "topological
+    // order". This is a topological ordering of "NEEDED" dependencies, where we ignore edges that
+    // result in cycles. Edges that are not ignored are called true dependencies.
+    Vector<NonnullRefPtr<DynamicLoader>> topological_order;
+};
+
+static ErrorOr<DependencyOrdering, DlErrorMessage> map_dependencies(NonnullRefPtr<DynamicLoader> const& loader)
 {
-    VERIFY(path.starts_with('/'));
+    Vector<NonnullRefPtr<DynamicLoader>> load_order = { loader };
+    HashMap<ByteString, NonnullRefPtr<DynamicLoader>> current_loaders;
+    current_loaders.set(loader->filepath(), loader);
 
-    dbgln_if(DYNAMIC_LOAD_DEBUG, "mapping dependencies for: {}", path);
+    // First, we do BFS on NEEDED dependencies graph while using load_order as a poor man's queue.
+    // NOTE: BFS is mandated by POSIX: https://pubs.opengroup.org/onlinepubs/9699919799/functions/dlopen.html#:~:text=Dependency%20ordering%20uses%20a%20breadth%2Dfirst%20order%20starting .
+    for (size_t i = 0; i < load_order.size(); ++i) {
+        auto loader = load_order[i];
+        auto const& parent_object = loader->dynamic_object();
 
-    auto const& parent_object = (*s_loaders.get(path))->dynamic_object();
+        dbgln_if(DYNAMIC_LOAD_DEBUG, "mapping dependencies for: {}", loader->filepath());
 
-    for (auto const& needed_name : get_dependencies(path)) {
-        dbgln_if(DYNAMIC_LOAD_DEBUG, "needed library: {}", needed_name.characters());
+        for (auto const& needed_name : get_dependencies(loader)) {
+            dbgln_if(DYNAMIC_LOAD_DEBUG, "needed library: {}", needed_name.characters());
 
-        auto dependency_path = DynamicLinker::resolve_library(needed_name, parent_object);
+            auto maybe_dependency_path = DynamicLinker::resolve_library(needed_name, parent_object);
+            if (!maybe_dependency_path.has_value())
+                return DlErrorMessage { ByteString::formatted("Could not find required shared library: {}", needed_name) };
+            auto dependency_path = maybe_dependency_path.release_value();
 
-        if (!dependency_path.has_value())
-            return DlErrorMessage { ByteString::formatted("Could not find required shared library: {}", needed_name) };
-
-        if (!s_loaders.contains(dependency_path.value()) && !s_global_objects.contains(dependency_path.value())) {
-            auto loader = TRY(map_library(dependency_path.value()));
-            TRY(map_dependencies(loader->filepath()));
+            if (!s_global_objects.contains(dependency_path)) {
+                auto dependency_loader = TRY(map_library(dependency_path));
+                load_order.append(dependency_loader);
+                current_loaders.set(dependency_loader->filepath(), dependency_loader);
+            }
+            if (auto it = current_loaders.find(dependency_path); it != current_loaders.end()) {
+                // Even if the object is already mapped, the dependency might still affect topological order.
+                loader->add_dependency(it->value);
+            }
         }
+
+        dbgln_if(DYNAMIC_LOAD_DEBUG, "mapped dependencies for {}", loader->filepath());
     }
-    dbgln_if(DYNAMIC_LOAD_DEBUG, "mapped dependencies for {}", path);
+
+    // Next, we compute topological order using the classical algorithm involving DFS. Topological
+    // ordering is used for calling initializers: https://www.sco.com/developers/gabi/latest/ch5.dynamic.html#init_fini .
+    Vector<NonnullRefPtr<DynamicLoader>> topological_order;
+    topological_order.ensure_capacity(load_order.size());
+    loader->compute_topological_order(topological_order);
+
+    VERIFY(topological_order.size() == load_order.size());
+    VERIFY(topological_order.last()->filepath() == loader->filepath());
+
+    return DependencyOrdering {
+        .load_order = move(load_order),
+        .topological_order = move(topological_order),
+    };
+}
+
+static ErrorOr<FlatPtr> __create_new_tls_region()
+{
+    void* static_tls_region = serenity_mmap(nullptr, s_tls_data.static_tls_region_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0, s_tls_data.static_tls_region_alignment, "Static TLS Data");
+    if (static_tls_region == MAP_FAILED)
+        return Error::from_syscall("mmap"sv, -errno);
+
+    auto thread_pointer = calculate_tp_value_from_static_tls_region_address(bit_cast<FlatPtr>(static_tls_region), s_tls_data.tls_template_size, s_tls_data.static_tls_region_alignment);
+    VERIFY(thread_pointer % s_tls_data.static_tls_region_alignment == 0);
+
+    auto* tcb = get_tcb_pointer_from_thread_pointer(thread_pointer);
+
+    // FIXME: Add support for dynamically-allocated TLS blocks.
+    tcb->dynamic_thread_vector = nullptr;
+
+#if ARCH(X86_64)
+    tcb->thread_pointer = bit_cast<void*>(thread_pointer);
+#endif
+
+    auto* static_tls_blocks = get_pointer_to_first_static_tls_block_from_thread_pointer(thread_pointer, s_tls_data.tls_template_size, s_tls_data.static_tls_region_alignment);
+
+    if (s_tls_data.tls_template_size != 0)
+        memcpy(static_tls_blocks, s_tls_data.tls_template, s_tls_data.tls_template_size);
+
+    return thread_pointer;
+}
+
+static ErrorOr<void> __free_tls_region(FlatPtr thread_pointer)
+{
+    auto* static_tls_region = get_pointer_to_static_tls_region_from_thread_pointer(thread_pointer, s_tls_data.tls_template_size, s_tls_data.static_tls_region_alignment);
+
+    if (munmap(static_tls_region, s_tls_data.static_tls_region_size) != 0)
+        return Error::from_syscall("mmap"sv, -errno);
+
     return {};
 }
 
-static void allocate_tls()
+static void allocate_tls(Vector<NonnullRefPtr<DynamicLoader>> const& loaded_objects)
 {
-    s_total_tls_size = 0;
-    for (auto const& data : s_loaders) {
-        dbgln_if(DYNAMIC_LOAD_DEBUG, "{}: TLS Size: {}, TLS Alignment: {}", data.key, data.value->tls_size_of_current_object(), data.value->tls_alignment_of_current_object());
-        s_total_tls_size += data.value->tls_size_of_current_object() + data.value->tls_alignment_of_current_object();
+    // FIXME: Use the max p_align of all TLS segments.
+    //        We currently pass s_tls_data.static_tls_region_alignment as the alignment to mmap,
+    //        so we would have to manually insert padding, as mmap only accepts alignments that
+    //        are multiples of PAGE_SIZE. Or instead use aligned_alloc/posix_memalign?
+    s_tls_data.alignment = PAGE_SIZE;
+
+    for (auto const& object : loaded_objects) {
+        dbgln_if(DYNAMIC_LOAD_DEBUG, "{}: TLS Size: {}, TLS Alignment: {}", object->filepath(), object->tls_size_of_current_object(), object->tls_alignment_of_current_object());
+        s_tls_data.total_tls_size += object->tls_size_of_current_object() + object->tls_alignment_of_current_object();
     }
 
-    if (!s_total_tls_size)
+    if (s_tls_data.total_tls_size == 0)
         return;
 
-    auto page_aligned_size = align_up_to(s_total_tls_size, PAGE_SIZE);
-    auto initial_tls_data_result = ByteBuffer::create_zeroed(page_aligned_size);
-    if (initial_tls_data_result.is_error()) {
-        dbgln("Failed to allocate initial TLS data");
+    s_tls_data.tls_template_size = align_up_to(s_tls_data.total_tls_size, PAGE_SIZE);
+    s_tls_data.tls_template = mmap_with_name(nullptr, s_tls_data.tls_template_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0, "TLS Template");
+
+    if (s_tls_data.tls_template == MAP_FAILED) {
+        dbgln("Failed to allocate memory for the TLS template");
         VERIFY_NOT_REACHED();
     }
 
-    auto& initial_tls_data = initial_tls_data_result.value();
+    s_tls_data.static_tls_region_alignment = max(s_tls_data.alignment, sizeof(ThreadControlBlock));
+    s_tls_data.static_tls_region_size = calculate_static_tls_region_size(s_tls_data.tls_template_size, s_tls_data.static_tls_region_alignment);
+
+    auto tls_template = Bytes(s_tls_data.tls_template, s_tls_data.tls_template_size);
 
     // Initialize TLS data
-    for (auto const& entry : s_loaders) {
-        entry.value->copy_initial_tls_data_into(initial_tls_data);
-    }
+    for (auto const& object : loaded_objects)
+        object->copy_initial_tls_data_into(tls_template);
 
-    void* master_tls = ::allocate_tls((char*)initial_tls_data.data(), initial_tls_data.size());
-    VERIFY(master_tls != (void*)-1);
-    dbgln_if(DYNAMIC_LOAD_DEBUG, "from userspace, master_tls: {:p}", master_tls);
-
-    s_allocated_tls_block_size = initial_tls_data.size();
+    set_thread_pointer_register(MUST(__create_new_tls_region()));
 }
 
 static int __dl_iterate_phdr(DlIteratePhdrCallbackFunction callback, void* data)
@@ -283,60 +336,17 @@ static int __dl_iterate_phdr(DlIteratePhdrCallbackFunction callback, void* data)
     return 0;
 }
 
+int DynamicLinker::iterate_over_loaded_shared_objects(int (*callback)(struct dl_phdr_info* info, size_t size, void* data), void* data)
+{
+    return __dl_iterate_phdr(callback, data);
+}
+
 static void initialize_libc(DynamicObject& libc)
 {
     auto res = libc.lookup_symbol("__libc_init"sv);
     VERIFY(res.has_value());
-    typedef void libc_init_func();
+    using libc_init_func = decltype(__libc_init);
     ((libc_init_func*)res.value().address.as_ptr())();
-}
-
-template<typename Callback>
-static void for_each_unfinished_dependency_of(ByteString const& path, HashTable<ByteString>& seen_names, Callback callback)
-{
-    VERIFY(path.starts_with('/'));
-
-    auto loader = s_loaders.get(path);
-
-    if (!loader.has_value()) {
-        // Not having a loader here means that the library has already been loaded in at an earlier point,
-        // and the loader itself was cleared during the end of `linker_main`.
-        return;
-    }
-
-    if (loader.value()->is_fully_relocated()) {
-        if (!loader.value()->is_fully_initialized()) {
-            // If we are ending up here, that possibly means that this library either dlopens itself or a library that depends
-            // on it while running its initializers. Assuming that this is the only funny thing that the library does, there is
-            // a reasonable chance that nothing breaks, so just warn and continue.
-            dbgln("\033[33mWarning:\033[0m Querying for dependencies of '{}' while running its initializers", path);
-        }
-
-        return;
-    }
-
-    if (seen_names.contains(path))
-        return;
-    seen_names.set(path);
-
-    for (auto const& needed_name : get_dependencies(path)) {
-        auto dependency_path = *DynamicLinker::resolve_library(needed_name, loader.value()->dynamic_object());
-        for_each_unfinished_dependency_of(dependency_path, seen_names, callback);
-    }
-
-    callback(*s_loaders.get(path).value());
-}
-
-static Vector<NonnullRefPtr<DynamicLoader>> collect_loaders_for_library(ByteString const& path)
-{
-    VERIFY(path.starts_with('/'));
-
-    HashTable<ByteString> seen_names;
-    Vector<NonnullRefPtr<DynamicLoader>> loaders;
-    for_each_unfinished_dependency_of(path, seen_names, [&](auto& loader) {
-        loaders.append(loader);
-    });
-    return loaders;
 }
 
 static void drop_loader_promise(StringView promise_to_drop)
@@ -358,24 +368,23 @@ static void drop_loader_promise(StringView promise_to_drop)
     }
 }
 
-static Result<void, DlErrorMessage> link_main_library(ByteString const& path, int flags)
+static ErrorOr<void, DlErrorMessage> link_main_library(int flags, DependencyOrdering const& objects)
 {
-    VERIFY(path.starts_with('/'));
-
-    auto loaders = collect_loaders_for_library(path);
-
     // Verify that all objects are already mapped
-    for (auto& loader : loaders)
+    for (auto& loader : objects.load_order)
         VERIFY(!loader->map());
 
-    for (auto& loader : loaders) {
+    // FIXME: Are there any observable differences between doing stages 2 and 3 in topological vs
+    //        load order? POSIX says to do relocations in load order but does the order really
+    //        matter here?
+    for (auto& loader : objects.load_order) {
         bool success = loader->link(flags);
         if (!success) {
             return DlErrorMessage { ByteString::formatted("Failed to link library {}", loader->filepath()) };
         }
     }
 
-    for (auto& loader : loaders) {
+    for (auto& loader : objects.load_order) {
         auto result = loader->load_stage_3(flags);
         VERIFY(!result.is_error());
         auto& object = result.value();
@@ -404,9 +413,8 @@ static Result<void, DlErrorMessage> link_main_library(ByteString const& path, in
 
     drop_loader_promise("prot_exec"sv);
 
-    for (auto& loader : loaders) {
+    for (auto& loader : objects.topological_order)
         loader->load_stage_4();
-    }
 
     return {};
 }
@@ -431,7 +439,7 @@ static Optional<DlErrorMessage> verify_tls_for_dlopen(DynamicLoader const& loade
     if (loader.tls_size_of_current_object() == 0)
         return {};
 
-    if (s_total_tls_size + loader.tls_size_of_current_object() + loader.tls_alignment_of_current_object() > s_allocated_tls_block_size)
+    if (s_tls_data.total_tls_size + loader.tls_size_of_current_object() + loader.tls_alignment_of_current_object() > s_tls_data.tls_template_size)
         return DlErrorMessage("TLS size too large");
 
     bool tls_data_is_all_zero = true;
@@ -439,7 +447,7 @@ static Optional<DlErrorMessage> verify_tls_for_dlopen(DynamicLoader const& loade
         if (program_header.type() != PT_TLS)
             return IterationDecision::Continue;
 
-        auto* tls_data = (const u8*)loader.image().base_address() + program_header.offset();
+        auto* tls_data = (u8 const*)loader.image().base_address() + program_header.offset();
         for (size_t i = 0; i < program_header.size_in_image(); ++i) {
             if (tls_data[i] != 0) {
                 tls_data_is_all_zero = false;
@@ -469,7 +477,9 @@ static Result<void*, DlErrorMessage> __dlopen(char const* filename, int flags)
         return DlErrorMessage { "Nested calls to dlopen() are not permitted." };
     ScopeGuard unlock_guard = [] { pthread_mutex_unlock(&s_loader_lock); };
 
-    auto const& parent_object = **s_global_objects.get(s_main_program_path);
+    // FIXME: We must resolve filename relative to the caller, not the main executable.
+    auto const& [name, parent_object] = *s_global_objects.begin();
+    VERIFY(name == s_main_program_path);
 
     auto library_path = (filename ? DynamicLinker::resolve_library(filename, parent_object) : s_main_program_path);
 
@@ -485,14 +495,15 @@ static Result<void*, DlErrorMessage> __dlopen(char const* filename, int flags)
 
     auto loader = TRY(map_library(library_path.value()));
 
+    // FIXME: This only checks main shared object but not its dependencies.
     if (auto error = verify_tls_for_dlopen(loader); error.has_value())
         return error.value();
 
-    TRY(map_dependencies(loader->filepath()));
+    auto objects = TRY(map_dependencies(loader));
 
-    TRY(link_main_library(loader->filepath(), flags));
+    TRY(link_main_library(flags, objects));
 
-    s_total_tls_size += loader->tls_size_of_current_object() + loader->tls_alignment_of_current_object();
+    s_tls_data.total_tls_size += loader->tls_size_of_current_object() + loader->tls_alignment_of_current_object();
 
     auto object = s_global_objects.get(library_path.value());
     if (!object.has_value())
@@ -576,6 +587,7 @@ static void __call_fini_functions()
 {
     typedef void (*FiniFunc)();
 
+    // FIXME: This is not and never has been the correct order to call finalizers in.
     for (auto& it : s_global_objects) {
         auto object = it.value;
 
@@ -600,6 +612,11 @@ static void __call_fini_functions()
             (fini_function)();
         }
     }
+}
+
+static char** __environ_value()
+{
+    return s_envp;
 }
 
 static void read_environment_variables()
@@ -627,28 +644,30 @@ static void read_environment_variables()
     }
 }
 
-void ELF::DynamicLinker::linker_main(ByteString&& main_program_path, int main_program_fd, bool is_secure, int argc, char** argv, char** envp)
+EntryPointFunction ELF::DynamicLinker::linker_main(ByteString&& main_program_path, int main_program_fd, bool is_secure, char** envp)
 {
     VERIFY(main_program_path.starts_with('/'));
 
     s_envp = envp;
 
-    uintptr_t stack_guard = get_random<uintptr_t>();
-
-#ifdef AK_ARCH_64_BIT
-    // For 64-bit platforms we include an additional hardening: zero the first byte of the stack guard to avoid
-    // leaking or overwriting the stack guard with C-style string functions.
-    stack_guard &= ~0xffULL;
-#endif
-
-    s_magic_weak_symbols.set("environ"sv, make_ref_counted<MagicWeakSymbol>(STT_OBJECT, s_envp));
-    s_magic_weak_symbols.set("__stack_chk_guard"sv, make_ref_counted<MagicWeakSymbol>(STT_OBJECT, stack_guard));
-    s_magic_weak_symbols.set("__call_fini_functions"sv, make_ref_counted<MagicWeakSymbol>(STT_FUNC, __call_fini_functions));
-    s_magic_weak_symbols.set("__dl_iterate_phdr"sv, make_ref_counted<MagicWeakSymbol>(STT_FUNC, __dl_iterate_phdr));
-    s_magic_weak_symbols.set("__dlclose"sv, make_ref_counted<MagicWeakSymbol>(STT_FUNC, __dlclose));
-    s_magic_weak_symbols.set("__dlopen"sv, make_ref_counted<MagicWeakSymbol>(STT_FUNC, __dlopen));
-    s_magic_weak_symbols.set("__dlsym"sv, make_ref_counted<MagicWeakSymbol>(STT_FUNC, __dlsym));
-    s_magic_weak_symbols.set("__dladdr"sv, make_ref_counted<MagicWeakSymbol>(STT_FUNC, __dladdr));
+    auto define_magic_function = [&](StringView name, auto function) {
+        s_magic_functions.set(name,
+            DynamicObject::SymbolLookupResult {
+                .size = 8,
+                .address = VirtualAddress { reinterpret_cast<void*>(function) },
+                .bind = STB_GLOBAL,
+                .type = STT_FUNC,
+            });
+    };
+    define_magic_function("__call_fini_functions"sv, __call_fini_functions);
+    define_magic_function("__create_new_tls_region"sv, __create_new_tls_region);
+    define_magic_function("__dl_iterate_phdr"sv, __dl_iterate_phdr);
+    define_magic_function("__dladdr"sv, __dladdr);
+    define_magic_function("__dlclose"sv, __dlclose);
+    define_magic_function("__dlopen"sv, __dlopen);
+    define_magic_function("__dlsym"sv, __dlsym);
+    define_magic_function("__environ_value"sv, __environ_value);
+    define_magic_function("__free_tls_region"sv, __free_tls_region);
 
     char* raw_current_directory = getcwd(nullptr, 0);
     s_cwd = raw_current_directory;
@@ -669,13 +688,13 @@ void ELF::DynamicLinker::linker_main(ByteString&& main_program_path, int main_pr
         _exit(1);
     }
 
-    auto loader = result1.release_value();
+    auto executable = result1.release_value();
     size_t needed_dependencies = 0;
-    loader->for_each_needed_library([&needed_dependencies](auto) {
+    executable->for_each_needed_library([&needed_dependencies](auto) {
         needed_dependencies++;
     });
     bool has_interpreter = false;
-    loader->image().for_each_program_header([&has_interpreter](const ELF::Image::ProgramHeader& program_header) {
+    executable->image().for_each_program_header([&has_interpreter](const ELF::Image::ProgramHeader& program_header) {
         if (program_header.type() == PT_INTERP)
             has_interpreter = true;
     });
@@ -685,7 +704,7 @@ void ELF::DynamicLinker::linker_main(ByteString&& main_program_path, int main_pr
     // some sort of ELF packers or dynamic loaders, and there's no added
     // value in trying to run them, as they will probably crash due to trying
     // to invoke syscalls from a non-syscall memory executable (code) region.
-    if (loader->is_dynamic() && (!has_interpreter || needed_dependencies == 0) && loader->dynamic_object().is_pie()) {
+    if (executable->is_dynamic() && (!has_interpreter || needed_dependencies == 0) && executable->dynamic_object().is_pie()) {
         char const message[] = R"(error: the dynamic loader can't reasonably run static-pie ELF. static-pie ELFs might run executable code that invokes syscalls
 outside of the defined syscall memory executable (code) region security measure we implement.
 Examples of static-pie ELF objects are ELF packers, and the system dynamic loader itself.)";
@@ -694,39 +713,43 @@ Examples of static-pie ELF objects are ELF packers, and the system dynamic loade
         _exit(1);
     }
 
-    auto result2 = map_dependencies(main_program_path);
+    auto result2 = map_dependencies(executable);
     if (result2.is_error()) {
         warnln("{}", result2.error().text);
         fflush(stderr);
         _exit(1);
     }
 
+    auto objects = result2.release_value();
+
     dbgln_if(DYNAMIC_LOAD_DEBUG, "loaded all dependencies");
-    for ([[maybe_unused]] auto& lib : s_loaders) {
-        dbgln_if(DYNAMIC_LOAD_DEBUG, "{} - tls size: {}, tls alignment: {}, tls offset: {}", lib.key, lib.value->tls_size_of_current_object(), lib.value->tls_alignment_of_current_object(), lib.value->tls_offset());
+    for ([[maybe_unused]] auto& object : objects.load_order) {
+        dbgln_if(DYNAMIC_LOAD_DEBUG, "{} - tls size: {}, tls alignment: {}, tls offset: {}",
+            object->filepath(), object->tls_size_of_current_object(), object->tls_alignment_of_current_object(), object->tls_offset());
     }
 
-    allocate_tls();
+    allocate_tls(objects.load_order);
 
-    auto entry_point_function = [&main_program_path] {
-        auto result = link_main_library(main_program_path, RTLD_GLOBAL | RTLD_LAZY);
-        if (result.is_error()) {
-            warnln("{}", result.error().text);
-            _exit(1);
-        }
+    auto result = link_main_library(RTLD_GLOBAL | RTLD_LAZY, objects);
+    if (result.is_error()) {
+        warnln("{}", result.error().text);
+        _exit(1);
+    }
 
-        drop_loader_promise("rpath"sv);
+    drop_loader_promise("rpath"sv);
 
-        auto& main_executable_loader = *s_loaders.get(main_program_path);
-        auto entry_point = main_executable_loader->image().entry();
-        if (main_executable_loader->is_dynamic())
-            entry_point = entry_point.offset(main_executable_loader->base_address().get());
-        return (EntryPointFunction)(entry_point.as_ptr());
-    }();
+    auto& main_executable_loader = objects.load_order.first();
+    auto entry_point = main_executable_loader->image().entry();
+    if (main_executable_loader->is_dynamic())
+        entry_point = entry_point.offset(main_executable_loader->base_address().get());
+    auto entry_point_function = reinterpret_cast<EntryPointFunction>(entry_point.as_ptr());
 
-    s_loaders.clear();
+    int rc = syscall(SC_prctl, PR_SET_NO_NEW_SYSCALL_REGION_ANNOTATIONS, 0, 0, nullptr);
+    if (rc < 0) {
+        VERIFY_NOT_REACHED();
+    }
 
-    int rc = syscall(SC_prctl, PR_SET_NO_NEW_SYSCALL_REGION_ANNOTATIONS, 1, 0, nullptr);
+    rc = syscall(SC_prctl, PR_SET_NO_TRANSITION_TO_EXECUTABLE_FROM_WRITABLE_PROT, 0, 0, nullptr);
     if (rc < 0) {
         VERIFY_NOT_REACHED();
     }
@@ -744,8 +767,7 @@ Examples of static-pie ELF objects are ELF packers, and the system dynamic loade
 #endif
     }
 
-    _invoke_entry(argc, argv, envp, entry_point_function);
-    VERIFY_NOT_REACHED();
+    return entry_point_function;
 }
 
 }

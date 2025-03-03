@@ -1,0 +1,89 @@
+name: 'Setup action'
+description: 'Sets up the dependencies for the CI VM'
+author: 'Andrew Kaster <akaster@serenityos.org>'
+inputs:
+  os:
+    description: 'Operating System to set up'
+    required: true
+    default: 'Linux'
+  arch:
+    description: 'Target Architecture to set up'
+    required: false
+    default: 'x86_64'
+runs:
+  using: "composite"
+  steps:
+    - name: 'Install Dependencies'
+      if: ${{ inputs.os == 'Linux' }}
+      shell: bash
+      run: |
+        # These packages are already part of the ubuntu-22.04 image:
+        # cmake libgmp-dev npm shellcheck
+        # Packages below aren't.
+
+        set -e
+
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository 'deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main'
+
+        sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+
+        sudo apt-get update
+        sudo apt-get install ccache clang-18 clang++-18 clang-format-18 lld-18 gcc-13 g++-13 libstdc++-13-dev ninja-build unzip qt6-base-dev qt6-tools-dev-tools libqt6svg6-dev qt6-multimedia-dev libgl1-mesa-dev libpulse-dev libssl-dev libegl1-mesa-dev libclang-18-dev
+
+        sudo apt-get remove clang-{13,14,15} clang++-{13,14,15} libclang-{13,14,15}-dev llvm-{13,14,15}
+        sudo apt-get install clang-18 clang++-18 llvm-18 llvm-18-dev
+
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+
+        wget https://github.com/WebAssembly/wabt/releases/download/1.0.35/wabt-1.0.35-ubuntu-20.04.tar.gz
+        tar -xzf ./wabt-1.0.35-ubuntu-20.04.tar.gz
+        rm ./wabt-1.0.35-ubuntu-20.04.tar.gz
+        echo "${{ github.workspace }}/wabt-1.0.35/bin" >> $GITHUB_PATH
+
+    - name: 'Install JS dependencies'
+      if: ${{ inputs.os == 'Linux' || inputs.os == 'Serenity' }}
+      shell: bash
+      run: sudo npm install -g prettier@2.7.1
+
+    - name: 'Install Python dependencies'
+      if: ${{ inputs.os == 'Linux' || inputs.os == 'Serenity' }}
+      shell: bash
+      run: |
+        python3 -m pip install --upgrade pip
+        pip3 install flake8 requests six
+
+    - name: 'Install Dependencies'
+      if: ${{ inputs.os == 'Serenity' }}
+      shell: bash
+      run: |
+        set -e
+
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository 'deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main'
+
+        sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+
+        sudo apt-get update
+        sudo apt-get remove clang-{13,14,15} clang++-{13,14,15} libclang-{13,14,15}-dev llvm-{13,14,15}
+        sudo apt-get install clang-format-18 ccache e2fsprogs gcc-13 g++-13 libstdc++-13-dev libmpfr-dev libmpc-dev ninja-build optipng qemu-utils qemu-system-i386 unzip generate-ninja libegl1-mesa-dev
+        sudo apt-get install clang-18 clang++-18 llvm-18 llvm-18-dev
+
+    - name: Enable KVM group perms
+      if: ${{ inputs.os == 'Serenity' }}
+      shell: bash
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+
+    - name: 'Install Dependencies'
+      if: ${{ inputs.os == 'macOS' }}
+      shell: bash
+      run: |
+        set -e
+        brew update
+        brew install coreutils bash ninja wabt ccache unzip qt llvm@18

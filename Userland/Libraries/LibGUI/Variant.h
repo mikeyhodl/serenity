@@ -21,7 +21,7 @@ namespace Detail {
 struct Boolean {
     bool value;
 };
-using VariantUnderlyingType = AK::Variant<Empty, Boolean, float, double, i32, i64, u32, u64, ByteString, Color, Gfx::IntPoint, Gfx::IntSize, Gfx::IntRect, Gfx::TextAlignment, Gfx::ColorRole, Gfx::AlignmentRole, Gfx::FlagRole, Gfx::MetricRole, Gfx::PathRole, NonnullRefPtr<Gfx::Bitmap const>, NonnullRefPtr<Gfx::Font const>, GUI::Icon>;
+using VariantUnderlyingType = AK::Variant<Empty, Boolean, float, double, i32, i64, u32, u64, ByteString, Color, Gfx::IntPoint, Gfx::IntSize, Gfx::IntRect, Gfx::TextAlignment, Gfx::WindowThemeProvider, Gfx::ColorRole, Gfx::AlignmentRole, Gfx::WindowThemeRole, Gfx::FlagRole, Gfx::MetricRole, Gfx::PathRole, NonnullRefPtr<Gfx::Bitmap const>, NonnullRefPtr<Gfx::Font const>, GUI::Icon>;
 }
 
 class Variant : public Detail::VariantUnderlyingType {
@@ -89,6 +89,7 @@ public:
     bool is_flag_role() const { return has<Gfx::FlagRole>(); }
     bool is_metric_role() const { return has<Gfx::MetricRole>(); }
     bool is_path_role() const { return has<Gfx::PathRole>(); }
+    bool is_window_theme_role() const { return has<Gfx::WindowThemeRole>(); }
 
     bool as_bool() const { return get<Detail::Boolean>().value; }
 
@@ -145,6 +146,13 @@ public:
     Color as_color() const { return get<Color>(); }
     Gfx::Font const& as_font() const { return *get<NonnullRefPtr<Gfx::Font const>>(); }
 
+    Gfx::WindowThemeProvider to_window_theme_provider(Gfx::WindowThemeProvider default_value) const
+    {
+        if (auto const* p = get_pointer<Gfx::WindowThemeProvider>())
+            return *p;
+        return default_value;
+    }
+
     Gfx::TextAlignment to_text_alignment(Gfx::TextAlignment default_value) const
     {
         if (auto const* p = get_pointer<Gfx::TextAlignment>())
@@ -164,6 +172,13 @@ public:
         if (auto const* p = get_pointer<Gfx::AlignmentRole>())
             return *p;
         return Gfx::AlignmentRole::NoRole;
+    }
+
+    Gfx::WindowThemeRole to_window_theme_role() const
+    {
+        if (auto const* p = get_pointer<Gfx::WindowThemeRole>())
+            return *p;
+        return Gfx::WindowThemeRole::NoRole;
     }
 
     Gfx::FlagRole to_flag_role() const
@@ -202,8 +217,10 @@ public:
             [](Empty) -> ByteString { return "[null]"; },
             [](ByteString v) { return v; },
             [](Gfx::TextAlignment v) { return ByteString::formatted("Gfx::TextAlignment::{}", Gfx::to_string(v)); },
+            [](Gfx::WindowThemeProvider v) { return ByteString::formatted("Gfx::WindowThemeProvider::{}", Gfx::to_string(v)); },
             [](Gfx::ColorRole v) { return ByteString::formatted("Gfx::ColorRole::{}", Gfx::to_string(v)); },
             [](Gfx::AlignmentRole v) { return ByteString::formatted("Gfx::AlignmentRole::{}", Gfx::to_string(v)); },
+            [](Gfx::WindowThemeRole v) { return ByteString::formatted("Gfx::WindowThemeRole::{}", Gfx::to_string(v)); },
             [](Gfx::FlagRole v) { return ByteString::formatted("Gfx::FlagRole::{}", Gfx::to_string(v)); },
             [](Gfx::MetricRole v) { return ByteString::formatted("Gfx::MetricRole::{}", Gfx::to_string(v)); },
             [](Gfx::PathRole v) { return ByteString::formatted("Gfx::PathRole::{}", Gfx::to_string(v)); },

@@ -18,17 +18,18 @@ struct BytecodeInterpreter : public Interpreter {
     {
     }
 
-    virtual void interpret(Configuration&) override;
+    virtual void interpret(Configuration&) final;
+
     virtual ~BytecodeInterpreter() override = default;
-    virtual bool did_trap() const override { return !m_trap.has<Empty>(); }
-    virtual ByteString trap_reason() const override
+    virtual bool did_trap() const final { return !m_trap.has<Empty>(); }
+    virtual ByteString trap_reason() const final
     {
         return m_trap.visit(
             [](Empty) -> ByteString { VERIFY_NOT_REACHED(); },
             [](Trap const& trap) { return trap.reason; },
             [](JS::Completion const& completion) { return completion.value()->to_string_without_side_effects().to_byte_string(); });
     }
-    virtual void clear_trap() override { m_trap = Empty {}; }
+    virtual void clear_trap() final { m_trap = Empty {}; }
 
     struct CallFrameHandle {
         explicit CallFrameHandle(BytecodeInterpreter& interpreter, Configuration& configuration)
@@ -44,14 +45,20 @@ struct BytecodeInterpreter : public Interpreter {
     };
 
 protected:
-    virtual void interpret(Configuration&, InstructionPointer&, Instruction const&);
+    void interpret_instruction(Configuration&, InstructionPointer&, Instruction const&);
     void branch_to_label(Configuration&, LabelIndex);
     template<typename ReadT, typename PushT>
     void load_and_push(Configuration&, Instruction const&);
     template<typename PopT, typename StoreT>
     void pop_and_store(Configuration&, Instruction const&);
+    template<size_t N>
+    void pop_and_store_lane_n(Configuration&, Instruction const&);
     template<size_t M, size_t N, template<typename> typename SetSign>
     void load_and_push_mxn(Configuration&, Instruction const&);
+    template<size_t N>
+    void load_and_push_lane_n(Configuration&, Instruction const&);
+    template<size_t N>
+    void load_and_push_zero_n(Configuration&, Instruction const&);
     template<size_t M>
     void load_and_push_m_splat(Configuration&, Instruction const&);
     template<size_t M, template<size_t> typename NativeType>
@@ -59,10 +66,8 @@ protected:
     template<size_t M, template<size_t> typename NativeType>
     void pop_and_push_m_splat(Configuration&, Instruction const&);
     template<typename M, template<typename> typename SetSign, typename VectorType = Native128ByteVectorOf<M, SetSign>>
-    Optional<VectorType> pop_vector(Configuration&);
-    template<typename M, template<typename> typename SetSign, typename VectorType = Native128ByteVectorOf<M, SetSign>>
-    Optional<VectorType> peek_vector(Configuration&);
-    void store_to_memory(Configuration&, Instruction const&, ReadonlyBytes data, i32 base);
+    VectorType pop_vector(Configuration&);
+    void store_to_memory(Configuration&, Instruction::MemoryArgument const&, ReadonlyBytes data, u32 base);
     void call_address(Configuration&, FunctionAddress);
 
     template<typename PopTypeLHS, typename PushType, typename Operator, typename PopTypeRHS = PopTypeLHS, typename... Args>
@@ -71,16 +76,9 @@ protected:
     template<typename PopType, typename PushType, typename Operator, typename... Args>
     void unary_operation(Configuration&, Args&&...);
 
-    template<typename V, typename T>
-    MakeUnsigned<T> checked_unsigned_truncate(V);
-
-    template<typename V, typename T>
-    MakeSigned<T> checked_signed_truncate(V);
-
     template<typename T>
     T read_value(ReadonlyBytes data);
 
-    Vector<Value> pop_values(Configuration& configuration, size_t count);
     ALWAYS_INLINE bool trap_if_not(bool value, StringView reason)
     {
         if (!value)
@@ -103,7 +101,7 @@ struct DebuggerBytecodeInterpreter : public BytecodeInterpreter {
     Function<bool(Configuration&, InstructionPointer&, Instruction const&, Interpreter const&)> post_interpret_hook;
 
 private:
-    virtual void interpret(Configuration&, InstructionPointer&, Instruction const&) override;
+    void interpret_instruction(Configuration&, InstructionPointer&, Instruction const&);
 };
 
 }

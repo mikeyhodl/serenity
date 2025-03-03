@@ -5,6 +5,7 @@
  */
 
 #include <AK/IntegralMath.h>
+#include <AK/Math.h>
 #include <AK/Stream.h>
 #include <AK/Try.h>
 #include <AK/Utf8View.h>
@@ -262,7 +263,9 @@ ErrorOr<void> Encoder::write_length(size_t value)
     if (value < 0x80)
         return write_byte(value);
 
-    size_t size = ceil_div(AK::ceil_log2(value), 3ul);
+    double minimum_bits = AK::log2(value);
+    size_t size_in_bits = AK::floor(minimum_bits) + 1;
+    size_t size = ceil_div(size_in_bits, 8uz);
     TRY(write_byte(0x80 | size));
 
     for (size_t i = 0; i < size; i++) {
@@ -430,7 +433,7 @@ ErrorOr<void> Encoder::write_bit_string(BitStringView view, Optional<Class> clas
     auto total_size_in_bits = view.byte_length() * 8 - unused_bits;
 
     TRY(write_tag(class_, type, kind));
-    TRY(write_length(ceil_div(total_size_in_bits, 8ul) + 1));
+    TRY(write_length(ceil_div(total_size_in_bits, 8uz) + 1));
     TRY(write_byte(unused_bits));
     return write_bytes(view.underlying_bytes());
 }

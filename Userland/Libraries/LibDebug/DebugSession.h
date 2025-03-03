@@ -194,8 +194,7 @@ void DebugSession::run(DesiredInitialDebugeeState initial_debugee_state, Callbac
         FlatPtr current_instruction;
         TODO_AARCH64();
 #elif ARCH(RISCV64)
-        FlatPtr current_instruction;
-        TODO_RISCV64();
+        FlatPtr current_instruction = regs.pc;
 #else
 #    error Unknown architecture
 #endif
@@ -221,12 +220,12 @@ void DebugSession::run(DesiredInitialDebugeeState initial_debugee_state, Callbac
                 FlatPtr current_ebp;
                 TODO_AARCH64();
 #elif ARCH(RISCV64)
-                FlatPtr current_ebp;
-                TODO_RISCV64();
+                FlatPtr current_ebp = regs.bp();
 #else
 #    error Unknown architecture
 #endif
 
+                // FIXME: Use AK::unwind_stack_from_frame_pointer
                 do {
                     if (current_ebp == required_ebp) {
                         found_ebp = true;
@@ -251,11 +250,11 @@ void DebugSession::run(DesiredInitialDebugeeState initial_debugee_state, Callbac
         Optional<BreakPoint> current_breakpoint;
 
         if (state == State::FreeRun || state == State::Syscall) {
-            current_breakpoint = m_breakpoints.get(current_instruction - 1);
+            current_breakpoint = m_breakpoints.get(current_instruction - 1).copy();
             if (current_breakpoint.has_value())
                 state = State::FreeRun;
         } else {
-            current_breakpoint = m_breakpoints.get(current_instruction);
+            current_breakpoint = m_breakpoints.get(current_instruction).copy();
         }
 
         if (current_breakpoint.has_value()) {
@@ -273,8 +272,7 @@ void DebugSession::run(DesiredInitialDebugeeState initial_debugee_state, Callbac
             (void)breakpoint_addr;
             TODO_AARCH64();
 #elif ARCH(RISCV64)
-            (void)breakpoint_addr;
-            TODO_RISCV64();
+            regs.pc = breakpoint_addr;
 #else
 #    error Unknown architecture
 #endif

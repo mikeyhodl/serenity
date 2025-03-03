@@ -10,15 +10,14 @@ interface HTMLMarqueeElement : HTMLElement {
     [CEReactions, Reflect=bgcolor] attribute DOMString bgColor;
     [CEReactions, Reflect] attribute DOMString direction;
     [CEReactions, Reflect] attribute DOMString height;
-    // FIXME: [CEReactions] attribute unsigned long hspace;
-    // FIXME: [CEReactions] attribute long loop;
-    // FIXME: [CEReactions] attribute unsigned long scrollAmount;
-    // FIXME: [CEReactions] attribute unsigned long scrollDelay;
-    // FIXME: [CEReactions] attribute boolean trueSpeed;
-    // FIXME: [CEReactions] attribute unsigned long vspace;
+    [CEReactions, Reflect] attribute unsigned long hspace;
+    [FIXME, CEReactions] attribute long loop;
+    [CEReactions] attribute unsigned long scrollAmount;
+    [CEReactions] attribute unsigned long scrollDelay;
+    [CEReactions, Reflect=truespeed] attribute boolean trueSpeed;
+    [CEReactions, Reflect] attribute unsigned long vspace;
     [CEReactions, Reflect] attribute DOMString width;
 
-    // FIXME: undefined start();
-    // FIXME: undefined stop();
-
+    [FIXME] undefined start();
+    [FIXME] undefined stop();
 };

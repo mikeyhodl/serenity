@@ -14,10 +14,10 @@
 #include <LibJS/Heap/HeapBlock.h>
 
 #define JS_DECLARE_ALLOCATOR(ClassName) \
-    static JS::TypeIsolatingCellAllocator<ClassName> cell_allocator;
+    static JS::TypeIsolatingCellAllocator<ClassName> cell_allocator
 
 #define JS_DEFINE_ALLOCATOR(ClassName) \
-    JS::TypeIsolatingCellAllocator<ClassName> ClassName::cell_allocator { #ClassName };
+    JS::TypeIsolatingCellAllocator<ClassName> ClassName::cell_allocator { #ClassName }
 
 namespace JS {
 
@@ -51,6 +51,8 @@ public:
     using List = IntrusiveList<&CellAllocator::m_list_node>;
 
     BlockAllocator& block_allocator() { return m_block_allocator; }
+    FlatPtr min_block_address() const { return m_min_block_address; }
+    FlatPtr max_block_address() const { return m_max_block_address; }
 
 private:
     char const* const m_class_name { nullptr };
@@ -61,6 +63,8 @@ private:
     using BlockList = IntrusiveList<&HeapBlock::m_list_node>;
     BlockList m_full_blocks;
     BlockList m_usable_blocks;
+    FlatPtr m_min_block_address { explode_byte(0xff) };
+    FlatPtr m_max_block_address { 0 };
 };
 
 template<typename T>

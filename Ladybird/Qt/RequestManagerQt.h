@@ -27,7 +27,7 @@ public:
     virtual void prefetch_dns(URL::URL const&) override { }
     virtual void preconnect(URL::URL const&) override { }
 
-    virtual RefPtr<Web::ResourceLoaderConnectorRequest> start_request(ByteString const& method, URL::URL const&, HashMap<ByteString, ByteString> const& request_headers, ReadonlyBytes request_body, Core::ProxyData const&) override;
+    virtual RefPtr<Web::ResourceLoaderConnectorRequest> start_request(ByteString const& method, URL::URL const&, HTTP::HeaderMap const& request_headers, ReadonlyBytes request_body, Core::ProxyData const&) override;
     virtual RefPtr<Web::WebSockets::WebSocketClientSocket> websocket_connect(const URL::URL&, ByteString const& origin, Vector<ByteString> const& protocols) override;
 
 private slots:
@@ -39,13 +39,13 @@ private:
     class Request
         : public Web::ResourceLoaderConnectorRequest {
     public:
-        static ErrorOr<NonnullRefPtr<Request>> create(QNetworkAccessManager& qnam, ByteString const& method, URL::URL const& url, HashMap<ByteString, ByteString> const& request_headers, ReadonlyBytes request_body, Core::ProxyData const&);
+        static ErrorOr<NonnullRefPtr<Request>> create(QNetworkAccessManager& qnam, ByteString const& method, URL::URL const& url, HTTP::HeaderMap const& request_headers, ReadonlyBytes request_body, Core::ProxyData const&);
 
         virtual ~Request() override;
 
-        virtual void set_should_buffer_all_input(bool) override { }
+        virtual void set_buffered_request_finished_callback(Protocol::Request::BufferedRequestFinished) override;
+        virtual void set_unbuffered_request_callbacks(Protocol::Request::HeadersReceived, Protocol::Request::DataReceived, Protocol::Request::RequestFinished) override;
         virtual bool stop() override { return false; }
-        virtual void stream_into(Stream&) override { }
 
         void did_finish();
 
@@ -55,6 +55,8 @@ private:
         Request(QNetworkReply&);
 
         QNetworkReply& m_reply;
+
+        Protocol::Request::BufferedRequestFinished on_buffered_request_finish;
     };
 
     HashMap<QNetworkReply*, NonnullRefPtr<Request>> m_pending;

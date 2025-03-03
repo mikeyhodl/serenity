@@ -25,6 +25,31 @@ static void run_sed(Vector<char const*>&& arguments, StringView standard_input, 
     EXPECT_EQ(StringView { expected_stdout.bytes() }, StringView { stdout.bytes() });
 }
 
+TEST_CASE(transform_command)
+{
+    run_sed({ "y/fb/FB/" }, "foobar\n"sv, "FooBar\n"sv);
+    run_sed({ "y;fb;FB;" }, "foobar\n"sv, "FooBar\n"sv);
+    run_sed({ "y///" }, "foobar\n"sv, "foobar\n"sv);
+    run_sed({ "y/abcdefghijklmnopqrstuvwxyz/defghijklmnopqrstuvwxyzabc/" }, "attack at dawn\n"sv, "dwwdfn dw gdzq\n"sv);
+}
+
+TEST_CASE(comments)
+{
+    run_sed({ "# This is a comment! " }, "foo\nbar\nbaz\n"sv, "foo\nbar\nbaz\n"sv);
+    run_sed({ "# This is a comment!\np" }, "foo\nbar\nbaz\n"sv, "foo\nfoo\nbar\nbar\nbaz\nbaz\n"sv);
+}
+
+TEST_CASE(quit_after_single_line)
+{
+    run_sed({ "q" }, "foo\n"sv, "foo\n"sv);
+    run_sed({ "1q" }, "foo\n"sv, "foo\n"sv);
+}
+
+TEST_CASE(delete_single_line)
+{
+    run_sed({ "1d" }, "1\n2\n"sv, "2\n"sv);
+}
+
 TEST_CASE(print_lineno)
 {
     run_sed({ "=", "-n" }, "hi"sv, "1\n"sv);

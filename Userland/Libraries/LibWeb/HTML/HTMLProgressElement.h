@@ -22,8 +22,8 @@ public:
     double value() const;
     WebIDL::ExceptionOr<void> set_value(double);
 
-    double max() const;
-    WebIDL::ExceptionOr<void> set_max(double value);
+    WebIDL::Double max() const;
+    WebIDL::ExceptionOr<void> set_max(WebIDL::Double value);
 
     double position() const;
 
@@ -42,6 +42,7 @@ private:
 
     // ^DOM::Node
     virtual bool is_html_progress_element() const final { return true; }
+    virtual void computed_css_values_changed() override;
 
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;

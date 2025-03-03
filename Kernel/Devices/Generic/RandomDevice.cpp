@@ -4,23 +4,21 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/API/MajorNumberAllocation.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Generic/RandomDevice.h>
 #include <Kernel/Sections.h>
 #include <Kernel/Security/Random.h>
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<RandomDevice> RandomDevice::must_create()
+UNMAP_AFTER_INIT NonnullRefPtr<RandomDevice> RandomDevice::must_create()
 {
-    auto random_device_or_error = DeviceManagement::try_create_device<RandomDevice>();
-    // FIXME: Find a way to propagate errors
-    VERIFY(!random_device_or_error.is_error());
-    return random_device_or_error.release_value();
+    return MUST(Device::try_create_device<RandomDevice>());
 }
 
 UNMAP_AFTER_INIT RandomDevice::RandomDevice()
-    : CharacterDevice(1, 8)
+    : CharacterDevice(MajorAllocation::CharacterDeviceFamily::Generic, 8)
 {
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -16,16 +16,6 @@ ErrorOr<NonnullRefPtr<Database>> Database::create()
     auto sql_client = TRY(SQL::SQLClient::try_create());
     return create(move(sql_client));
 }
-
-#if !defined(AK_OS_SERENITY)
-
-ErrorOr<NonnullRefPtr<Database>> Database::create(Vector<ByteString> candidate_sql_server_paths)
-{
-    auto sql_client = TRY(SQL::SQLClient::launch_server_and_create_client(move(candidate_sql_server_paths)));
-    return create(move(sql_client));
-}
-
-#endif
 
 ErrorOr<NonnullRefPtr<Database>> Database::create(NonnullRefPtr<SQL::SQLClient> sql_client)
 {

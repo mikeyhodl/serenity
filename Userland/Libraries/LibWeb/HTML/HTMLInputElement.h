@@ -2,6 +2,7 @@
  * Copyright (c) 2018-2022, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, Adam Hodgen <ant1441@gmail.com>
  * Copyright (c) 2023, Bastiaan van der Plaat <bastiaan.v.d.plaat@gmail.com>
+ * Copyright (c) 2024, Jelle Raaijmakers <jelle@gmta.nl>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -23,32 +24,32 @@ namespace Web::HTML {
 
 // https://html.spec.whatwg.org/multipage/input.html#attr-input-type
 #define ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTES                                  \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(hidden, Hidden)                     \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(text, Text)                         \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(search, Search)                     \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(tel, Telephone)                     \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(url, URL)                           \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(email, Email)                       \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(password, Password)                 \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(date, Date)                         \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(month, Month)                       \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(week, Week)                         \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(time, Time)                         \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("hidden", Hidden)                   \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("text", Text)                       \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("search", Search)                   \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("tel", Telephone)                   \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("url", URL)                         \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("email", Email)                     \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("password", Password)               \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("date", Date)                       \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("month", Month)                     \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("week", Week)                       \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("time", Time)                       \
     __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("datetime-local", LocalDateAndTime) \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(number, Number)                     \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(range, Range)                       \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(color, Color)                       \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(checkbox, Checkbox)                 \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(radio, RadioButton)                 \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(file, FileUpload)                   \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(submit, SubmitButton)               \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(image, ImageButton)                 \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(reset, ResetButton)                 \
-    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(button, Button)
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("number", Number)                   \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("range", Range)                     \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("color", Color)                     \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("checkbox", Checkbox)               \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("radio", RadioButton)               \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("file", FileUpload)                 \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("submit", SubmitButton)             \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("image", ImageButton)               \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("reset", ResetButton)               \
+    __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE("button", Button)
 
 class HTMLInputElement final
     : public HTMLElement
-    , public FormAssociatedElement
+    , public FormAssociatedTextControlElement
     , public DOM::EditableTextNodeOwner
     , public Layout::ImageProvider {
     WEB_PLATFORM_OBJECT(HTMLInputElement, HTMLElement);
@@ -76,6 +77,12 @@ public:
     virtual String value() const override;
     WebIDL::ExceptionOr<void> set_value(String const&);
 
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-textarea/input-relevant-value
+    virtual String relevant_value() override { return value(); }
+    WebIDL::ExceptionOr<void> set_relevant_value(String const& value) override { return set_value(value); }
+
+    virtual void set_dirty_value_flag(bool flag) override { m_dirty_value = flag; }
+
     void commit_pending_changes();
 
     String placeholder() const;
@@ -98,7 +105,11 @@ public:
 
     void did_pick_color(Optional<Color> picked_color, ColorPickerUpdateState state);
 
-    void did_select_files(Span<SelectedFile> selected_files);
+    enum class MultipleHandling {
+        Replace,
+        Append,
+    };
+    void did_select_files(Span<SelectedFile> selected_files, MultipleHandling = MultipleHandling::Replace);
 
     JS::GCPtr<FileAPI::FileList> files();
     void set_files(JS::GCPtr<FileAPI::FileList>);
@@ -137,13 +148,10 @@ public:
     WebIDL::ExceptionOr<bool> report_validity();
     void set_custom_validity(String const&);
 
-    WebIDL::ExceptionOr<void> select();
-    WebIDL::ExceptionOr<void> set_selection_range(u32 start, u32 end, Optional<String> const& direction = {});
-
     WebIDL::ExceptionOr<void> show_picker();
 
     // ^DOM::EditableTextNodeOwner
-    virtual void did_edit_text_node(Badge<BrowsingContext>) override;
+    virtual void did_edit_text_node(Badge<DOM::Document>) override;
 
     // ^EventTarget
     // https://html.spec.whatwg.org/multipage/interaction.html#the-tabindex-attribute:the-input-element
@@ -168,11 +176,18 @@ public:
     // https://html.spec.whatwg.org/multipage/forms.html#concept-submit-button
     virtual bool is_submit_button() const override;
 
+    bool is_single_line() const;
+
     virtual void reset_algorithm() override;
+    virtual void clear_algorithm() override;
 
     virtual void form_associated_element_was_inserted() override;
     virtual void form_associated_element_was_removed(DOM::Node*) override;
     virtual void form_associated_element_attribute_changed(FlyString const&, Optional<String> const&) override;
+
+    virtual WebIDL::ExceptionOr<void> cloned(Node&, bool) override;
+
+    JS::NonnullGCPtr<ValidityState const> validity() const;
 
     // ^HTMLElement
     // https://html.spec.whatwg.org/multipage/forms.html#category-label
@@ -192,9 +207,24 @@ public:
     bool value_as_number_applies() const;
     bool step_applies() const;
     bool step_up_or_down_applies() const;
+    bool select_applies() const;
+    bool selection_or_range_applies() const;
+    bool selection_direction_applies() const;
+    bool has_selectable_text() const;
+
+    static bool selection_or_range_applies_for_type_state(TypeAttributeState);
+
+    Optional<String> selection_direction_binding() { return selection_direction(); }
+
+protected:
+    void selection_was_changed(size_t selection_start, size_t selection_end) override;
 
 private:
     HTMLInputElement(DOM::Document&, DOM::QualifiedName);
+
+    void type_attribute_changed(TypeAttributeState old_state, TypeAttributeState new_state);
+
+    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 
     // ^DOM::Node
     virtual bool is_html_input_element() const final { return true; }
@@ -208,7 +238,10 @@ private:
 
     // ^DOM::Element
     virtual i32 default_tab_index_value() const override;
-    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
+    virtual void computed_css_values_changed() override;
+
+    // https://html.spec.whatwg.org/multipage/input.html#image-button-state-(type=image):dimension-attributes
+    virtual bool supports_dimension_attributes() const override { return type_state() == TypeAttributeState::ImageButton; }
 
     // ^Layout::ImageProvider
     virtual bool is_image_available() const override;
@@ -223,7 +256,7 @@ private:
     virtual void visit_edges(Cell::Visitor&) override;
 
     Optional<double> convert_string_to_number(StringView input) const;
-    String covert_number_to_string(double input) const;
+    String convert_number_to_string(double input) const;
 
     WebIDL::ExceptionOr<JS::GCPtr<JS::Date>> convert_string_to_date(StringView input) const;
     String covert_date_to_string(JS::NonnullGCPtr<JS::Date> input) const;
@@ -239,6 +272,7 @@ private:
     static TypeAttributeState parse_type_attribute(StringView);
     void create_shadow_tree_if_needed();
     void update_shadow_tree();
+    void create_button_input_shadow_tree();
     void create_text_input_shadow_tree();
     void create_color_input_shadow_tree();
     void create_file_input_shadow_tree();
@@ -248,7 +282,9 @@ private:
 
     void handle_maxlength_attribute();
     void handle_readonly_attribute(Optional<String> const& value);
-    WebIDL::ExceptionOr<void> handle_src_attribute(StringView value);
+    WebIDL::ExceptionOr<void> handle_src_attribute(String const& value);
+
+    void user_interaction_did_change_input_value();
 
     // https://html.spec.whatwg.org/multipage/input.html#value-sanitization-algorithm
     String value_sanitization_algorithm(String const&) const;
@@ -259,12 +295,14 @@ private:
         DefaultOn,
         Filename,
     };
+    static ValueAttributeMode value_attribute_mode_for_type_state(TypeAttributeState);
     ValueAttributeMode value_attribute_mode() const;
 
     void update_placeholder_visibility();
     JS::GCPtr<DOM::Element> m_placeholder_element;
     JS::GCPtr<DOM::Text> m_placeholder_text_node;
 
+    void update_text_input_shadow_tree();
     JS::GCPtr<DOM::Element> m_inner_text_element;
     JS::GCPtr<DOM::Text> m_text_node;
     bool m_checked { false };
@@ -276,11 +314,13 @@ private:
     JS::GCPtr<DOM::Element> m_file_button;
     JS::GCPtr<DOM::Element> m_file_label;
 
-    void update_slider_thumb_element();
+    void update_slider_shadow_tree_elements();
+    JS::GCPtr<DOM::Element> m_slider_runnable_track;
+    JS::GCPtr<DOM::Element> m_slider_progress_element;
     JS::GCPtr<DOM::Element> m_slider_thumb;
 
     JS::GCPtr<DecodedImageData> image_data() const;
-    JS::GCPtr<SharedImageRequest> m_image_request;
+    JS::GCPtr<SharedResourceRequest> m_resource_request;
     SelectedCoordinate m_selected_coordinate;
 
     Optional<DOM::DocumentLoadEventDelayer> m_load_event_delayer;
@@ -307,6 +347,8 @@ private:
 
     TypeAttributeState m_type { TypeAttributeState::Text };
     String m_value;
+
+    String m_last_src_value;
 
     bool m_has_uncommitted_changes { false };
 };

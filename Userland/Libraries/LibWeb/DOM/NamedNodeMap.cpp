@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/NamedNodeMapPrototype.h>
 #include <LibWeb/DOM/Attr.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/NamedNodeMap.h>
@@ -43,14 +44,7 @@ void NamedNodeMap::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_element);
-    for (auto& attribute : m_attributes)
-        visitor.visit(attribute);
-}
-
-// https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-indices%E2%91%A3
-bool NamedNodeMap::is_supported_property_index(u32 index) const
-{
-    return index < m_attributes.size();
+    visitor.visit(m_attributes);
 }
 
 // https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-names%E2%91%A0
@@ -71,7 +65,7 @@ Vector<FlyString> NamedNodeMap::supported_property_names() const
     if (associated_element().namespace_uri() == Namespace::HTML) {
         // 1. Let lowercaseName be name, in ASCII lowercase.
         // 2. If lowercaseName is not equal to name, remove name from names.
-        names.remove_all_matching([](auto const& name) { return name != MUST(Infra::to_ascii_lowercase(name)); });
+        names.remove_all_matching([](auto const& name) { return name != name.to_ascii_lowercase(); });
     }
 
     // 3. Return names.
@@ -220,7 +214,7 @@ WebIDL::ExceptionOr<JS::GCPtr<Attr>> NamedNodeMap::set_attribute(Attr& attribute
 {
     // 1. If attr’s element is neither null nor element, throw an "InUseAttributeError" DOMException.
     if ((attribute.owner_element() != nullptr) && (attribute.owner_element() != &associated_element()))
-        return WebIDL::InUseAttributeError::create(realm(), "Attribute must not already be in use"_fly_string);
+        return WebIDL::InUseAttributeError::create(realm(), "Attribute must not already be in use"_string);
 
     // 2. Let oldAttr be the result of getting an attribute given attr’s namespace, attr’s local name, and element.
     size_t old_attribute_index = 0;
@@ -326,20 +320,35 @@ Attr const* NamedNodeMap::remove_attribute_ns(Optional<FlyString> const& namespa
     return attribute;
 }
 
-WebIDL::ExceptionOr<JS::Value> NamedNodeMap::item_value(size_t index) const
+Optional<JS::Value> NamedNodeMap::item_value(size_t index) const
 {
     auto const* node = item(index);
     if (!node)
-        return JS::js_undefined();
+        return {};
     return node;
 }
 
-WebIDL::ExceptionOr<JS::Value> NamedNodeMap::named_item_value(FlyString const& name) const
+JS::Value NamedNodeMap::named_item_value(FlyString const& name) const
 {
     auto const* node = get_named_item(name);
     if (!node)
         return JS::js_undefined();
     return node;
+}
+
+// https://dom.spec.whatwg.org/#dom-element-removeattributenode
+WebIDL::ExceptionOr<JS::NonnullGCPtr<Attr>> NamedNodeMap::remove_attribute_node(JS::NonnullGCPtr<Attr> attr)
+{
+    // 1. If this’s attribute list does not contain attr, then throw a "NotFoundError" DOMException.
+    auto index = m_attributes.find_first_index(attr);
+    if (!index.has_value())
+        return WebIDL::NotFoundError::create(realm(), "Attribute not found"_string);
+
+    // 2. Remove attr.
+    remove_attribute_at_index(index.value());
+
+    // 3. Return attr.
+    return attr;
 }
 
 }

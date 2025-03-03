@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/EnumBits.h>
+#include <AK/Platform.h>
 #include <AK/Types.h>
 
 #define ENUMERATE_KEY_CODES                                    \
@@ -30,10 +31,11 @@
     __ENUMERATE_KEY_CODE(PageDown, "PageDown")                 \
     __ENUMERATE_KEY_CODE(LeftShift, "LeftShift")               \
     __ENUMERATE_KEY_CODE(RightShift, "RightShift")             \
-    __ENUMERATE_KEY_CODE(Control, "Ctrl")                      \
-    __ENUMERATE_KEY_CODE(RightControl, "RightCtrl")            \
-    __ENUMERATE_KEY_CODE(Alt, "Alt")                           \
-    __ENUMERATE_KEY_CODE(RightAlt, "Alt")                      \
+    __ENUMERATE_KEY_CODE(LeftControl, "LeftControl")           \
+    __ENUMERATE_KEY_CODE(RightControl, "RightControl")         \
+    __ENUMERATE_KEY_CODE(LeftAlt, "LeftAlt")                   \
+    __ENUMERATE_KEY_CODE(RightAlt, "RightAlt")                 \
+    __ENUMERATE_KEY_CODE(AltGr, "AltGr")                       \
     __ENUMERATE_KEY_CODE(CapsLock, "CapsLock")                 \
     __ENUMERATE_KEY_CODE(NumLock, "NumLock")                   \
     __ENUMERATE_KEY_CODE(ScrollLock, "ScrollLock")             \
@@ -118,7 +120,8 @@
     __ENUMERATE_KEY_CODE(Pipe, "|")                            \
     __ENUMERATE_KEY_CODE(Tilde, "~")                           \
     __ENUMERATE_KEY_CODE(Backtick, "`")                        \
-    __ENUMERATE_KEY_CODE(Super, "Super")                       \
+    __ENUMERATE_KEY_CODE(LeftSuper, "LeftSuper")               \
+    __ENUMERATE_KEY_CODE(RightSuper, "RightSuper")             \
     __ENUMERATE_KEY_CODE(BrowserSearch, "BrowserSearch")       \
     __ENUMERATE_KEY_CODE(BrowserFavorites, "BrowserFavorites") \
     __ENUMERATE_KEY_CODE(BrowserHome, "BrowserHome")           \
@@ -166,6 +169,14 @@ enum KeyModifier {
     Mod_Mask = Mod_Alt | Mod_Ctrl | Mod_Shift | Mod_Super | Mod_AltGr | Mod_Keypad,
 
     Is_Press = 0x80,
+
+#if defined(AK_OS_MACOS)
+    Mod_PlatformCtrl = Mod_Super,
+    Mod_PlatformWordJump = Mod_Alt,
+#else
+    Mod_PlatformCtrl = Mod_Ctrl,
+    Mod_PlatformWordJump = Mod_Ctrl,
+#endif
 };
 
 AK_ENUM_BITWISE_OPERATORS(KeyModifier);

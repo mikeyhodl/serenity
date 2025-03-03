@@ -18,7 +18,6 @@ public:
     static APICTimer* initialize(u8, HardwareTimerBase&);
     virtual HardwareTimerType timer_type() const override { return HardwareTimerType::LocalAPICTimer; }
     virtual StringView model() const override { return "LocalAPIC"sv; }
-    virtual size_t ticks_per_second() const override;
 
     virtual bool is_periodic() const override { return m_timer_mode == APIC::TimerMode::Periodic; }
     virtual bool is_periodic_capable() const override { return true; }
@@ -36,7 +35,7 @@ public:
     void disable_local_timer();
 
 private:
-    explicit APICTimer(u8, Function<void(RegisterState const&)>);
+    explicit APICTimer(u8, Function<void()>);
 
     bool calibrate(HardwareTimerBase&);
 

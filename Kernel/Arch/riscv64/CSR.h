@@ -30,6 +30,7 @@ enum class Address : u16 {
     SATP = 0x180,
 
     // Unprivileged Counters/Timers
+    CYCLE = 0xc00,
     TIME = 0xc01,
 };
 
@@ -72,7 +73,7 @@ struct [[gnu::packed]] alignas(u64) SATP {
         Bare = 0,
         Sv39 = 8,
         Sv48 = 9,
-        Sv67 = 10,
+        Sv57 = 10,
     };
 
     // Physical page number of root page table

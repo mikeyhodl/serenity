@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGCircleElementPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/SVG/AttributeNames.h>
@@ -47,7 +48,7 @@ void SVGCircleElement::apply_presentational_hints(CSS::StyleProperties& style) c
 
 Gfx::Path SVGCircleElement::get_path(CSSPixelSize viewport_size)
 {
-    auto* node = layout_node();
+    auto node = layout_node();
     auto cx = float(node->computed_values().cx().to_px(*node, viewport_size.width()));
     auto cy = float(node->computed_values().cy().to_px(*node, viewport_size.height()));
     // Percentages refer to the normalized diagonal of the current SVG viewport
@@ -83,37 +84,19 @@ Gfx::Path SVGCircleElement::get_path(CSSPixelSize viewport_size)
 // https://www.w3.org/TR/SVG11/shapes.html#CircleElementCXAttribute
 JS::NonnullGCPtr<SVGAnimatedLength> SVGCircleElement::cx() const
 {
-    // FIXME: Create a proper animated value when animations are supported.
-    auto make_length = [&] {
-        if (auto cx = computed_css_values()->length_percentage(CSS::PropertyID::Cx); cx.has_value())
-            return SVGLength::from_length_percentage(realm(), *cx);
-        return SVGLength::create(realm(), 0, 0.0f);
-    };
-    return SVGAnimatedLength::create(realm(), make_length(), make_length());
+    return svg_animated_length_for_property(CSS::PropertyID::Cx);
 }
 
 // https://www.w3.org/TR/SVG11/shapes.html#CircleElementCYAttribute
 JS::NonnullGCPtr<SVGAnimatedLength> SVGCircleElement::cy() const
 {
-    // FIXME: Create a proper animated value when animations are supported.
-    auto make_length = [&] {
-        if (auto cy = computed_css_values()->length_percentage(CSS::PropertyID::Cy); cy.has_value())
-            return SVGLength::from_length_percentage(realm(), *cy);
-        return SVGLength::create(realm(), 0, 0.0f);
-    };
-    return SVGAnimatedLength::create(realm(), make_length(), make_length());
+    return svg_animated_length_for_property(CSS::PropertyID::Cy);
 }
 
 // https://www.w3.org/TR/SVG11/shapes.html#CircleElementRAttribute
 JS::NonnullGCPtr<SVGAnimatedLength> SVGCircleElement::r() const
 {
-    // FIXME: Create a proper animated value when animations are supported.
-    auto make_length = [&] {
-        if (auto r = computed_css_values()->length_percentage(CSS::PropertyID::R); r.has_value())
-            return SVGLength::from_length_percentage(realm(), *r);
-        return SVGLength::create(realm(), 0, 0.0f);
-    };
-    return SVGAnimatedLength::create(realm(), make_length(), make_length());
+    return svg_animated_length_for_property(CSS::PropertyID::R);
 }
 
 }

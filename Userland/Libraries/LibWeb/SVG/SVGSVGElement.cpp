@@ -5,17 +5,20 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/SVGSVGElementPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
+#include <LibWeb/DOM/StaticNodeList.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/SVGAnimatedRect.h>
 #include <LibWeb/SVG/SVGSVGElement.h>
+#include <LibWeb/Selection/Selection.h>
 
 namespace Web::SVG {
 
@@ -44,6 +47,38 @@ JS::GCPtr<Layout::Node> SVGSVGElement::create_layout_node(NonnullRefPtr<CSS::Sty
     return heap().allocate_without_realm<Layout::SVGSVGBox>(document(), *this, move(style));
 }
 
+RefPtr<CSS::CSSStyleValue> SVGSVGElement::width_style_value_from_attribute() const
+{
+    auto parsing_context = CSS::Parser::ParsingContext { document(), CSS::Parser::ParsingContext::Mode::SVGPresentationAttribute };
+    auto width_attribute = attribute(SVG::AttributeNames::width);
+    if (auto width_value = parse_css_value(parsing_context, width_attribute.value_or(String {}), CSS::PropertyID::Width)) {
+        return width_value.release_nonnull();
+    }
+    if (width_attribute == "") {
+        // If the `width` attribute is an empty string, it defaults to 100%.
+        // This matches WebKit and Blink, but not Firefox. The spec is unclear.
+        // FIXME: Figure out what to do here.
+        return CSS::PercentageStyleValue::create(CSS::Percentage { 100 });
+    }
+    return nullptr;
+}
+
+RefPtr<CSS::CSSStyleValue> SVGSVGElement::height_style_value_from_attribute() const
+{
+    auto parsing_context = CSS::Parser::ParsingContext { document(), CSS::Parser::ParsingContext::Mode::SVGPresentationAttribute };
+    auto height_attribute = attribute(SVG::AttributeNames::height);
+    if (auto height_value = parse_css_value(parsing_context, height_attribute.value_or(String {}), CSS::PropertyID::Height)) {
+        return height_value.release_nonnull();
+    }
+    if (height_attribute == "") {
+        // If the `height` attribute is an empty string, it defaults to 100%.
+        // This matches WebKit and Blink, but not Firefox. The spec is unclear.
+        // FIXME: Figure out what to do here.
+        return CSS::PercentageStyleValue::create(CSS::Percentage { 100 });
+    }
+    return nullptr;
+}
+
 void SVGSVGElement::apply_presentational_hints(CSS::StyleProperties& style) const
 {
     Base::apply_presentational_hints(style);
@@ -59,31 +94,16 @@ void SVGSVGElement::apply_presentational_hints(CSS::StyleProperties& style) cons
         style.set_property(CSS::PropertyID::Y, y_value.release_nonnull());
     }
 
-    auto width_attribute = attribute(SVG::AttributeNames::width);
-    if (auto width_value = parse_css_value(parsing_context, width_attribute.value_or(String {}), CSS::PropertyID::Width)) {
-        style.set_property(CSS::PropertyID::Width, width_value.release_nonnull());
-    } else if (width_attribute == "") {
-        // If the `width` attribute is an empty string, it defaults to 100%.
-        // This matches WebKit and Blink, but not Firefox. The spec is unclear.
-        // FIXME: Figure out what to do here.
-        style.set_property(CSS::PropertyID::Width, CSS::PercentageStyleValue::create(CSS::Percentage { 100 }));
-    }
+    if (auto width = width_style_value_from_attribute())
+        style.set_property(CSS::PropertyID::Width, width.release_nonnull());
 
-    // Height defaults to 100%
-    auto height_attribute = attribute(SVG::AttributeNames::height);
-    if (auto height_value = parse_css_value(parsing_context, height_attribute.value_or(String {}), CSS::PropertyID::Height)) {
-        style.set_property(CSS::PropertyID::Height, height_value.release_nonnull());
-    } else if (height_attribute == "") {
-        // If the `height` attribute is an empty string, it defaults to 100%.
-        // This matches WebKit and Blink, but not Firefox. The spec is unclear.
-        // FIXME: Figure out what to do here.
-        style.set_property(CSS::PropertyID::Height, CSS::PercentageStyleValue::create(CSS::Percentage { 100 }));
-    }
+    if (auto height = height_style_value_from_attribute())
+        style.set_property(CSS::PropertyID::Height, height.release_nonnull());
 }
 
-void SVGSVGElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void SVGSVGElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGGraphicsElement::attribute_changed(name, value);
+    SVGGraphicsElement::attribute_changed(name, old_value, value);
 
     if (name.equals_ignoring_ascii_case(SVG::AttributeNames::viewBox)) {
         if (!value.has_value()) {
@@ -147,6 +167,103 @@ Optional<ViewBox> SVGSVGElement::view_box() const
         return m_fallback_view_box_for_svg_as_image;
 
     return {};
+}
+
+JS::NonnullGCPtr<SVGAnimatedLength> SVGSVGElement::x() const
+{
+    return svg_animated_length_for_property(CSS::PropertyID::X);
+}
+
+JS::NonnullGCPtr<SVGAnimatedLength> SVGSVGElement::y() const
+{
+    return svg_animated_length_for_property(CSS::PropertyID::Y);
+}
+
+JS::NonnullGCPtr<SVGAnimatedLength> SVGSVGElement::width() const
+{
+    return svg_animated_length_for_property(CSS::PropertyID::Width);
+}
+
+JS::NonnullGCPtr<SVGAnimatedLength> SVGSVGElement::height() const
+{
+    return svg_animated_length_for_property(CSS::PropertyID::Height);
+}
+
+float SVGSVGElement::current_scale() const
+{
+    dbgln("(STUBBED) SVGSVGElement::current_scale(). Called on: {}", debug_description());
+    return 1.0f;
+}
+
+void SVGSVGElement::set_current_scale(float)
+{
+    dbgln("(STUBBED) SVGSVGElement::set_current_scale(). Called on: {}", debug_description());
+}
+
+JS::NonnullGCPtr<Geometry::DOMPointReadOnly> SVGSVGElement::current_translate() const
+{
+    dbgln("(STUBBED) SVGSVGElement::current_translate(). Called on: {}", debug_description());
+    return Geometry::DOMPointReadOnly::create(realm());
+}
+
+JS::NonnullGCPtr<DOM::NodeList> SVGSVGElement::get_intersection_list(JS::NonnullGCPtr<Geometry::DOMRectReadOnly>, JS::GCPtr<SVGElement>) const
+{
+    dbgln("(STUBBED) SVGSVGElement::get_intersection_list(). Called on: {}", debug_description());
+    return DOM::StaticNodeList::create(realm(), {});
+}
+
+JS::NonnullGCPtr<DOM::NodeList> SVGSVGElement::get_enclosure_list(JS::NonnullGCPtr<Geometry::DOMRectReadOnly>, JS::GCPtr<SVGElement>) const
+{
+    dbgln("(STUBBED) SVGSVGElement::get_enclosure_list(). Called on: {}", debug_description());
+    return DOM::StaticNodeList::create(realm(), {});
+}
+
+bool SVGSVGElement::check_intersection(JS::NonnullGCPtr<SVGElement>, JS::NonnullGCPtr<Geometry::DOMRectReadOnly>) const
+{
+    dbgln("(STUBBED) SVGSVGElement::check_intersection(). Called on: {}", debug_description());
+    return false;
+}
+
+bool SVGSVGElement::check_enclosure(JS::NonnullGCPtr<SVGElement>, JS::NonnullGCPtr<Geometry::DOMRectReadOnly>) const
+{
+    dbgln("(STUBBED) SVGSVGElement::check_enclosure(). Called on: {}", debug_description());
+    return false;
+}
+
+void SVGSVGElement::deselect_all() const
+{
+    // This is equivalent to calling document.getSelection().removeAllRanges() on the document that this ‘svg’ element is in.
+    if (auto selection = document().get_selection())
+        selection->remove_all_ranges();
+}
+
+JS::NonnullGCPtr<SVGLength> SVGSVGElement::create_svg_length() const
+{
+    // A new, detached SVGLength object whose value is the unitless <number> 0.
+    return SVGLength::create(realm(), SVGLength::SVG_LENGTHTYPE_NUMBER, 0);
+}
+
+JS::NonnullGCPtr<Geometry::DOMPoint> SVGSVGElement::create_svg_point() const
+{
+    // A new, detached DOMPoint object whose coordinates are all 0.
+    return Geometry::DOMPoint::from_point(vm(), Geometry::DOMPointInit {});
+}
+
+JS::NonnullGCPtr<Geometry::DOMMatrix> SVGSVGElement::create_svg_matrix() const
+{
+    // A new, detached DOMMatrix object representing the identity matrix.
+    return Geometry::DOMMatrix::create(realm());
+}
+
+JS::NonnullGCPtr<Geometry::DOMRect> SVGSVGElement::create_svg_rect() const
+{
+    // A new, DOMRect object whose x, y, width and height are all 0.
+    return Geometry::DOMRect::construct_impl(realm(), 0, 0, 0, 0).release_value_but_fixme_should_propagate_errors();
+}
+
+JS::NonnullGCPtr<SVGTransform> SVGSVGElement::create_svg_transform() const
+{
+    return SVGTransform::create(realm());
 }
 
 }

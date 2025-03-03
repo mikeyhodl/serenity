@@ -18,6 +18,8 @@
 #   cache [String]
 #       Directory to clear on version mismatch
 #
+#   sha256 [String]
+#       Expected SHA-256 hash of the downloaded file
 #
 # Example use:
 #
@@ -37,7 +39,7 @@ template("download_file") {
          "must set 'version_file' in $target_name")
 
   action(target_name) {
-    script = "//Meta/gn/build/download_file.py"
+    script = "//Meta/download_file.py"
 
     sources = []
     if (defined(invoker.cache)) {
@@ -64,6 +66,12 @@ template("download_file") {
       args += [
         "-c",
         rebase_path(invoker.cache, root_build_dir),
+      ]
+    }
+    if (defined(invoker.sha256)) {
+      args += [
+        "-s",
+        invoker.sha256,
       ]
     }
 

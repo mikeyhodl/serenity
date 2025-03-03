@@ -61,7 +61,7 @@ Gfx::Color border_color(BorderEdge edge, BordersDataDevicePixels const& borders_
     return border_data.color;
 }
 
-void paint_border(Gfx::Painter& painter, BorderEdge edge, DevicePixelRect const& rect, Gfx::AntiAliasingPainter::CornerRadius const& radius, Gfx::AntiAliasingPainter::CornerRadius const& opposite_radius, BordersDataDevicePixels const& borders_data, Gfx::Path& path, bool last)
+void paint_border(DisplayListRecorder& painter, BorderEdge edge, DevicePixelRect const& rect, Gfx::CornerRadius const& radius, Gfx::CornerRadius const& opposite_radius, BordersDataDevicePixels const& borders_data, Gfx::Path& path, bool last)
 {
     auto const& border_data = [&] {
         switch (edge) {
@@ -100,19 +100,19 @@ void paint_border(Gfx::Painter& painter, BorderEdge edge, DevicePixelRect const&
         }
     };
 
-    auto gfx_line_style = Gfx::Painter::LineStyle::Solid;
+    auto gfx_line_style = Gfx::LineStyle::Solid;
     switch (border_style) {
     case CSS::LineStyle::None:
     case CSS::LineStyle::Hidden:
         return;
     case CSS::LineStyle::Dotted:
-        gfx_line_style = Gfx::Painter::LineStyle::Dotted;
+        gfx_line_style = Gfx::LineStyle::Dotted;
         break;
     case CSS::LineStyle::Dashed:
-        gfx_line_style = Gfx::Painter::LineStyle::Dashed;
+        gfx_line_style = Gfx::LineStyle::Dashed;
         break;
     case CSS::LineStyle::Solid:
-        gfx_line_style = Gfx::Painter::LineStyle::Solid;
+        gfx_line_style = Gfx::LineStyle::Solid;
         break;
     case CSS::LineStyle::Double:
     case CSS::LineStyle::Groove:
@@ -123,7 +123,7 @@ void paint_border(Gfx::Painter& painter, BorderEdge edge, DevicePixelRect const&
         break;
     }
 
-    if (gfx_line_style != Gfx::Painter::LineStyle::Solid) {
+    if (gfx_line_style != Gfx::LineStyle::Solid) {
         auto [p1, p2] = points_for_edge(edge, rect);
         switch (edge) {
         case BorderEdge::Top:
@@ -189,8 +189,9 @@ void paint_border(Gfx::Painter& painter, BorderEdge edge, DevicePixelRect const&
         // If joined borders have the same color, combine them to draw together.
         if (ready_to_draw) {
             path.close_all_subpaths();
-            Gfx::AntiAliasingPainter aa_painter(painter);
-            aa_painter.fill_path(path, color, Gfx::Painter::WindingRule::EvenOdd);
+            painter.fill_path({ .path = path,
+                .color = color,
+                .winding_rule = Gfx::WindingRule::EvenOdd });
             path.clear();
         }
     };
@@ -490,7 +491,7 @@ void paint_border(Gfx::Painter& painter, BorderEdge edge, DevicePixelRect const&
     }
 }
 
-void paint_all_borders(Gfx::Painter& painter, DevicePixelRect const& border_rect, CornerRadii const& corner_radii, BordersDataDevicePixels const& borders_data)
+void paint_all_borders(DisplayListRecorder& painter, DevicePixelRect const& border_rect, CornerRadii const& corner_radii, BordersDataDevicePixels const& borders_data)
 {
     if (borders_data.top.width <= 0 && borders_data.right.width <= 0 && borders_data.left.width <= 0 && borders_data.bottom.width <= 0)
         return;
@@ -579,10 +580,10 @@ Optional<BordersData> borders_data_for_outline(Layout::Node const& layout_node, 
     if (outline_style == CSS::OutlineStyle::Auto) {
         // `auto` lets us do whatever we want for the outline. 2px of the link colour seems reasonable.
         line_style = CSS::LineStyle::Dotted;
-        outline_color = layout_node.document().link_color();
+        outline_color = layout_node.document().normal_link_color();
         outline_width = 2;
     } else {
-        line_style = CSS::value_id_to_line_style(CSS::to_value_id(outline_style)).value_or(CSS::LineStyle::None);
+        line_style = CSS::keyword_to_line_style(CSS::to_keyword(outline_style)).value_or(CSS::LineStyle::None);
     }
 
     if (outline_color.alpha() == 0 || line_style == CSS::LineStyle::None || outline_width == 0)

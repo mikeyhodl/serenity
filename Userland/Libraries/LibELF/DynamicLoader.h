@@ -35,11 +35,6 @@ private:
     size_t m_size;
 };
 
-enum class ShouldInitializeWeak {
-    Yes,
-    No
-};
-
 enum class ShouldCallIfuncResolver {
     Yes,
     No
@@ -86,12 +81,21 @@ public:
     bool is_dynamic() const { return image().is_dynamic(); }
 
     static Optional<DynamicObject::SymbolLookupResult> lookup_symbol(const ELF::DynamicObject::Symbol&);
-    void copy_initial_tls_data_into(ByteBuffer& buffer) const;
+    void copy_initial_tls_data_into(Bytes buffer) const;
 
-    DynamicObject const& dynamic_object() const;
+    DynamicObject& dynamic_object() { return *m_dynamic_object; }
+    DynamicObject const& dynamic_object() const { return *m_dynamic_object; }
 
     bool is_fully_relocated() const { return m_fully_relocated; }
     bool is_fully_initialized() const { return m_fully_initialized; }
+
+    void add_dependency(NonnullRefPtr<DynamicLoader> dependency)
+    {
+        // Dependencies that aren't actually true will be removed in compute_topological_order.
+        m_true_dependencies.append(move(dependency));
+    }
+
+    void compute_topological_order(Vector<NonnullRefPtr<DynamicLoader>>& topological_order);
 
 private:
     DynamicLoader(int fd, ByteString filepath, void* file_data, size_t file_size);
@@ -127,7 +131,6 @@ private:
     void do_main_relocations();
 
     // Stage 3
-    void do_lazy_relocations();
     void setup_plt_trampoline();
 
     // Stage 4
@@ -138,16 +141,15 @@ private:
     friend FlatPtr _fixup_plt_entry(DynamicObject*, u32);
 
     enum class RelocationResult : uint8_t {
-        Failed = 0,
-        Success = 1,
-        ResolveLater = 2,
-        CallIfuncResolver = 3,
+        Failed,
+        Success,
+        CallIfuncResolver,
     };
     struct CachedLookupResult {
         DynamicObject::Symbol symbol;
         Optional<DynamicObject::SymbolLookupResult> result;
     };
-    RelocationResult do_direct_relocation(DynamicObject::Relocation const&, Optional<CachedLookupResult>&, ShouldInitializeWeak, ShouldCallIfuncResolver);
+    RelocationResult do_direct_relocation(DynamicObject::Relocation const&, Optional<CachedLookupResult>&, ShouldCallIfuncResolver);
     // Will be called from _fixup_plt_entry, as part of the PLT trampoline
     static RelocationResult do_plt_relocation(DynamicObject::Relocation const&, ShouldCallIfuncResolver);
     void do_relr_relocations();
@@ -174,14 +176,19 @@ private:
     size_t m_tls_size_of_current_object { 0 };
     size_t m_tls_alignment_of_current_object { 0 };
 
-    Vector<DynamicObject::Relocation> m_unresolved_relocations;
     Vector<DynamicObject::Relocation> m_direct_ifunc_relocations;
     Vector<DynamicObject::Relocation> m_plt_ifunc_relocations;
 
-    mutable RefPtr<DynamicObject> m_cached_dynamic_object;
-
     bool m_fully_relocated { false };
     bool m_fully_initialized { false };
+
+    enum class TopologicalOrderingState {
+        NotVisited,
+        Visiting,
+        Visited,
+    } m_topological_ordering_state { TopologicalOrderingState::NotVisited };
+
+    Vector<NonnullRefPtr<DynamicLoader>> m_true_dependencies;
 };
 
 template<typename F>

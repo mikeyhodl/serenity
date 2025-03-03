@@ -22,8 +22,9 @@ class FileList
     JS_DECLARE_ALLOCATOR(FileList);
 
 public:
-    [[nodiscard]] static JS::NonnullGCPtr<FileList> create(JS::Realm&, Vector<JS::NonnullGCPtr<File>>&&);
     [[nodiscard]] static JS::NonnullGCPtr<FileList> create(JS::Realm&);
+
+    void add_file(JS::NonnullGCPtr<File> file) { m_files.append(file); }
 
     virtual ~FileList() override;
 
@@ -42,15 +43,13 @@ public:
         return index < m_files.size() ? m_files[index].ptr() : nullptr;
     }
 
-    virtual bool is_supported_property_index(u32 index) const override;
-    virtual WebIDL::ExceptionOr<JS::Value> item_value(size_t index) const override;
+    virtual Optional<JS::Value> item_value(size_t index) const override;
 
     virtual StringView interface_name() const override { return "FileList"sv; }
     virtual WebIDL::ExceptionOr<void> serialization_steps(HTML::SerializationRecord& serialized, bool for_storage, HTML::SerializationMemory&) override;
     virtual WebIDL::ExceptionOr<void> deserialization_steps(ReadonlySpan<u32> const& serialized, size_t& position, HTML::DeserializationMemory&) override;
 
 private:
-    FileList(JS::Realm&, Vector<JS::NonnullGCPtr<File>>&&);
     explicit FileList(JS::Realm&);
 
     virtual void initialize(JS::Realm&) override;

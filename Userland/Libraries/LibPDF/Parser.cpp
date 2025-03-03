@@ -362,6 +362,10 @@ PDFErrorOr<ByteString> Parser::parse_hex_string()
 
             for (int i = 0; i < 2; i++) {
                 m_reader.consume_whitespace();
+
+                if (m_reader.done())
+                    return error("unterminated hex string");
+
                 auto ch = m_reader.consume();
                 if (ch == '>') {
                     // The hex string contains an odd number of characters, and the last character
@@ -447,9 +451,12 @@ PDFErrorOr<void> Parser::unfilter_stream(NonnullRefPtr<StreamObject> stream_obje
             auto decode_parms_array = decode_parms_object->cast<ArrayObject>();
             for (size_t i = 0; i < decode_parms_array->size(); ++i) {
                 RefPtr<DictObject> decode_parms;
-                auto entry = decode_parms_array->at(i);
-                if (entry.has<NonnullRefPtr<Object>>())
-                    decode_parms = entry.get<NonnullRefPtr<Object>>()->cast<DictObject>();
+                auto entry = TRY(m_document->resolve(decode_parms_array->at(i)));
+                if (entry.has<NonnullRefPtr<Object>>()) {
+                    auto entry_object = entry.get<NonnullRefPtr<Object>>();
+                    if (entry_object->is<DictObject>())
+                        decode_parms = entry_object->cast<DictObject>();
+                }
                 decode_parms_vector.append(decode_parms);
             }
         } else {

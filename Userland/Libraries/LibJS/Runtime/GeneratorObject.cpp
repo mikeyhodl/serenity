@@ -16,7 +16,7 @@ namespace JS {
 
 JS_DEFINE_ALLOCATOR(GeneratorObject);
 
-ThrowCompletionOr<NonnullGCPtr<GeneratorObject>> GeneratorObject::create(Realm& realm, Value initial_value, ECMAScriptFunctionObject* generating_function, NonnullOwnPtr<ExecutionContext> execution_context, NonnullOwnPtr<Bytecode::CallFrame> frame)
+ThrowCompletionOr<NonnullGCPtr<GeneratorObject>> GeneratorObject::create(Realm& realm, Value initial_value, ECMAScriptFunctionObject* generating_function, NonnullOwnPtr<ExecutionContext> execution_context)
 {
     auto& vm = realm.vm();
     // This is "g1.prototype" in figure-2 (https://tc39.es/ecma262/img/figure-2.png)
@@ -32,7 +32,6 @@ ThrowCompletionOr<NonnullGCPtr<GeneratorObject>> GeneratorObject::create(Realm& 
     auto generating_function_prototype_object = TRY(generating_function_prototype.to_object(vm));
     auto object = realm.heap().allocate<GeneratorObject>(realm, realm, generating_function_prototype_object, move(execution_context));
     object->m_generating_function = generating_function;
-    object->m_frame = move(frame);
     object->m_previous_value = initial_value;
     return object;
 }
@@ -49,8 +48,6 @@ void GeneratorObject::visit_edges(Cell::Visitor& visitor)
     Base::visit_edges(visitor);
     visitor.visit(m_generating_function);
     visitor.visit(m_previous_value);
-    if (m_frame)
-        m_frame->visit_edges(visitor);
     m_execution_context->visit_edges(visitor);
 }
 
@@ -91,12 +88,14 @@ ThrowCompletionOr<Value> GeneratorObject::execute(VM& vm, Completion const& comp
         return value.is_empty() ? js_undefined() : value;
     };
 
-    auto generated_continuation = [&](Value value) -> Bytecode::BasicBlock const* {
+    auto generated_continuation = [&](Value value) -> Optional<size_t> {
         if (value.is_object()) {
             auto number_value = value.as_object().get_without_side_effects("continuation");
-            return reinterpret_cast<Bytecode::BasicBlock const*>(static_cast<u64>(number_value.as_double()));
+            if (number_value.is_null())
+                return {};
+            return static_cast<u64>(number_value.as_double());
         }
-        return nullptr;
+        return {};
     };
 
     auto& realm = *vm.current_realm();
@@ -106,28 +105,14 @@ ThrowCompletionOr<Value> GeneratorObject::execute(VM& vm, Completion const& comp
 
     auto& bytecode_interpreter = vm.bytecode_interpreter();
 
-    auto const* next_block = generated_continuation(m_previous_value);
+    auto const next_block = generated_continuation(m_previous_value);
 
     // We should never enter `execute` again after the generator is complete.
-    VERIFY(next_block);
+    VERIFY(next_block.has_value());
 
-    VERIFY(!m_generating_function->bytecode_executable()->basic_blocks.find_if([next_block](auto& block) { return block == next_block; }).is_end());
-
-    Bytecode::CallFrame* frame = nullptr;
-    if (m_frame)
-        frame = m_frame;
-
-    if (frame)
-        frame->registers()[0] = completion_object;
-    else
-        bytecode_interpreter.accumulator() = completion_object;
-
-    auto next_result = bytecode_interpreter.run_and_return_frame(*m_generating_function->bytecode_executable(), next_block, frame);
+    auto next_result = bytecode_interpreter.run_executable(*m_generating_function->bytecode_executable(), next_block, completion_object);
 
     vm.pop_execution_context();
-
-    if (!m_frame)
-        m_frame = move(next_result.frame);
 
     auto result_value = move(next_result.value);
     if (result_value.is_throw_completion()) {
@@ -136,7 +121,7 @@ ThrowCompletionOr<Value> GeneratorObject::execute(VM& vm, Completion const& comp
         return result_value;
     }
     m_previous_value = result_value.release_value();
-    bool done = generated_continuation(m_previous_value) == nullptr;
+    bool done = !generated_continuation(m_previous_value).has_value();
 
     m_generator_state = done ? GeneratorState::Completed : GeneratorState::SuspendedYield;
     return create_iterator_result_object(vm, generated_value(m_previous_value), done);

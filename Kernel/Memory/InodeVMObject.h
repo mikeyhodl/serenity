@@ -22,14 +22,17 @@ public:
     size_t amount_dirty() const;
     size_t amount_clean() const;
 
+    bool is_page_dirty(size_t page_index) const;
+    void set_page_dirty(size_t page_index, bool is_dirty);
+
     int release_all_clean_pages();
     int try_release_clean_pages(int page_amount);
 
     u32 writable_mappings() const;
 
 protected:
-    explicit InodeVMObject(Inode&, FixedArray<RefPtr<PhysicalPage>>&&, Bitmap dirty_pages);
-    explicit InodeVMObject(InodeVMObject const&, FixedArray<RefPtr<PhysicalPage>>&&, Bitmap dirty_pages);
+    explicit InodeVMObject(Inode&, FixedArray<RefPtr<PhysicalRAMPage>>&&, Bitmap dirty_pages);
+    explicit InodeVMObject(InodeVMObject const&, FixedArray<RefPtr<PhysicalRAMPage>>&&, Bitmap dirty_pages);
 
     InodeVMObject& operator=(InodeVMObject const&) = delete;
     InodeVMObject& operator=(InodeVMObject&&) = delete;

@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Arch/SmapDisabler.h>
 #include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Tasks/Process.h>
 
@@ -79,13 +78,12 @@ ErrorOr<FlatPtr> Process::sys$sigreturn(RegisterState& registers)
 {
     VERIFY_NO_PROCESS_BIG_LOCK(this);
     TRY(require_promise(Pledge::stdio));
-    SmapDisabler disabler;
 
     // Here, we restore the state pushed by dispatch signal and asm_signal_trampoline.
     auto stack_ptr = registers.userspace_sp();
 
     // Stack state (created by the signal trampoline):
-    // saved_ax, ucontext, signal_info, fpu_state?.
+    // saved_return_value, ucontext, signal_info, fpu_state?.
 
     // The FPU state is at the top here, pop it off and restore it.
     // FIXME: The stack alignment is off by 8 bytes here, figure this out and remove this excessively aligned object.
@@ -99,7 +97,7 @@ ErrorOr<FlatPtr> Process::sys$sigreturn(RegisterState& registers)
     auto ucontext = TRY(copy_typed_from_user<__ucontext>(stack_ptr));
     stack_ptr += sizeof(__ucontext);
 
-    auto saved_ax = TRY(copy_typed_from_user<FlatPtr>(stack_ptr));
+    auto saved_return_value = TRY(copy_typed_from_user<FlatPtr>(stack_ptr));
 
     Thread::current()->m_signal_mask = ucontext.uc_sigmask;
     Thread::current()->m_currently_handled_signal = 0;
@@ -114,7 +112,7 @@ ErrorOr<FlatPtr> Process::sys$sigreturn(RegisterState& registers)
     registers.rsp = sp;
 #endif
 
-    return saved_ax;
+    return saved_return_value;
 }
 
 ErrorOr<Memory::VirtualRange> Process::remap_range_as_stack(FlatPtr address, size_t size)

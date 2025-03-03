@@ -106,7 +106,8 @@ Value FunctionExpression::instantiate_ordinary_function_expression(VM& vm, Depre
 
     auto private_environment = vm.running_execution_context().private_environment;
 
-    auto closure = ECMAScriptFunctionObject::create(realm, used_name, source_text(), body(), parameters(), function_length(), local_variables_names(), environment, private_environment, kind(), is_strict_mode(), might_need_arguments_object(), contains_direct_call_to_eval(), is_arrow_function());
+    auto closure = ECMAScriptFunctionObject::create(realm, used_name, source_text(), body(), parameters(), function_length(), local_variables_names(), environment, private_environment, kind(), is_strict_mode(),
+        parsing_insights(), is_arrow_function());
 
     // FIXME: 6. Perform SetFunctionName(closure, name).
     // FIXME: 7. Perform MakeConstructor(closure).
@@ -128,7 +129,7 @@ Optional<ByteString> CallExpression::expression_string() const
     return {};
 }
 
-static ThrowCompletionOr<ClassElementName> class_key_to_property_name(VM& vm, Expression const& key)
+static ThrowCompletionOr<ClassElementName> class_key_to_property_name(VM& vm, Expression const& key, Value prop_key)
 {
     if (is<PrivateIdentifier>(key)) {
         auto& private_identifier = static_cast<PrivateIdentifier const&>(key);
@@ -137,7 +138,7 @@ static ThrowCompletionOr<ClassElementName> class_key_to_property_name(VM& vm, Ex
         return ClassElementName { private_environment->resolve_private_identifier(private_identifier.string()) };
     }
 
-    auto prop_key = TRY(vm.execute_ast_node(key));
+    VERIFY(!prop_key.is_empty());
 
     if (prop_key.is_object())
         prop_key = TRY(prop_key.to_primitive(vm, Value::PreferredType::String));
@@ -147,15 +148,14 @@ static ThrowCompletionOr<ClassElementName> class_key_to_property_name(VM& vm, Ex
 }
 
 // 15.4.5 Runtime Semantics: MethodDefinitionEvaluation, https://tc39.es/ecma262/#sec-runtime-semantics-methoddefinitionevaluation
-ThrowCompletionOr<ClassElement::ClassValue> ClassMethod::class_element_evaluation(VM& vm, Object& target) const
+ThrowCompletionOr<ClassElement::ClassValue> ClassMethod::class_element_evaluation(VM& vm, Object& target, Value property_key) const
 {
-    auto property_key_or_private_name = TRY(class_key_to_property_name(vm, *m_key));
+    auto property_key_or_private_name = TRY(class_key_to_property_name(vm, *m_key, property_key));
 
-    auto method_value = TRY(vm.execute_ast_node(*m_function));
+    auto& method_function = *ECMAScriptFunctionObject::create(*vm.current_realm(), m_function->name(), m_function->source_text(), m_function->body(), m_function->parameters(), m_function->function_length(), m_function->local_variables_names(), vm.lexical_environment(), vm.running_execution_context().private_environment, m_function->kind(), m_function->is_strict_mode(),
+        m_function->parsing_insights(), m_function->is_arrow_function());
 
-    auto function_handle = make_handle(&method_value.as_function());
-
-    auto& method_function = static_cast<ECMAScriptFunctionObject&>(method_value.as_function());
+    auto method_value = Value(&method_function);
     method_function.make_method(target);
 
     auto set_function_name = [&](ByteString prefix = "") {
@@ -222,12 +222,12 @@ void ClassFieldInitializerStatement::dump(int) const
 }
 
 // 15.7.10 Runtime Semantics: ClassFieldDefinitionEvaluation, https://tc39.es/ecma262/#sec-runtime-semantics-classfielddefinitionevaluation
-ThrowCompletionOr<ClassElement::ClassValue> ClassField::class_element_evaluation(VM& vm, Object& target) const
+ThrowCompletionOr<ClassElement::ClassValue> ClassField::class_element_evaluation(VM& vm, Object& target, Value property_key) const
 {
     auto& realm = *vm.current_realm();
 
-    auto property_key_or_private_name = TRY(class_key_to_property_name(vm, *m_key));
-    Handle<ECMAScriptFunctionObject> initializer {};
+    auto property_key_or_private_name = TRY(class_key_to_property_name(vm, *m_key, property_key));
+    GCPtr<ECMAScriptFunctionObject> initializer;
     if (m_initializer) {
         auto copy_initializer = m_initializer;
         auto name = property_key_or_private_name.visit(
@@ -240,7 +240,10 @@ ThrowCompletionOr<ClassElement::ClassValue> ClassField::class_element_evaluation
 
         // FIXME: A potential optimization is not creating the functions here since these are never directly accessible.
         auto function_code = create_ast_node<ClassFieldInitializerStatement>(m_initializer->source_range(), copy_initializer.release_nonnull(), name);
-        initializer = make_handle(*ECMAScriptFunctionObject::create(realm, "field", ByteString::empty(), *function_code, {}, 0, {}, vm.lexical_environment(), vm.running_execution_context().private_environment, FunctionKind::Normal, true, false, m_contains_direct_call_to_eval, false, property_key_or_private_name));
+        FunctionParsingInsights parsing_insights;
+        parsing_insights.uses_this_from_environment = true;
+        parsing_insights.uses_this = true;
+        initializer = ECMAScriptFunctionObject::create(realm, "field", ByteString::empty(), *function_code, {}, 0, {}, vm.lexical_environment(), vm.running_execution_context().private_environment, FunctionKind::Normal, true, parsing_insights, false, property_key_or_private_name);
         initializer->make_method(target);
     }
 
@@ -270,7 +273,7 @@ Optional<DeprecatedFlyString> ClassMethod::private_bound_identifier() const
 }
 
 // 15.7.11 Runtime Semantics: ClassStaticBlockDefinitionEvaluation, https://tc39.es/ecma262/#sec-runtime-semantics-classstaticblockdefinitionevaluation
-ThrowCompletionOr<ClassElement::ClassValue> StaticInitializer::class_element_evaluation(VM& vm, Object& home_object) const
+ThrowCompletionOr<ClassElement::ClassValue> StaticInitializer::class_element_evaluation(VM& vm, Object& home_object, Value) const
 {
     auto& realm = *vm.current_realm();
 
@@ -284,7 +287,10 @@ ThrowCompletionOr<ClassElement::ClassValue> StaticInitializer::class_element_eva
     // 4. Let formalParameters be an instance of the production FormalParameters : [empty] .
     // 5. Let bodyFunction be OrdinaryFunctionCreate(%Function.prototype%, sourceText, formalParameters, ClassStaticBlockBody, non-lexical-this, lex, privateEnv).
     // Note: The function bodyFunction is never directly accessible to ECMAScript code.
-    auto body_function = ECMAScriptFunctionObject::create(realm, ByteString::empty(), ByteString::empty(), *m_function_body, {}, 0, m_function_body->local_variables_names(), lexical_environment, private_environment, FunctionKind::Normal, true, false, m_contains_direct_call_to_eval, false);
+    FunctionParsingInsights parsing_insights;
+    parsing_insights.uses_this_from_environment = true;
+    parsing_insights.uses_this = true;
+    auto body_function = ECMAScriptFunctionObject::create(realm, ByteString::empty(), ByteString::empty(), *m_function_body, {}, 0, m_function_body->local_variables_names(), lexical_environment, private_environment, FunctionKind::Normal, true, parsing_insights, false);
 
     // 6. Perform MakeMethod(bodyFunction, homeObject).
     body_function->make_method(home_object);
@@ -293,7 +299,7 @@ ThrowCompletionOr<ClassElement::ClassValue> StaticInitializer::class_element_eva
     return ClassValue { normal_completion(body_function) };
 }
 
-ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_constructor(VM& vm, Environment* class_environment, Environment* environment, Value super_class, Optional<DeprecatedFlyString> const& binding_name, DeprecatedFlyString const& class_name) const
+ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_constructor(VM& vm, Environment* class_environment, Environment* environment, Value super_class, ReadonlySpan<Value> element_keys, Optional<DeprecatedFlyString> const& binding_name, DeprecatedFlyString const& class_name) const
 {
     auto& realm = *vm.current_realm();
 
@@ -302,17 +308,10 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_const
         vm.running_execution_context().lexical_environment = environment;
     };
 
-    auto outer_private_environment = vm.running_execution_context().private_environment;
-    auto class_private_environment = new_private_environment(vm, outer_private_environment);
+    vm.running_execution_context().lexical_environment = class_environment;
 
     auto proto_parent = GCPtr { realm.intrinsics().object_prototype() };
     auto constructor_parent = realm.intrinsics().function_prototype();
-
-    for (auto const& element : m_elements) {
-        auto opt_private_name = element->private_bound_identifier();
-        if (opt_private_name.has_value())
-            class_private_environment->add_private_name({}, opt_private_name.release_value());
-    }
 
     if (!m_super_class.is_null()) {
         if (super_class.is_null()) {
@@ -333,17 +332,14 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_const
         }
     }
 
-    auto prototype = Object::create(realm, proto_parent);
+    auto prototype = Object::create_prototype(realm, proto_parent);
     VERIFY(prototype);
-
-    vm.running_execution_context().lexical_environment = class_environment;
-    vm.running_execution_context().private_environment = class_private_environment;
-    ScopeGuard restore_private_environment = [&] {
-        vm.running_execution_context().private_environment = outer_private_environment;
-    };
 
     // FIXME: Step 14.a is done in the parser. By using a synthetic super(...args) which does not call @@iterator of %Array.prototype%
     auto const& constructor = *m_constructor;
+    auto parsing_insights = constructor.parsing_insights();
+    parsing_insights.uses_this_from_environment = true;
+    parsing_insights.uses_this = true;
     auto class_constructor = ECMAScriptFunctionObject::create(
         realm,
         constructor.name(),
@@ -356,8 +352,7 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_const
         vm.running_execution_context().private_environment,
         constructor.kind(),
         constructor.is_strict_mode(),
-        constructor.might_need_arguments_object(),
-        constructor.contains_direct_call_to_eval(),
+        parsing_insights,
         constructor.is_arrow_function());
 
     class_constructor->set_name(class_name);
@@ -371,16 +366,18 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_const
 
     prototype->define_direct_property(vm.names.constructor, class_constructor, Attribute::Writable | Attribute::Configurable);
 
-    using StaticElement = Variant<ClassFieldDefinition, Handle<ECMAScriptFunctionObject>>;
+    using StaticElement = Variant<ClassFieldDefinition, JS::NonnullGCPtr<ECMAScriptFunctionObject>>;
 
     ConservativeVector<PrivateElement> static_private_methods(vm.heap());
     ConservativeVector<PrivateElement> instance_private_methods(vm.heap());
-    Vector<ClassFieldDefinition> instance_fields;
-    Vector<StaticElement> static_elements;
+    ConservativeVector<ClassFieldDefinition> instance_fields(vm.heap());
+    ConservativeVector<StaticElement> static_elements(vm.heap());
 
-    for (auto const& element : m_elements) {
+    for (size_t element_index = 0; element_index < m_elements.size(); element_index++) {
+        auto const& element = m_elements[element_index];
+
         // Note: All ClassElementEvaluation start with evaluating the name (or we fake it).
-        auto element_value = TRY(element->class_element_evaluation(vm, element->is_static() ? *class_constructor : *prototype));
+        auto element_value = TRY(element->class_element_evaluation(vm, element->is_static() ? *class_constructor : *prototype, element_keys[element_index]));
 
         if (element_value.has<PrivateElement>()) {
             auto& container = element->is_static() ? static_private_methods : instance_private_methods;
@@ -414,7 +411,7 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_const
             VERIFY(element_value.has<Completion>() && element_value.get<Completion>().value().has_value());
             auto& element_object = element_value.get<Completion>().value()->as_object();
             VERIFY(is<ECMAScriptFunctionObject>(element_object));
-            static_elements.append(make_handle(static_cast<ECMAScriptFunctionObject*>(&element_object)));
+            static_elements.append(NonnullGCPtr { static_cast<ECMAScriptFunctionObject&>(element_object) });
         }
     }
 
@@ -449,26 +446,6 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::create_class_const
     class_constructor->set_source_text(source_text());
 
     return { class_constructor };
-}
-
-ThrowCompletionOr<ECMAScriptFunctionObject*> ClassExpression::class_definition_evaluation(VM& vm, Optional<DeprecatedFlyString> const& binding_name, DeprecatedFlyString const& class_name) const
-{
-    auto* environment = vm.lexical_environment();
-    VERIFY(environment);
-    auto class_environment = new_declarative_environment(*environment);
-
-    Value super_class;
-
-    if (binding_name.has_value())
-        MUST(class_environment->create_immutable_binding(vm, binding_name.value(), true));
-
-    if (!m_super_class.is_null()) {
-        vm.running_execution_context().lexical_environment = class_environment;
-        super_class = TRY(vm.execute_ast_node(*m_super_class));
-        vm.running_execution_context().lexical_environment = environment;
-    }
-
-    return create_class_constructor(vm, class_environment, environment, super_class, binding_name, class_name);
 }
 
 void ASTNode::dump(int indent) const
@@ -854,7 +831,7 @@ void FunctionNode::dump(int indent, ByteString const& class_name) const
     auto is_async = m_kind == FunctionKind::Async || m_kind == FunctionKind::AsyncGenerator;
     auto is_generator = m_kind == FunctionKind::Generator || m_kind == FunctionKind::AsyncGenerator;
     outln("{}{}{} '{}'", class_name, is_async ? " async" : "", is_generator ? "*" : "", name());
-    if (m_contains_direct_call_to_eval) {
+    if (m_parsing_insights.contains_direct_call_to_eval) {
         print_indent(indent + 1);
         outln("\033[31;1m(direct eval)\033[0m");
     }
@@ -1439,6 +1416,16 @@ void SequenceExpression::dump(int indent) const
         expression->dump(indent + 1);
 }
 
+bool ScopeNode::has_non_local_lexical_declarations() const
+{
+    bool result = false;
+    MUST(for_each_lexically_declared_identifier([&](Identifier const& identifier) {
+        if (!identifier.is_local())
+            result = true;
+    }));
+    return result;
+}
+
 ThrowCompletionOr<void> ScopeNode::for_each_lexically_scoped_declaration(ThrowCompletionOrVoidCallback<Declaration const&>&& callback) const
 {
     for (auto& declaration : m_lexical_declarations)
@@ -1642,11 +1629,15 @@ void ScopeNode::block_declaration_instantiation(VM& vm, Environment* environment
             auto& function_declaration = static_cast<FunctionDeclaration const&>(declaration);
 
             // ii. Let fo be InstantiateFunctionObject of d with arguments env and privateEnv.
-            auto function = ECMAScriptFunctionObject::create(realm, function_declaration.name(), function_declaration.source_text(), function_declaration.body(), function_declaration.parameters(), function_declaration.function_length(), function_declaration.local_variables_names(), environment, private_environment, function_declaration.kind(), function_declaration.is_strict_mode(), function_declaration.might_need_arguments_object(), function_declaration.contains_direct_call_to_eval());
+            auto function = ECMAScriptFunctionObject::create(realm, function_declaration.name(), function_declaration.source_text(), function_declaration.body(), function_declaration.parameters(), function_declaration.function_length(), function_declaration.local_variables_names(), environment, private_environment, function_declaration.kind(), function_declaration.is_strict_mode(),
+                function_declaration.parsing_insights());
 
             // iii. Perform ! env.InitializeBinding(fn, fo). NOTE: This step is replaced in section B.3.2.6.
             if (function_declaration.name_identifier()->is_local()) {
-                vm.running_execution_context().local(function_declaration.name_identifier()->local_variable_index()) = function;
+                auto& running_execution_context = vm.running_execution_context();
+                auto number_of_registers = running_execution_context.executable->number_of_registers;
+                auto number_of_constants = running_execution_context.executable->constants.size();
+                running_execution_context.local(function_declaration.name_identifier()->local_variable_index() + number_of_registers + number_of_constants) = function;
             } else {
                 VERIFY(is<DeclarativeEnvironment>(*environment));
                 static_cast<DeclarativeEnvironment&>(*environment).initialize_or_set_mutable_binding({}, vm, function_declaration.name(), function);
@@ -1846,7 +1837,8 @@ ThrowCompletionOr<void> Program::global_declaration_instantiation(VM& vm, Global
     for (auto& declaration : functions_to_initialize.in_reverse()) {
         // a. Let fn be the sole element of the BoundNames of f.
         // b. Let fo be InstantiateFunctionObject of f with arguments env and privateEnv.
-        auto function = ECMAScriptFunctionObject::create(realm, declaration.name(), declaration.source_text(), declaration.body(), declaration.parameters(), declaration.function_length(), declaration.local_variables_names(), &global_environment, private_environment, declaration.kind(), declaration.is_strict_mode(), declaration.might_need_arguments_object(), declaration.contains_direct_call_to_eval());
+        auto function = ECMAScriptFunctionObject::create(realm, declaration.name(), declaration.source_text(), declaration.body(), declaration.parameters(), declaration.function_length(), declaration.local_variables_names(), &global_environment, private_environment, declaration.kind(), declaration.is_strict_mode(),
+            declaration.parsing_insights());
 
         // c. Perform ? env.CreateGlobalFunctionBinding(fn, fo, false).
         TRY(global_environment.create_global_function_binding(declaration.name(), function, false));

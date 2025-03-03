@@ -17,10 +17,10 @@
 #include <LibJS/Forward.h>
 #include <LibJS/Heap/Cell.h>
 #include <LibJS/Heap/GCPtr.h>
+#include <LibURL/Origin.h>
 #include <LibURL/URL.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Headers.h>
-#include <LibWeb/HTML/Origin.h>
 #include <LibWeb/HTML/PolicyContainers.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 
@@ -56,6 +56,7 @@ public:
         Frame,
         IFrame,
         Image,
+        JSON,
         Manifest,
         Object,
         PaintWorklet,
@@ -158,14 +159,21 @@ public:
         Auto
     };
 
+    // AD-HOC: Some web features need to receive data as it arrives, rather than when the response is fully complete
+    //         or when enough data has been buffered. Use this buffer policy to inform fetch of that requirement.
+    enum class BufferPolicy {
+        BufferResponse,
+        DoNotBufferResponse,
+    };
+
     // Members are implementation-defined
     struct InternalPriority { };
 
     using BodyType = Variant<Empty, ByteBuffer, JS::NonnullGCPtr<Body>>;
-    using OriginType = Variant<Origin, HTML::Origin>;
+    using OriginType = Variant<Origin, URL::Origin>;
     using PolicyContainerType = Variant<PolicyContainer, HTML::PolicyContainer>;
     using ReferrerType = Variant<Referrer, URL::URL>;
-    using ReservedClientType = Variant<Empty, HTML::Environment*, JS::GCPtr<HTML::EnvironmentSettingsObject>>;
+    using ReservedClientType = JS::GCPtr<HTML::Environment>;
     using WindowType = Variant<Window, JS::GCPtr<HTML::EnvironmentSettingsObject>>;
 
     [[nodiscard]] static JS::NonnullGCPtr<Request> create(JS::VM&);
@@ -302,13 +310,13 @@ public:
 
     [[nodiscard]] bool has_redirect_tainted_origin() const;
 
-    [[nodiscard]] ErrorOr<String> serialize_origin() const;
-    [[nodiscard]] ErrorOr<ByteBuffer> byte_serialize_origin() const;
+    [[nodiscard]] String serialize_origin() const;
+    [[nodiscard]] ByteBuffer byte_serialize_origin() const;
 
     [[nodiscard]] JS::NonnullGCPtr<Request> clone(JS::Realm&) const;
 
-    [[nodiscard]] ErrorOr<void> add_range_header(u64 first, Optional<u64> const& last);
-    [[nodiscard]] ErrorOr<void> add_origin_header();
+    void add_range_header(u64 first, Optional<u64> const& last);
+    void add_origin_header();
 
     [[nodiscard]] bool cross_origin_embedder_policy_allows_credentials() const;
 
@@ -323,6 +331,9 @@ public:
     {
         m_pending_responses.remove_first_matching([&](auto gc_ptr) { return gc_ptr == pending_response; });
     }
+
+    [[nodiscard]] BufferPolicy buffer_policy() const { return m_buffer_policy; }
+    void set_buffer_policy(BufferPolicy buffer_policy) { m_buffer_policy = buffer_policy; }
 
 private:
     explicit Request(JS::NonnullGCPtr<HeaderList>);
@@ -388,7 +399,7 @@ private:
 
     // https://fetch.spec.whatwg.org/#concept-request-destination
     // A request has an associated destination, which is the empty string, "audio", "audioworklet", "document",
-    // "embed", "font", "frame", "iframe", "image", "manifest", "object", "paintworklet", "report", "script",
+    // "embed", "font", "frame", "iframe", "image", "json", "manifest", "object", "paintworklet", "report", "script",
     // "serviceworker", "sharedworker", "style", "track", "video", "webidentity", "worker", or "xslt". Unless stated
     // otherwise it is the empty string.
     // NOTE: These are reflected on RequestDestination except for "serviceworker" and "webidentity" as fetches with
@@ -514,6 +525,13 @@ private:
 
     // Non-standard
     Vector<JS::NonnullGCPtr<Fetching::PendingResponse>> m_pending_responses;
+
+    BufferPolicy m_buffer_policy { BufferPolicy::BufferResponse };
 };
+
+StringView request_destination_to_string(Request::Destination);
+StringView request_mode_to_string(Request::Mode);
+
+Optional<Request::Priority> request_priority_from_string(StringView);
 
 }

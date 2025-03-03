@@ -55,6 +55,8 @@ public:
     virtual ErrorOr<size_t> submit_bulk_transfer(Transfer& transfer) override;
     virtual ErrorOr<void> submit_async_interrupt_transfer(NonnullLockRefPtr<Transfer> transfer, u16 ms_interval) override;
 
+    virtual ErrorOr<void> initialize_device(USB::Device&) override;
+
     void get_port_status(Badge<UHCIRootHub>, u8, HubStatus&);
     ErrorOr<void> set_port_feature(Badge<UHCIRootHub>, u8, HubFeatureSelector);
     ErrorOr<void> clear_port_feature(Badge<UHCIRootHub>, u8, HubFeatureSelector);
@@ -80,7 +82,7 @@ private:
     void write_portsc1(u16 value) { m_registers_io_window->write16(0x10, value); }
     void write_portsc2(u16 value) { m_registers_io_window->write16(0x12, value); }
 
-    virtual bool handle_irq(RegisterState const&) override;
+    virtual bool handle_irq() override;
 
     ErrorOr<void> create_structures();
     void setup_schedule();
@@ -98,6 +100,8 @@ private:
     TransferDescriptor* allocate_transfer_descriptor();
 
     void reset_port(u8);
+
+    u8 allocate_address();
 
     NonnullOwnPtr<IOWindow> m_registers_io_window;
 
@@ -126,5 +130,7 @@ private:
 
     // Bitfield containing whether a given port should signal a change in suspend or not.
     u8 m_port_suspend_change_statuses { 0 };
+
+    u8 m_next_device_index { 1 };
 };
 }

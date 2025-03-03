@@ -555,6 +555,7 @@ StringView execution_result_name(ExecutionResult result);
 StringView opcode_id_name(OpCodeId opcode_id);
 StringView boundary_check_type_name(BoundaryCheckType);
 StringView character_compare_type_name(CharacterCompareType result);
+StringView character_class_name(CharClass ch_class);
 
 class OpCode {
 public:
@@ -787,7 +788,13 @@ public:
     ByteString arguments_string() const override
     {
         auto reps = id() < state().repetition_marks.size() ? state().repetition_marks.at(id()) : 0;
-        return ByteString::formatted("offset={} count={} id={} rep={}, sp: {}", offset(), count() + 1, id(), reps + 1, state().string_position);
+        return ByteString::formatted("offset={} [&{}] count={} id={} rep={}, sp: {}",
+            static_cast<ssize_t>(offset()),
+            state().instruction_position - offset(),
+            count() + 1,
+            id(),
+            reps + 1,
+            state().string_position);
     }
 };
 

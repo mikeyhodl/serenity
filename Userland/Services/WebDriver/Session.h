@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2022, Florent Castelli <florent.castelli@gmail.com>
  * Copyright (c) 2022, Linus Groh <linusg@serenityos.org>
- * Copyright (c) 2022, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,6 +9,7 @@
 #pragma once
 
 #include <AK/Error.h>
+#include <AK/JsonValue.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/String.h>
@@ -48,10 +49,28 @@ public:
         return m_current_window_handle;
     }
 
+    bool has_window_handle(StringView handle) const { return m_windows.contains(handle); }
+
     ErrorOr<void> start(LaunchBrowserCallbacks const&);
     Web::WebDriver::Response close_window();
     Web::WebDriver::Response switch_to_window(StringView);
     Web::WebDriver::Response get_window_handles() const;
+    ErrorOr<void, Web::WebDriver::Error> ensure_current_window_handle_is_valid() const;
+
+    Web::WebDriver::Response navigate_to(JsonValue) const;
+
+    enum class ScriptMode {
+        Sync,
+        Async,
+    };
+    Web::WebDriver::Response execute_script(JsonValue, ScriptMode) const;
+
+    Web::WebDriver::Response element_click(String) const;
+    Web::WebDriver::Response element_send_keys(String, JsonValue) const;
+    Web::WebDriver::Response perform_actions(JsonValue) const;
+
+    Web::WebDriver::Response dismiss_alert() const;
+    Web::WebDriver::Response accept_alert() const;
 
 private:
     using ServerPromise = Core::Promise<ErrorOr<void>>;

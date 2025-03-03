@@ -4,12 +4,16 @@
 #include <LibGfx/Rect.h>
 #include <LibGfx/ShareableBitmap.h>
 #include <LibWeb/CSS/PreferredColorScheme.h>
+#include <LibWeb/CSS/PreferredContrast.h>
+#include <LibWeb/CSS/PreferredMotion.h>
 #include <LibWeb/CSS/Selector.h>
+#include <LibWeb/CSS/StyleSheetIdentifier.h>
 #include <LibWeb/HTML/ColorPickerUpdateState.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/Page/InputEvent.h>
 #include <LibWeb/WebDriver/ExecuteScript.h>
 #include <LibWebView/Attribute.h>
+#include <LibWebView/PageInfo.h>
 
 endpoint WebContentServer
 {
@@ -24,14 +28,17 @@ endpoint WebContentServer
 
     load_url(u64 page_id, URL::URL url) =|
     load_html(u64 page_id, ByteString html) =|
+    reload(u64 page_id) =|
+    traverse_the_history_by_delta(u64 page_id, i32 delta) =|
 
     add_backing_store(u64 page_id, i32 front_bitmap_id, Gfx::ShareableBitmap front_bitmap, i32 back_bitmap_id, Gfx::ShareableBitmap back_bitmap) =|
     ready_to_paint(u64 page_id) =|
 
-    set_viewport_rect(u64 page_id, Web::DevicePixelRect rect) =|
+    set_viewport_size(u64 page_id, Web::DevicePixelSize size) =|
 
     key_event(u64 page_id, Web::KeyEvent event) =|
     mouse_event(u64 page_id, Web::MouseEvent event) =|
+    drag_event(u64 page_id, Web::DragEvent event) =|
 
     debug_request(u64 page_id, ByteString request, ByteString argument) =|
     get_source(u64 page_id) =|
@@ -41,6 +48,8 @@ endpoint WebContentServer
     get_hovered_node_id(u64 page_id) =|
     js_console_input(u64 page_id, ByteString js_source) =|
     js_console_request_messages(u64 page_id, i32 start_index) =|
+    list_style_sheets(u64 page_id) =|
+    request_style_sheet_source(u64 page_id, Web::CSS::StyleSheetIdentifier identifier) =|
 
     set_dom_node_text(u64 page_id, i32 node_id, String text) =|
     set_dom_node_tag(u64 page_id, i32 node_id, String name) =|
@@ -55,22 +64,27 @@ endpoint WebContentServer
     take_document_screenshot(u64 page_id) =|
     take_dom_node_screenshot(u64 page_id, i32 node_id) =|
 
-    dump_gc_graph(u64 page_id) => (String json)
+    request_internal_page_info(u64 page_id, WebView::PageInfoType type) =|
 
     run_javascript(u64 page_id, ByteString js_source) =|
 
-    dump_layout_tree(u64 page_id) => (ByteString dump)
-    dump_paint_tree(u64 page_id) => (ByteString dump)
-    dump_text(u64 page_id) => (ByteString dump)
-
     get_selected_text(u64 page_id) => (ByteString selection)
     select_all(u64 page_id) =|
+    paste(u64 page_id, String text) =|
+
+    find_in_page(u64 page_id, String query, AK::CaseSensitivity case_sensitivity) =|
+    find_in_page_next_match(u64 page_id) =|
+    find_in_page_previous_match(u64 page_id) =|
 
     set_content_filters(u64 page_id, Vector<String> filters) =|
     set_autoplay_allowed_on_all_websites(u64 page_id) =|
     set_autoplay_allowlist(u64 page_id, Vector<String> allowlist) =|
-    set_proxy_mappings(u64 page_id, Vector<ByteString> proxies, HashMap<ByteString,size_t> mappings) =|
+    set_proxy_mappings(u64 page_id, Vector<ByteString> proxies, HashMap<ByteString, size_t> mappings) =|
     set_preferred_color_scheme(u64 page_id, Web::CSS::PreferredColorScheme color_scheme) =|
+    set_preferred_contrast(u64 page_id, Web::CSS::PreferredContrast contrast) =|
+    set_preferred_motion(u64 page_id, Web::CSS::PreferredMotion motion) =|
+    set_preferred_languages(u64 page_id, Vector<String> preferred_languages) =|
+    set_enable_do_not_track(u64 page_id, bool enable) =|
     set_has_focus(u64 page_id, bool has_focus) =|
     set_is_scripting_enabled(u64 page_id, bool is_scripting_enabled) =|
     set_device_pixels_per_css_pixel(u64 page_id, float device_pixels_per_css_pixel) =|
@@ -78,8 +92,8 @@ endpoint WebContentServer
     set_window_position(u64 page_id, Web::DevicePixelPoint position) =|
     set_window_size(u64 page_id, Web::DevicePixelSize size) =|
 
-    get_local_storage_entries(u64 page_id) => (OrderedHashMap<String,String> entries)
-    get_session_storage_entries(u64 page_id) => (OrderedHashMap<String,String> entries)
+    get_local_storage_entries(u64 page_id) => (OrderedHashMap<String, String> entries)
+    get_session_storage_entries(u64 page_id) => (OrderedHashMap<String, String> entries)
 
     handle_file_return(u64 page_id, i32 error, Optional<IPC::File> file, i32 request_id) =|
 
@@ -90,12 +104,14 @@ endpoint WebContentServer
     prompt_closed(u64 page_id, Optional<String> response) =|
     color_picker_update(u64 page_id, Optional<Color> picked_color, Web::HTML::ColorPickerUpdateState state) =|
     file_picker_closed(u64 page_id, Vector<Web::HTML::SelectedFile> selected_files) =|
-    select_dropdown_closed(u64 page_id, Optional<String> value) =|
+    select_dropdown_closed(u64 page_id, Optional<u32> selected_item_id) =|
 
     toggle_media_play_state(u64 page_id) =|
     toggle_media_mute_state(u64 page_id) =|
     toggle_media_loop_state(u64 page_id) =|
     toggle_media_controls_state(u64 page_id) =|
+
+    toggle_page_mute_state(u64 page_id) =|
 
     set_user_style(u64 page_id, String source) =|
 

@@ -9,7 +9,7 @@
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/Optional.h>
-#include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Loader/UserAgent.h>
 #include <LibWeb/WebDriver/Capabilities.h>
 #include <LibWeb/WebDriver/TimeoutsConfiguration.h>
 
@@ -170,6 +170,16 @@ static ErrorOr<JsonObject, Error> validate_capabilities(JsonValue const& capabil
         // FIXME: -> name is the name of an additional WebDriver capability
         // FIXME:     Let deserialized be the result of trying to run the additional capability deserialization algorithm for the extension capability corresponding to name, with argument value.
 
+        // https://w3c.github.io/webdriver-bidi/#type-session-CapabilityRequest
+        else if (name == "webSocketUrl"sv) {
+            // 1. If value is not a boolean, return error with code invalid argument.
+            if (!value.is_bool())
+                return Error::from_code(ErrorCode::InvalidArgument, "Capability webSocketUrl must be a boolean"sv);
+
+            // 2. Return success with data value.
+            deserialized = value;
+        }
+
         // -> name is the key of an extension capability
         //     If name is known to the implementation, let deserialized be the result of trying to deserialize value in an implementation-specific way. Otherwise, let deserialized be set to value.
         else if (name == "serenity:ladybird"sv) {
@@ -298,26 +308,26 @@ static JsonValue match_capabilities(JsonObject const& capabilities)
         if (name == "browserName"sv) {
             // If value is not a string equal to the "browserName" entry in matched capabilities, return success with data null.
             if (value.as_string() != matched_capabilities.get_byte_string(name).value())
-                return AK::Error::from_string_view("browserName"sv);
+                return AK::Error::from_string_literal("browserName");
         }
         // -> "browserVersion"
         else if (name == "browserVersion"sv) {
             // Compare value to the "browserVersion" entry in matched capabilities using an implementation-defined comparison algorithm. The comparison is to accept a value that places constraints on the version using the "<", "<=", ">", and ">=" operators.
             // If the two values do not match, return success with data null.
             if (!matches_browser_version(value.as_string(), matched_capabilities.get_byte_string(name).value()))
-                return AK::Error::from_string_view("browserVersion"sv);
+                return AK::Error::from_string_literal("browserVersion");
         }
         // -> "platformName"
         else if (name == "platformName"sv) {
             // If value is not a string equal to the "platformName" entry in matched capabilities, return success with data null.
             if (!matches_platform_name(value.as_string(), matched_capabilities.get_byte_string(name).value()))
-                return AK::Error::from_string_view("platformName"sv);
+                return AK::Error::from_string_literal("platformName");
         }
         // -> "acceptInsecureCerts"
         else if (name == "acceptInsecureCerts"sv) {
             // If value is true and the endpoint node does not support insecure TLS certificates, return success with data null.
             if (value.as_bool())
-                return AK::Error::from_string_view("acceptInsecureCerts"sv);
+                return AK::Error::from_string_literal("acceptInsecureCerts");
         }
         // -> "proxy"
         else if (name == "proxy"sv) {
@@ -327,6 +337,17 @@ static JsonValue match_capabilities(JsonObject const& capabilities)
         else {
             // FIXME: If name is the name of an additional WebDriver capability which defines a matched capability serialization algorithm, let match value be the result of running the matched capability serialization algorithm for capability name with argument value.
             // FIXME: Otherwise, if name is the key of an extension capability, let match value be the result of trying implementation-specific steps to match on name with value. If the match is not successful, return success with data null.
+
+            // https://w3c.github.io/webdriver-bidi/#type-session-CapabilityRequest
+            if (name == "webSocketUrl"sv) {
+                // 1. If value is false, return success with data null.
+                if (!value.as_bool())
+                    return AK::Error::from_string_literal("webSocketUrl");
+
+                // 2. Return success with data value.
+                // FIXME: Remove this when we support BIDI communication.
+                return AK::Error::from_string_literal("webSocketUrl");
+            }
         }
 
         // c. Set a property on matched capabilities with name name and value match value.

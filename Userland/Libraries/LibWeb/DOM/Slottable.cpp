@@ -61,7 +61,7 @@ JS::GCPtr<HTML::HTMLSlotElement> find_a_slot(Slottable const& slottable, OpenFla
         return nullptr;
 
     // 2. Let shadow be slottable’s parent’s shadow root.
-    auto* shadow = parent->shadow_root_internal();
+    auto shadow = parent->shadow_root();
 
     // 3. If shadow is null, then return null.
     if (shadow == nullptr)
@@ -78,10 +78,10 @@ JS::GCPtr<HTML::HTMLSlotElement> find_a_slot(Slottable const& slottable, OpenFla
 
         shadow->for_each_in_subtree_of_type<HTML::HTMLSlotElement>([&](auto& child) {
             if (!child.manually_assigned_nodes().contains_slow(slottable))
-                return IterationDecision::Continue;
+                return TraversalDecision::Continue;
 
             slot = child;
-            return IterationDecision::Break;
+            return TraversalDecision::Break;
         });
 
         return slot;
@@ -93,10 +93,10 @@ JS::GCPtr<HTML::HTMLSlotElement> find_a_slot(Slottable const& slottable, OpenFla
 
     shadow->for_each_in_subtree_of_type<HTML::HTMLSlotElement>([&](auto& child) {
         if (child.slot_name() != slottable_name)
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
 
         slot = child;
-        return IterationDecision::Break;
+        return TraversalDecision::Break;
     });
 
     return slot;
@@ -134,7 +134,7 @@ Vector<Slottable> find_slottables(JS::NonnullGCPtr<HTML::HTMLSlotElement> slot)
     else {
         host->for_each_child([&](auto& node) {
             if (!node.is_slottable())
-                return;
+                return IterationDecision::Continue;
 
             auto slottable = node.as_slottable();
 
@@ -144,6 +144,8 @@ Vector<Slottable> find_slottables(JS::NonnullGCPtr<HTML::HTMLSlotElement> slot)
             // 2. If foundSlot is slot, then append slottable to result.
             if (found_slot == slot)
                 result.append(move(slottable));
+
+            return IterationDecision::Continue;
         });
     }
 
@@ -186,7 +188,7 @@ void assign_slottables_for_a_tree(JS::NonnullGCPtr<Node> root)
     // descendants, in tree order.
     root->for_each_in_inclusive_subtree_of_type<HTML::HTMLSlotElement>([](auto& slot) {
         assign_slottables(slot);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 }
 

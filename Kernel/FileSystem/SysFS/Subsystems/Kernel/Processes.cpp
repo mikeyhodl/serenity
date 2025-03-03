@@ -114,7 +114,7 @@ ErrorOr<void> SysFSOverallProcesses::try_generate(KBufferBuilder& builder)
         TRY(process_object.add("dumpable"sv, process.is_dumpable()));
         TRY(process_object.add("kernel"sv, process.is_kernel_process()));
         auto thread_array = TRY(process_object.add_array("threads"sv));
-        TRY(process.try_for_each_thread([&](const Thread& thread) -> ErrorOr<void> {
+        TRY(process.try_for_each_thread([&](Thread const& thread) -> ErrorOr<void> {
             SpinlockLocker locker(thread.get_lock());
             auto thread_object = TRY(thread_array.add_object());
 #if LOCK_DEBUG
@@ -149,9 +149,9 @@ ErrorOr<void> SysFSOverallProcesses::try_generate(KBufferBuilder& builder)
 
     {
         auto array = TRY(json.add_array("processes"sv));
-        // FIXME: Do we actually want to expose the colonel process in a Jail environment?
-        TRY(build_process(array, *Scheduler::colonel()));
-        TRY(Process::for_each_in_same_jail([&](Process& process) -> ErrorOr<void> {
+        if (!Process::current().is_jailed())
+            TRY(build_process(array, *Scheduler::colonel()));
+        TRY(Process::for_each_in_same_process_list([&](Process& process) -> ErrorOr<void> {
             TRY(build_process(array, process));
             return {};
         }));

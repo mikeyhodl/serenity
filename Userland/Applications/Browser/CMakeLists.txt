@@ -23,6 +23,7 @@ set(SOURCES
     StorageModel.cpp
     StorageWidget.cpp
     Tab.cpp
+    TaskManagerWidget.cpp
     URLBox.cpp
     WindowActions.cpp
     main.cpp
@@ -38,4 +39,3 @@ set(GENERATED_SOURCES
 
 serenity_app(Browser ICON app-browser)
 target_link_libraries(Browser PRIVATE LibCore LibWebView LibWeb LibProtocol LibGUI LibDesktop LibConfig LibGfx LibIPC LibJS LibLocale LibMain LibSyntax LibURL)
-link_with_locale_data(Browser)

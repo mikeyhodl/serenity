@@ -16,15 +16,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     StringView generated_header_path;
     StringView generated_implementation_path;
-    StringView identifiers_json_path;
+    StringView json_path;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(generated_header_path, "Path to the PseudoClasses header file to generate", "generated-header-path", 'h', "generated-header-path");
     args_parser.add_option(generated_implementation_path, "Path to the PseudoClasses implementation file to generate", "generated-implementation-path", 'c', "generated-implementation-path");
-    args_parser.add_option(identifiers_json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
+    args_parser.add_option(json_path, "Path to the JSON file to read from", "json-path", 'j', "json-path");
     args_parser.parse(arguments);
 
-    auto json = TRY(read_entire_file_as_json(identifiers_json_path));
+    auto json = TRY(read_entire_file_as_json(json_path));
     VERIFY(json.is_object());
     auto data = json.as_object();
 
@@ -72,6 +72,7 @@ struct PseudoClassMetadata {
         ANPlusBOf,
         CompoundSelector,
         ForgivingSelectorList,
+        ForgivingRelativeSelectorList,
         Ident,
         LanguageRanges,
         SelectorList,
@@ -167,6 +168,8 @@ PseudoClassMetadata pseudo_class_metadata(PseudoClass pseudo_class)
                 parameter_type = "CompoundSelector"_string;
             } else if (argument_string == "<forgiving-selector-list>"sv) {
                 parameter_type = "ForgivingSelectorList"_string;
+            } else if (argument_string == "<forgiving-relative-selector-list>"sv) {
+                parameter_type = "ForgivingRelativeSelectorList"_string;
             } else if (argument_string == "<ident>"sv) {
                 parameter_type = "Ident"_string;
             } else if (argument_string == "<language-ranges>"sv) {

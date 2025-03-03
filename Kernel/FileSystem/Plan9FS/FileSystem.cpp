@@ -10,7 +10,7 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullRefPtr<FileSystem>> Plan9FS::try_create(OpenFileDescription& file_description, ReadonlyBytes)
+ErrorOr<NonnullRefPtr<FileSystem>> Plan9FS::try_create(OpenFileDescription& file_description, FileSystemSpecificOptions const&)
 {
     return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Plan9FS(file_description)));
 }
@@ -89,6 +89,12 @@ Plan9FS::ProtocolVersion Plan9FS::parse_protocol_version(StringView s) const
 Inode& Plan9FS::root_inode()
 {
     return *m_root_inode;
+}
+
+ErrorOr<void> Plan9FS::rename(Inode&, StringView, Inode&, StringView)
+{
+    // TODO
+    return ENOTIMPL;
 }
 
 Plan9FS::ReceiveCompletion::ReceiveCompletion(u16 tag)

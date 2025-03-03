@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/TransformStreamPrototype.h>
 #include <LibWeb/Streams/AbstractOperations.h>
 #include <LibWeb/Streams/TransformStream.h>
 #include <LibWeb/Streams/TransformStreamDefaultController.h>
@@ -17,7 +18,7 @@ namespace Web::Streams {
 
 JS_DEFINE_ALLOCATOR(TransformStream);
 
-// https://streams.spec.whatwg.org/#ts-construct
+// https://streams.spec.whatwg.org/#ts-constructor
 WebIDL::ExceptionOr<JS::NonnullGCPtr<TransformStream>> TransformStream::construct_impl(JS::Realm& realm, Optional<JS::Handle<JS::Object>> transformer_object, QueuingStrategy const& writable_strategy, QueuingStrategy const& readable_strategy)
 {
     auto& vm = realm.vm();
@@ -53,17 +54,16 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<TransformStream>> TransformStream::construc
     // 9. Let startPromise be a new promise.
     auto start_promise = WebIDL::create_promise(realm);
 
-    // 10. Perform ! InitializeTransformStream(this, startPromise, writableHighWaterMark, writableSizeAlgorithm,
-    // readableHighWaterMark, readableSizeAlgorithm).
-    TRY(initialize_transform_stream(*stream, start_promise, writable_high_water_mark, move(writable_size_algorithm), readable_high_water_mark, move(readable_size_algorithm)));
+    // 10. Perform ! InitializeTransformStream(this, startPromise, writableHighWaterMark, writableSizeAlgorithm, readableHighWaterMark, readableSizeAlgorithm).
+    initialize_transform_stream(*stream, start_promise, writable_high_water_mark, move(writable_size_algorithm), readable_high_water_mark, move(readable_size_algorithm));
 
     // 11. Perform ? SetUpTransformStreamDefaultControllerFromTransformer(this, transformer, transformerDict).
-    TRY(set_up_transform_stream_default_controller_from_transformer(*stream, transformer, transformer_dict));
+    set_up_transform_stream_default_controller_from_transformer(*stream, transformer, transformer_dict);
 
     // 12. If transformerDict["start"] exists, then resolve startPromise with the result of invoking
-    // transformerDict["start"] with argument list « this.[[controller]] » and callback this value transformer.
+    //     transformerDict["start"] with argument list « this.[[controller]] » and callback this value transformer.
     if (transformer_dict.start) {
-        auto result = MUST_OR_THROW_OOM(WebIDL::invoke_callback(*transformer_dict.start, transformer, stream->controller())).release_value();
+        auto result = TRY(WebIDL::invoke_callback(*transformer_dict.start, transformer, stream->controller())).release_value();
         WebIDL::resolve_promise(realm, start_promise, result);
     }
     // 13. Otherwise, resolve startPromise with undefined.

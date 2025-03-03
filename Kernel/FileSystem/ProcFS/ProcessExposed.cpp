@@ -41,7 +41,7 @@ ErrorOr<NonnullRefPtr<Inode>> Process::lookup_as_directory(ProcFS& procfs, Strin
 ErrorOr<void> Process::procfs_get_thread_stack(ThreadID thread_id, KBufferBuilder& builder) const
 {
     auto array = TRY(JsonArraySerializer<>::try_create(builder));
-    auto thread = Thread::from_tid_in_same_jail(thread_id);
+    auto thread = Thread::from_tid_in_same_process_list(thread_id);
     if (!thread)
         return ESRCH;
     auto current_process_credentials = Process::current().credentials();
@@ -107,7 +107,7 @@ ErrorOr<void> Process::traverse_children_directory(FileSystemID fsid, Function<E
 {
     TRY(callback({ "."sv, { fsid, ProcFSInode::create_index_from_process_directory_entry(pid(), process_children_subdirectory_root_entry) }, to_underlying(RAMBackedFileType::Directory) }));
     TRY(callback({ ".."sv, { fsid, ProcFSInode::create_index_from_process_directory_entry(pid(), main_process_directory_root_entry) }, to_underlying(main_process_directory_root_entry.file_type) }));
-    return Process::for_each_in_same_jail([&](Process& process) -> ErrorOr<void> {
+    return Process::for_each_in_same_process_list([&](Process& process) -> ErrorOr<void> {
         if (process.ppid() == pid()) {
             auto name = TRY(KString::number(process.pid().value()));
             // NOTE: All property numbers should start from 1 as 0 is reserved for the directory itself.
@@ -125,7 +125,7 @@ ErrorOr<NonnullRefPtr<Inode>> Process::lookup_children_directory(ProcFS& procfs,
     if (!maybe_pid.has_value())
         return ENOENT;
 
-    auto child_process = Process::from_pid_in_same_jail(*maybe_pid);
+    auto child_process = Process::from_pid_in_same_process_list(*maybe_pid);
     if (!child_process || child_process->ppid() != pid())
         return ENOENT;
 
@@ -311,7 +311,7 @@ ErrorOr<void> Process::procfs_get_virtual_memory_stats(KBufferBuilder& builder) 
             if (region.vmobject().is_anonymous()) {
                 TRY(region_object.add("volatile"sv, static_cast<Memory::AnonymousVMObject const&>(region.vmobject()).is_volatile()));
             }
-            TRY(region_object.add("cacheable"sv, region.is_cacheable()));
+            TRY(region_object.add("memory_type"sv, Memory::memory_type_to_string(region.memory_type())));
             TRY(region_object.add("address"sv, region.vaddr().get()));
             TRY(region_object.add("size"sv, region.size()));
             TRY(region_object.add("amount_resident"sv, region.amount_resident()));

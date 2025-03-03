@@ -8,22 +8,36 @@
 
 #include <LibJS/Console.h>
 #include <LibJS/Runtime/ConsoleObject.h>
+#include <LibJS/Runtime/ConsoleObjectPrototype.h>
 #include <LibJS/Runtime/GlobalObject.h>
 
 namespace JS {
 
 JS_DEFINE_ALLOCATOR(ConsoleObject);
 
-ConsoleObject::ConsoleObject(Realm& realm)
-    : Object(ConstructWithPrototypeTag::Tag, realm.intrinsics().object_prototype())
-    , m_console(make<Console>(realm))
+static NonnullGCPtr<ConsoleObjectPrototype> create_console_prototype(Realm& realm)
 {
+    return realm.heap().allocate<ConsoleObjectPrototype>(realm, realm);
+}
+
+ConsoleObject::ConsoleObject(Realm& realm)
+    : Object(ConstructWithPrototypeTag::Tag, create_console_prototype(realm))
+{
+}
+
+ConsoleObject::~ConsoleObject() = default;
+
+void ConsoleObject::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_console);
 }
 
 void ConsoleObject::initialize(Realm& realm)
 {
     auto& vm = this->vm();
     Base::initialize(realm);
+    m_console = vm.heap().allocate<Console>(realm, realm);
     u8 attr = Attribute::Writable | Attribute::Enumerable | Attribute::Configurable;
     define_native_function(realm, vm.names.assert, assert_, 0, attr);
     define_native_function(realm, vm.names.clear, clear, 0, attr);
@@ -31,6 +45,7 @@ void ConsoleObject::initialize(Realm& realm)
     define_native_function(realm, vm.names.error, error, 0, attr);
     define_native_function(realm, vm.names.info, info, 0, attr);
     define_native_function(realm, vm.names.log, log, 0, attr);
+    define_native_function(realm, vm.names.table, table, 0, attr);
     define_native_function(realm, vm.names.trace, trace, 0, attr);
     define_native_function(realm, vm.names.warn, warn, 0, attr);
     define_native_function(realm, vm.names.dir, dir, 0, attr);
@@ -42,6 +57,8 @@ void ConsoleObject::initialize(Realm& realm)
     define_native_function(realm, vm.names.time, time, 0, attr);
     define_native_function(realm, vm.names.timeLog, time_log, 0, attr);
     define_native_function(realm, vm.names.timeEnd, time_end, 0, attr);
+
+    define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, "console"_string), Attribute::Configurable);
 }
 
 // 1.1.1. assert(condition, ...data), https://console.spec.whatwg.org/#assert
@@ -84,6 +101,13 @@ JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::log)
 {
     auto& console_object = *vm.current_realm()->intrinsics().console_object();
     return console_object.console().log();
+}
+
+// 1.1.7. table(tabularData, properties), https://console.spec.whatwg.org/#table
+JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::table)
+{
+    auto& console_object = *vm.current_realm()->intrinsics().console_object();
+    return console_object.console().table();
 }
 
 // 1.1.8. trace(...data), https://console.spec.whatwg.org/#trace

@@ -28,7 +28,7 @@ ErrorOr<FlatPtr> Process::sys$create_thread(void* (*entry)(void*), Userspace<Sys
         return EOVERFLOW;
 
     TRY(address_space().with([&](auto& space) -> ErrorOr<void> {
-        if (!MM.validate_user_stack(*space, VirtualAddress(user_sp.value() - 4)))
+        if (!MM.validate_user_stack(*space, VirtualAddress(user_sp.value())))
             return EFAULT;
         return {};
     }));
@@ -68,6 +68,8 @@ ErrorOr<FlatPtr> Process::sys$create_thread(void* (*entry)(void*), Userspace<Sys
     regs.rsi = (FlatPtr)params.entry_argument;
     regs.rdx = (FlatPtr)params.stack_location;
     regs.rcx = (FlatPtr)params.stack_size;
+
+    thread->arch_specific_data().fs_base = bit_cast<FlatPtr>(params.tls_pointer);
 #elif ARCH(AARCH64)
     regs.ttbr0_el1 = address_space().with([](auto& space) { return space->page_directory().ttbr0(); });
 
@@ -76,13 +78,21 @@ ErrorOr<FlatPtr> Process::sys$create_thread(void* (*entry)(void*), Userspace<Sys
     regs.x[1] = (FlatPtr)params.entry_argument;
     regs.x[2] = (FlatPtr)params.stack_location;
     regs.x[3] = (FlatPtr)params.stack_size;
+
+    regs.tpidr_el0 = bit_cast<FlatPtr>(params.tls_pointer);
 #elif ARCH(RISCV64)
-    TODO_RISCV64();
+    regs.satp = address_space().with([](auto& space) { return space->page_directory().satp(); });
+
+    // Set up the argument registers expected by pthread_create_helper.
+    regs.x[9] = (FlatPtr)params.entry;
+    regs.x[10] = (FlatPtr)params.entry_argument;
+    regs.x[11] = (FlatPtr)params.stack_location;
+    regs.x[12] = (FlatPtr)params.stack_size;
+
+    regs.x[3] = bit_cast<FlatPtr>(params.tls_pointer);
 #else
 #    error Unknown architecture
 #endif
-
-    TRY(thread->make_thread_specific_region({}));
 
     PerformanceManager::add_thread_created_event(*thread);
 

@@ -18,7 +18,7 @@ static ErrorOr<void> test_once()
 
     static Vector<int> v;
     v.clear();
-    pthread_once_t once = PTHREAD_ONCE_INIT;
+    IGNORE_USE_IN_ESCAPING_LAMBDA pthread_once_t once = PTHREAD_ONCE_INIT;
     Vector<NonnullRefPtr<Threading::Thread>, threads_count> threads;
 
     for (size_t i = 0; i < threads_count; i++) {
@@ -30,11 +30,9 @@ static ErrorOr<void> test_once()
         })));
         threads.last()->start();
     }
-    // clang-format off
-    // It wants to put [[maybe_unused]] on its own line, for some reason.
+
     for (auto& thread : threads)
-        [[maybe_unused]] auto res = thread->join();
-    // clang-format on
+        (void)thread->join();
 
     VERIFY(v.size() == 1);
 
@@ -46,9 +44,9 @@ static ErrorOr<void> test_mutex()
     constexpr size_t threads_count = 10;
     constexpr size_t num_times = 100;
 
-    Vector<int> v;
+    IGNORE_USE_IN_ESCAPING_LAMBDA Vector<int> v;
     Vector<NonnullRefPtr<Threading::Thread>, threads_count> threads;
-    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    IGNORE_USE_IN_ESCAPING_LAMBDA pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
     for (size_t i = 0; i < threads_count; i++) {
         threads.unchecked_append(TRY(Threading::Thread::try_create([&] {
@@ -63,11 +61,9 @@ static ErrorOr<void> test_mutex()
         })));
         threads.last()->start();
     }
-    // clang-format off
-    // It wants to put [[maybe_unused]] on its own line, for some reason.
+
     for (auto& thread : threads)
-        [[maybe_unused]] auto res = thread->join();
-    // clang-format on
+        (void)thread->join();
 
     VERIFY(v.size() == threads_count * num_times);
     VERIFY(pthread_mutex_trylock(&mutex) == 0);
@@ -81,9 +77,9 @@ static ErrorOr<void> test_semaphore_as_lock()
     constexpr size_t threads_count = 10;
     constexpr size_t num_times = 100;
 
-    Vector<int> v;
+    IGNORE_USE_IN_ESCAPING_LAMBDA Vector<int> v;
     Vector<NonnullRefPtr<Threading::Thread>, threads_count> threads;
-    sem_t semaphore;
+    IGNORE_USE_IN_ESCAPING_LAMBDA sem_t semaphore;
     sem_init(&semaphore, 0, 1);
 
     for (size_t i = 0; i < threads_count; i++) {
@@ -99,11 +95,9 @@ static ErrorOr<void> test_semaphore_as_lock()
         })));
         threads.last()->start();
     }
-    // clang-format off
-    // It wants to put [[maybe_unused]] on its own line, for some reason.
+
     for (auto& thread : threads)
-        [[maybe_unused]] auto res = thread->join();
-    // clang-format on
+        (void)thread->join();
 
     VERIFY(v.size() == threads_count * num_times);
     VERIFY(sem_trywait(&semaphore) == 0);
@@ -115,8 +109,8 @@ static ErrorOr<void> test_semaphore_as_lock()
 
 static ErrorOr<void> test_semaphore_as_event()
 {
-    Vector<int> v;
-    sem_t semaphore;
+    IGNORE_USE_IN_ESCAPING_LAMBDA Vector<int> v;
+    IGNORE_USE_IN_ESCAPING_LAMBDA sem_t semaphore;
     sem_init(&semaphore, 0, 0);
 
     auto reader = TRY(Threading::Thread::try_create([&] {
@@ -150,11 +144,11 @@ static ErrorOr<void> test_semaphore_nonbinary()
     constexpr size_t num_times = 100;
 
     Vector<NonnullRefPtr<Threading::Thread>, threads_count> threads;
-    sem_t semaphore;
+    IGNORE_USE_IN_ESCAPING_LAMBDA sem_t semaphore;
     sem_init(&semaphore, 0, num);
 
-    Atomic<u32, AK::memory_order_relaxed> value = 0;
-    Atomic<bool, AK::memory_order_relaxed> seen_more_than_two = false;
+    IGNORE_USE_IN_ESCAPING_LAMBDA Atomic<u32, AK::memory_order_relaxed> value = 0;
+    IGNORE_USE_IN_ESCAPING_LAMBDA Atomic<bool, AK::memory_order_relaxed> seen_more_than_two = false;
 
     for (size_t i = 0; i < threads_count; i++) {
         threads.unchecked_append(TRY(Threading::Thread::try_create([&] {
@@ -172,11 +166,9 @@ static ErrorOr<void> test_semaphore_nonbinary()
         })));
         threads.last()->start();
     }
-    // clang-format off
-    // It wants to put [[maybe_unused]] on its own line, for some reason.
+
     for (auto& thread : threads)
-        [[maybe_unused]] auto res = thread->join();
-    // clang-format on
+        (void)thread->join();
 
     VERIFY(value.load() == 0);
     VERIFY(seen_more_than_two.load());

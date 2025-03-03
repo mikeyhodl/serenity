@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2024, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, Timothy Slater <tslater2006@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -15,29 +15,33 @@
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Rect.h>
+#include <LibIPC/Forward.h>
 
-#define ENUMERATE_IMAGE_FORMATS              \
-    __ENUMERATE_IMAGE_FORMAT(bmp, ".bmp")    \
-    __ENUMERATE_IMAGE_FORMAT(dds, ".dds")    \
-    __ENUMERATE_IMAGE_FORMAT(gif, ".gif")    \
-    __ENUMERATE_IMAGE_FORMAT(ico, ".ico")    \
-    __ENUMERATE_IMAGE_FORMAT(iff, ".iff")    \
-    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jb2")   \
-    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jbig2") \
-    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpeg")  \
-    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpg")   \
-    __ENUMERATE_IMAGE_FORMAT(jxl, ".jxl")    \
-    __ENUMERATE_IMAGE_FORMAT(iff, ".lbm")    \
-    __ENUMERATE_IMAGE_FORMAT(pam, ".pam")    \
-    __ENUMERATE_IMAGE_FORMAT(pbm, ".pbm")    \
-    __ENUMERATE_IMAGE_FORMAT(pgm, ".pgm")    \
-    __ENUMERATE_IMAGE_FORMAT(png, ".png")    \
-    __ENUMERATE_IMAGE_FORMAT(ppm, ".ppm")    \
-    __ENUMERATE_IMAGE_FORMAT(qoi, ".qoi")    \
-    __ENUMERATE_IMAGE_FORMAT(tga, ".tga")    \
-    __ENUMERATE_IMAGE_FORMAT(tiff, ".tif")   \
-    __ENUMERATE_IMAGE_FORMAT(tiff, ".tiff")  \
-    __ENUMERATE_IMAGE_FORMAT(tvg, ".tvg")    \
+#define ENUMERATE_IMAGE_FORMATS                \
+    __ENUMERATE_IMAGE_FORMAT(bmp, ".bmp")      \
+    __ENUMERATE_IMAGE_FORMAT(dds, ".dds")      \
+    __ENUMERATE_IMAGE_FORMAT(gif, ".gif")      \
+    __ENUMERATE_IMAGE_FORMAT(ico, ".ico")      \
+    __ENUMERATE_IMAGE_FORMAT(iff, ".iff")      \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jb2")     \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jbig2")   \
+    __ENUMERATE_IMAGE_FORMAT(jpeg2000, ".jp2") \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpeg")    \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpf")     \
+    __ENUMERATE_IMAGE_FORMAT(jpeg, ".jpg")     \
+    __ENUMERATE_IMAGE_FORMAT(jpeg2000, ".jpx") \
+    __ENUMERATE_IMAGE_FORMAT(jxl, ".jxl")      \
+    __ENUMERATE_IMAGE_FORMAT(iff, ".lbm")      \
+    __ENUMERATE_IMAGE_FORMAT(pam, ".pam")      \
+    __ENUMERATE_IMAGE_FORMAT(pbm, ".pbm")      \
+    __ENUMERATE_IMAGE_FORMAT(pgm, ".pgm")      \
+    __ENUMERATE_IMAGE_FORMAT(png, ".png")      \
+    __ENUMERATE_IMAGE_FORMAT(ppm, ".ppm")      \
+    __ENUMERATE_IMAGE_FORMAT(qoi, ".qoi")      \
+    __ENUMERATE_IMAGE_FORMAT(tga, ".tga")      \
+    __ENUMERATE_IMAGE_FORMAT(tiff, ".tif")     \
+    __ENUMERATE_IMAGE_FORMAT(tiff, ".tiff")    \
+    __ENUMERATE_IMAGE_FORMAT(tvg, ".tvg")      \
     __ENUMERATE_IMAGE_FORMAT(tvg, ".webp")
 
 namespace Gfx {
@@ -94,9 +98,9 @@ enum class RotationDirection {
 
 class Bitmap : public RefCounted<Bitmap> {
 public:
-    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create(BitmapFormat, IntSize, int intrinsic_scale = 1);
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create(BitmapFormat, IntSize, int intrinsic_scale = 1, Optional<size_t> pitch = {});
     [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_shareable(BitmapFormat, IntSize, int intrinsic_scale = 1);
-    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_wrapper(BitmapFormat, IntSize, int intrinsic_scale, size_t pitch, void*);
+    [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> create_wrapper(BitmapFormat, IntSize, int intrinsic_scale, size_t pitch, void*, Function<void()>&& destruction_callback = {});
     [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_file(StringView path, int scale_factor = 1, Optional<IntSize> ideal_size = {});
     [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_file(NonnullOwnPtr<Core::File>, StringView path, Optional<IntSize> ideal_size = {});
     [[nodiscard]] static ErrorOr<NonnullRefPtr<Bitmap>> load_from_bytes(ReadonlyBytes, Optional<IntSize> ideal_size = {}, Optional<ByteString> mine_type = {});
@@ -145,7 +149,9 @@ public:
     [[nodiscard]] ARGB32 const* scanline(int physical_y) const;
 
     [[nodiscard]] ARGB32* begin();
+    [[nodiscard]] ARGB32 const* begin() const;
     [[nodiscard]] ARGB32* end();
+    [[nodiscard]] ARGB32 const* end() const;
     [[nodiscard]] size_t data_size() const;
 
     [[nodiscard]] IntRect rect() const { return { {}, m_size }; }
@@ -202,8 +208,6 @@ public:
     // Call only for BGRx8888 and BGRA8888 bitmaps.
     void strip_alpha_channel();
 
-    void set_mmap_name(ByteString const&);
-
     [[nodiscard]] static constexpr size_t size_in_bytes(size_t pitch, int physical_height) { return pitch * physical_height; }
     [[nodiscard]] size_t size_in_bytes() const { return size_in_bytes(m_pitch, physical_height()); }
 
@@ -223,13 +227,6 @@ public:
         set_pixel(physical_position.x(), physical_position.y(), color);
     }
 
-    [[nodiscard]] bool is_volatile() const { return m_volatile; }
-    void set_volatile();
-
-    // Returns true if making the bitmap non-volatile succeeded. `was_purged` indicates status of contents.
-    // Returns false if there was not enough memory.
-    [[nodiscard]] bool set_nonvolatile(bool& was_purged);
-
     [[nodiscard]] Core::AnonymousBuffer& anonymous_buffer() { return m_buffer; }
     [[nodiscard]] Core::AnonymousBuffer const& anonymous_buffer() const { return m_buffer; }
 
@@ -241,19 +238,18 @@ public:
 
 private:
     Bitmap(BitmapFormat, IntSize, int, BackingStore const&);
-    Bitmap(BitmapFormat, IntSize, int, size_t pitch, void*);
+    Bitmap(BitmapFormat, IntSize, int, size_t pitch, void*, Function<void()>&& destruction_callback);
     Bitmap(BitmapFormat, Core::AnonymousBuffer, IntSize, int);
 
-    static ErrorOr<BackingStore> allocate_backing_store(BitmapFormat format, IntSize size, int scale_factor);
+    static ErrorOr<BackingStore> allocate_backing_store(BitmapFormat format, IntSize size, int scale_factor, Optional<size_t> pitch = {});
 
     IntSize m_size;
     int m_scale;
     void* m_data { nullptr };
     size_t m_pitch { 0 };
     BitmapFormat m_format { BitmapFormat::Invalid };
-    bool m_needs_munmap { false };
-    bool m_volatile { false };
     Core::AnonymousBuffer m_buffer;
+    Function<void()> m_destruction_callback;
 };
 
 ALWAYS_INLINE u8* Bitmap::scanline_u8(int y)
@@ -285,9 +281,19 @@ ALWAYS_INLINE ARGB32* Bitmap::begin()
     return scanline(0);
 }
 
+ALWAYS_INLINE ARGB32 const* Bitmap::begin() const
+{
+    return scanline(0);
+}
+
 ALWAYS_INLINE ARGB32* Bitmap::end()
 {
     return reinterpret_cast<ARGB32*>(reinterpret_cast<u8*>(m_data) + data_size());
+}
+
+ALWAYS_INLINE ARGB32 const* Bitmap::end() const
+{
+    return reinterpret_cast<ARGB32 const*>(reinterpret_cast<u8 const*>(m_data) + data_size());
 }
 
 ALWAYS_INLINE size_t Bitmap::data_size() const
@@ -366,5 +372,15 @@ ALWAYS_INLINE void Bitmap::set_pixel(int x, int y, Color color)
         VERIFY_NOT_REACHED();
     }
 }
+
+}
+
+namespace IPC {
+
+template<>
+ErrorOr<void> encode(Encoder&, AK::NonnullRefPtr<Gfx::Bitmap> const&);
+
+template<>
+ErrorOr<AK::NonnullRefPtr<Gfx::Bitmap>> decode(Decoder&);
 
 }

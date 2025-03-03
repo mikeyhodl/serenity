@@ -41,11 +41,14 @@ public:
         // The font IDL attribute, on setting, must be parsed as a CSS <'font'> value (but without supporting property-independent style sheet syntax like 'inherit'),
         // and the resulting font must be assigned to the context, with the 'line-height' component forced to 'normal', with the 'font-size' component converted to CSS pixels,
         // and with system fonts being computed to explicit values.
+        // FIXME: with the 'line-height' component forced to 'normal'
+        // FIXME: with the 'font-size' component converted to CSS pixels
         auto parsing_context = CSS::Parser::ParsingContext { reinterpret_cast<IncludingClass&>(*this).realm() };
         auto font_style_value_result = parse_css_value(parsing_context, font, CSS::PropertyID::Font);
 
         // If the new value is syntactically incorrect (including using property-independent style sheet syntax like 'inherit' or 'initial'), then it must be ignored, without assigning a new font value.
-        if (!font_style_value_result) {
+        // NOTE: ShorthandStyleValue should be the only valid option here. We implicitly VERIFY this below.
+        if (!font_style_value_result || !font_style_value_result->is_shorthand()) {
             return;
         }
         my_drawing_state().font_style_value = font_style_value_result.release_nonnull();
@@ -55,10 +58,10 @@ public:
         auto& canvas_element = reinterpret_cast<IncludingClass&>(*this).canvas_element();
         auto& font_style = *font_style_value.longhand(CSS::PropertyID::FontStyle);
         auto& font_weight = *font_style_value.longhand(CSS::PropertyID::FontWeight);
-        auto& font_stretch = *font_style_value.longhand(CSS::PropertyID::FontStretch);
+        auto& font_width = *font_style_value.longhand(CSS::PropertyID::FontWidth);
         auto& font_size = *font_style_value.longhand(CSS::PropertyID::FontSize);
         auto& font_family = *font_style_value.longhand(CSS::PropertyID::FontFamily);
-        auto font_list = canvas_element.document().style_computer().compute_font_for_style_values(&canvas_element, {}, font_family, font_size, font_style, font_weight, font_stretch);
+        auto font_list = canvas_element.document().style_computer().compute_font_for_style_values(&canvas_element, {}, font_family, font_size, font_style, font_weight, font_width);
         my_drawing_state().current_font = font_list->first();
     }
 

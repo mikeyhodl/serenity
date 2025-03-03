@@ -10,6 +10,7 @@
 #include <AK/Error.h>
 #include <AK/Forward.h>
 #include <AK/Optional.h>
+#include <AK/Time.h>
 #include <AK/Vector.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Heap/Cell.h>
@@ -48,6 +49,9 @@ public:
 
         // https://fetch.spec.whatwg.org/#fetch-timing-info-decoded-body-size
         u64 decoded_size { 0 };
+
+        // https://fetch.spec.whatwg.org/#response-body-info-content-type
+        String content_type {};
 
         bool operator==(BodyInfo const&) const = default;
     };
@@ -109,11 +113,15 @@ public:
     [[nodiscard]] Optional<URL::URL const&> url() const;
     [[nodiscard]] ErrorOr<Optional<URL::URL>> location_url(Optional<String> const& request_fragment) const;
 
-    [[nodiscard]] WebIDL::ExceptionOr<JS::NonnullGCPtr<Response>> clone(JS::Realm&) const;
+    [[nodiscard]] JS::NonnullGCPtr<Response> clone(JS::Realm&) const;
 
     [[nodiscard]] JS::NonnullGCPtr<Response> unsafe_response();
 
     [[nodiscard]] bool is_cors_cross_origin() const;
+
+    [[nodiscard]] bool is_fresh() const;
+    [[nodiscard]] bool is_stale_while_revalidate() const;
+    [[nodiscard]] bool is_stale() const;
 
     // Non-standard
     [[nodiscard]] Optional<StringView> network_error_message() const;
@@ -183,8 +191,20 @@ private:
     // A response has an associated has-cross-origin-redirects (a boolean), which is initially false.
     bool m_has_cross_origin_redirects { false };
 
+    // FIXME is the type correct?
+    u64 current_age() const;
+    u64 freshness_lifetime() const;
+    u64 stale_while_revalidate_lifetime() const;
+
     // Non-standard
+    ByteBuffer m_method;
+    UnixDateTime m_response_time;
+
     Optional<Variant<String, StringView>> m_network_error_message;
+
+public:
+    [[nodiscard]] ByteBuffer const& method() const { return m_method; }
+    void set_method(ByteBuffer method) { m_method = method; }
 };
 
 // https://fetch.spec.whatwg.org/#concept-filtered-response
@@ -223,11 +243,11 @@ private:
 
 // https://fetch.spec.whatwg.org/#concept-filtered-response-basic
 class BasicFilteredResponse final : public FilteredResponse {
-    JS_CELL(OpaqueRedirectFilteredResponse, FilteredResponse);
+    JS_CELL(BasicFilteredResponse, FilteredResponse);
     JS_DECLARE_ALLOCATOR(BasicFilteredResponse);
 
 public:
-    [[nodiscard]] static ErrorOr<JS::NonnullGCPtr<BasicFilteredResponse>> create(JS::VM&, JS::NonnullGCPtr<Response>);
+    [[nodiscard]] static JS::NonnullGCPtr<BasicFilteredResponse> create(JS::VM&, JS::NonnullGCPtr<Response>);
 
     [[nodiscard]] virtual Type type() const override { return Type::Basic; }
     [[nodiscard]] virtual JS::NonnullGCPtr<HeaderList> header_list() const override { return m_header_list; }
@@ -246,7 +266,7 @@ class CORSFilteredResponse final : public FilteredResponse {
     JS_DECLARE_ALLOCATOR(CORSFilteredResponse);
 
 public:
-    [[nodiscard]] static ErrorOr<JS::NonnullGCPtr<CORSFilteredResponse>> create(JS::VM&, JS::NonnullGCPtr<Response>);
+    [[nodiscard]] static JS::NonnullGCPtr<CORSFilteredResponse> create(JS::VM&, JS::NonnullGCPtr<Response>);
 
     [[nodiscard]] virtual Type type() const override { return Type::CORS; }
     [[nodiscard]] virtual JS::NonnullGCPtr<HeaderList> header_list() const override { return m_header_list; }

@@ -165,6 +165,7 @@ ErrorOr<void> print_array(JS::PrintContext& print_context, JS::Array const& arra
 {
     TRY(js_out(print_context, "["));
     bool first = true;
+    size_t printed_count = 0;
     for (auto it = array.indexed_properties().begin(false); it != array.indexed_properties().end(); ++it) {
         TRY(print_separator(print_context, first));
         auto value_or_error = array.get(it.index());
@@ -175,6 +176,10 @@ ErrorOr<void> print_array(JS::PrintContext& print_context, JS::Array const& arra
             return {};
         auto value = value_or_error.release_value();
         TRY(print_value(print_context, value, seen_objects));
+        if (++printed_count > 100 && it != array.indexed_properties().end()) {
+            TRY(js_out(print_context, ", ..."));
+            break;
+        }
     }
     if (!first)
         TRY(js_out(print_context, " "));
@@ -466,16 +471,22 @@ ErrorOr<void> print_typed_array(JS::PrintContext& print_context, JS::TypedArrayB
     TRY(print_value(print_context, JS::Value(JS::typed_array_byte_length(typed_array_record)), seen_objects));
 
     TRY(js_out(print_context, "\n"));
-    // FIXME: This kinda sucks.
+    // FIXME: Find a better way to print typed arrays to the console.
+    // The current solution is limited to 100 lines, is hard to read, and hampers debugging.
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, ArrayType) \
     if (is<JS::ClassName>(typed_array_base)) {                                           \
         TRY(js_out(print_context, "[ "));                                                \
         auto& typed_array = static_cast<JS::ClassName const&>(typed_array_base);         \
         auto data = typed_array.data();                                                  \
+        size_t printed_count = 0;                                                        \
         for (size_t i = 0; i < length; ++i) {                                            \
             if (i > 0)                                                                   \
                 TRY(js_out(print_context, ", "));                                        \
             TRY(print_number(print_context, data[i]));                                   \
+            if (++printed_count > 100 && i < length) {                                   \
+                TRY(js_out(print_context, ", ..."));                                     \
+                break;                                                                   \
+            }                                                                            \
         }                                                                                \
         TRY(js_out(print_context, " ]"));                                                \
         return {};                                                                       \
@@ -867,8 +878,6 @@ ErrorOr<void> print_intl_segments(JS::PrintContext& print_context, JS::Intl::Seg
     TRY(print_type(print_context, "Segments"sv));
     out("\n  string: ");
     TRY(print_value(print_context, JS::PrimitiveString::create(segments.vm(), move(segments_string)), seen_objects));
-    out("\n  segmenter: ");
-    TRY(print_value(print_context, &segments.segments_segmenter(), seen_objects));
     return {};
 }
 

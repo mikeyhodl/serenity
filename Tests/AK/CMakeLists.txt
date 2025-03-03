@@ -1,4 +1,5 @@
 set(AK_TEST_SOURCES
+    TestAKMath.cpp
     TestAllOf.cpp
     TestAnyOf.cpp
     TestArbitrarySizedEnum.cpp
@@ -20,11 +21,13 @@ set(AK_TEST_SOURCES
     TestCircularDeque.cpp
     TestCircularQueue.cpp
     TestComplex.cpp
+    TestCoroutine.cpp
     TestDisjointChunks.cpp
     TestDistinctNumeric.cpp
     TestDoublyLinkedList.cpp
     TestEndian.cpp
     TestEnumBits.cpp
+    TestEnumerate.cpp
     TestFind.cpp
     TestFixedArray.cpp
     TestFixedPoint.cpp
@@ -32,7 +35,9 @@ set(AK_TEST_SOURCES
     TestFloatingPointParsing.cpp
     TestFlyString.cpp
     TestFormat.cpp
+    TestFunction.cpp
     TestFuzzyMatch.cpp
+    TestGeneratorAK.cpp
     TestGenericLexer.cpp
     TestHashFunctions.cpp
     TestHashMap.cpp
@@ -66,6 +71,7 @@ set(AK_TEST_SOURCES
     TestRefPtr.cpp
     TestSegmentedVector.cpp
     TestSIMD.cpp
+    TestSIMDExtras.cpp
     TestSinglyLinkedList.cpp
     TestSlugify.cpp
     TestSourceGenerator.cpp

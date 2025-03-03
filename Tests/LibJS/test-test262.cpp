@@ -209,7 +209,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(runner_command, "Command to run", "runner-command", 'r', "command");
     args_parser.add_option(pass_through_parameters, "Parameters to pass through to the runner, will split on spaces", "pass-through", 'p', "parameters");
     args_parser.add_option(dont_print_progress, "Hide progress information", "quiet", 'q');
-    args_parser.add_option(dont_disable_core_dump, "Enabled core dumps for runner (i.e. don't pass --disable-core-dump)", "enable-core-dumps", 0);
+    args_parser.add_option(dont_disable_core_dump, "Enabled core dumps for runner (i.e. don't pass --disable-core-dump)", "enable-core-dumps");
     args_parser.parse(arguments);
 
     // Normalize the path to ensure filenames are consistent
@@ -320,7 +320,7 @@ void write_per_file(HashMap<size_t, TestResult> const& result_map, Vector<ByteSt
     complete_results.set("duration", time_taken_in_ms / 1000.);
     complete_results.set("results", result_object);
 
-    if (file->write_until_depleted(complete_results.to_byte_string().bytes()).is_error())
+    if (file->write_until_depleted(complete_results.to_byte_string()).is_error())
         warnln("Failed to write per-file");
     file->close();
 }

@@ -8,7 +8,7 @@
 
 #include <AK/COWVector.h>
 #include <AK/Debug.h>
-#include <AK/HashTable.h>
+#include <AK/RedBlackTree.h>
 #include <AK/SourceLocation.h>
 #include <AK/Tuple.h>
 #include <AK/Vector.h>
@@ -18,6 +18,10 @@
 namespace Wasm {
 
 struct Context {
+    struct RefRBTree : RefCounted<RefRBTree> {
+        RedBlackTree<size_t, FunctionIndex> tree;
+    };
+
     COWVector<FunctionType> types;
     COWVector<FunctionType> functions;
     COWVector<TableType> tables;
@@ -26,9 +30,8 @@ struct Context {
     COWVector<ValueType> elements;
     COWVector<bool> datas;
     COWVector<ValueType> locals;
-    COWVector<ResultType> labels;
-    Optional<ResultType> return_;
-    AK::HashTable<FunctionIndex> references;
+    Optional<u32> data_count;
+    RefPtr<RefRBTree> references { make_ref_counted<RefRBTree>() };
     size_t imported_function_count { 0 };
 };
 
@@ -114,7 +117,7 @@ public:
 
     ErrorOr<void, ValidationError> validate(LabelIndex index) const
     {
-        if (index.value() < m_context.labels.size())
+        if (index.value() < m_frames.size())
             return {};
         return Errors::invalid("LabelIndex"sv);
     }
@@ -132,6 +135,27 @@ public:
             return {};
         return Errors::invalid("TableIndex"sv);
     }
+
+    enum class FrameKind {
+        Block,
+        Loop,
+        If,
+        Else,
+        Function,
+    };
+
+    struct Frame {
+        FunctionType type;
+        FrameKind kind;
+        size_t initial_size;
+        // Stack polymorphism is handled with this field
+        bool unreachable { false };
+
+        Vector<ValueType> const& labels() const
+        {
+            return kind != FrameKind::Loop ? type.results() : type.parameters();
+        }
+    };
 
     // Instructions
     struct StackEntry {
@@ -182,66 +206,58 @@ public:
         friend struct AK::Formatter;
 
     public:
-        // The unknown entry will never be popped off, so we can safely use the original `is_empty`.
+        Stack(Vector<Frame> const& frames)
+            : m_frames(frames)
+        {
+        }
+
         using Vector<StackEntry>::is_empty;
         using Vector<StackEntry>::last;
         using Vector<StackEntry>::at;
+        using Vector<StackEntry>::size;
+        using Vector<StackEntry>::resize;
 
-        StackEntry take_last()
+        ErrorOr<StackEntry, ValidationError> take_last()
         {
-            if (last().is_known)
-                return Vector<StackEntry>::take_last();
-            return last();
+            if (size() == m_frames.last().initial_size && m_frames.last().unreachable)
+                return StackEntry();
+            if (size() == m_frames.last().initial_size)
+                return Errors::invalid("stack state"sv, "<any>"sv, "<nothing>"sv);
+            return Vector<StackEntry>::take_last();
         }
         void append(StackEntry entry)
         {
-            if (!entry.is_known)
-                m_did_insert_unknown_entry = true;
             Vector<StackEntry>::append(entry);
         }
 
-        ErrorOr<void, ValidationError> take(ValueType type, SourceLocation location = SourceLocation::current())
+        ErrorOr<StackEntry, ValidationError> take(ValueType type, SourceLocation location = SourceLocation::current())
         {
-            if (is_empty())
-                return Errors::invalid("stack state"sv, type, "<nothing>"sv, location);
-
-            auto type_on_stack = take_last();
+            auto type_on_stack = TRY(take_last());
             if (type_on_stack != type)
                 return Errors::invalid("stack state"sv, type, type_on_stack, location);
 
-            return {};
+            return type_on_stack;
         }
 
         template<auto... kinds>
         ErrorOr<void, ValidationError> take(SourceLocation location = SourceLocation::current())
         {
-            ErrorOr<void, ValidationError> result;
-            if (((result = take(Wasm::ValueType(kinds), location)).is_error(), ...)) {
-                return result;
-            }
-            return result;
+            for (auto kind : { kinds... })
+                TRY(take(Wasm::ValueType(kind), location));
+            return {};
         }
-
         template<auto... kinds>
         ErrorOr<void, ValidationError> take_and_put(Wasm::ValueType::Kind kind, SourceLocation location = SourceLocation::current())
         {
-            ErrorOr<void, ValidationError> result;
-            if (((result = take(Wasm::ValueType(kinds), location)).is_error(), ...)) {
-                return result;
-            }
+            TRY(take<kinds...>(location));
             append(Wasm::ValueType(kind));
-            return result;
+            return {};
         }
-
-        size_t actual_size() const { return Vector<StackEntry>::size(); }
-        size_t size() const { return m_did_insert_unknown_entry ? static_cast<size_t>(-1) : actual_size(); }
 
         Vector<StackEntry> release_vector() { return exchange(static_cast<Vector<StackEntry>&>(*this), Vector<StackEntry> {}); }
 
-        bool operator==(Stack const& other) const;
-
     private:
-        bool m_did_insert_unknown_entry { false };
+        Vector<Frame> const& m_frames;
     };
 
     struct ExpressionTypeResult {
@@ -254,7 +270,7 @@ public:
     ErrorOr<void, ValidationError> validate_instruction(Instruction const&, Stack& stack, bool& is_constant);
 
     // Types
-    ErrorOr<void, ValidationError> validate(Limits const&, size_t k); // n <= 2^k-1 && m? <= 2^k-1
+    ErrorOr<void, ValidationError> validate(Limits const&, u64 bound); // n <= bound && m? <= bound
     ErrorOr<FunctionType, ValidationError> validate(BlockType const&);
     ErrorOr<void, ValidationError> validate(FunctionType const&) { return {}; }
     ErrorOr<void, ValidationError> validate(TableType const&);
@@ -286,6 +302,8 @@ private:
         }
 
         static ValidationError duplicate_export_name(StringView name) { return ByteString::formatted("Duplicate exported name '{}'", name); }
+        static ValidationError multiple_start_sections() { return ByteString("Found multiple start sections"sv); }
+        static ValidationError stack_height_mismatch(Stack const& stack, size_t expected_height) { return ByteString::formatted("Stack height mismatch, got {} but expected length {}", stack, expected_height); }
 
         template<typename T, typename U, typename V>
         static ValidationError out_of_bounds(StringView name, V value, T min, U max) { return ByteString::formatted("Value {} for {} is out of bounds ({},{})", value, name, min, max); }
@@ -308,7 +326,7 @@ private:
 
             builder.append("], but found [ "sv);
 
-            auto actual_size = stack.actual_size();
+            auto actual_size = stack.size();
             for (size_t i = 1; i <= min(count, actual_size); ++i) {
                 auto& entry = stack.at(actual_size - i);
                 if (entry.is_known) {
@@ -326,26 +344,8 @@ private:
         static ByteString find_instruction_name(SourceLocation const&);
     };
 
-    enum class ChildScopeKind {
-        Block,
-        IfWithoutElse,
-        IfWithElse,
-        Else,
-    };
-
-    struct BlockDetails {
-        size_t initial_stack_size { 0 };
-        struct IfDetails {
-            Stack initial_stack;
-        };
-        Variant<IfDetails, Empty> details;
-    };
-
     Context m_context;
-    Vector<Context> m_parent_contexts;
-    Vector<ChildScopeKind> m_entered_scopes;
-    Vector<BlockDetails> m_block_details;
-    Vector<FunctionType> m_entered_blocks;
+    Vector<Frame> m_frames;
     COWVector<GlobalType> m_globals_without_internal_globals;
 };
 

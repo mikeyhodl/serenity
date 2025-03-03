@@ -6,6 +6,7 @@
  */
 
 #include <LibGfx/Bitmap.h>
+#include <LibWeb/Bindings/HTMLVideoElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
@@ -15,6 +16,7 @@
 #include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
 #include <LibWeb/HTML/HTMLVideoElement.h>
 #include <LibWeb/HTML/VideoTrack.h>
+#include <LibWeb/HTML/VideoTrackList.h>
 #include <LibWeb/Layout/VideoBox.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Platform/ImageCodecPlugin.h>
@@ -36,6 +38,14 @@ void HTMLVideoElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLVideoElement);
 }
 
+void HTMLVideoElement::finalize()
+{
+    Base::finalize();
+
+    for (auto video_track : video_tracks()->video_tracks())
+        video_track->stop_video({});
+}
+
 void HTMLVideoElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
@@ -43,9 +53,9 @@ void HTMLVideoElement::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_fetch_controller);
 }
 
-void HTMLVideoElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLVideoElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    Base::attribute_changed(name, value);
+    Base::attribute_changed(name, old_value, value);
 
     if (name == HTML::AttributeNames::poster) {
         determine_element_poster_frame(value).release_value_but_fixme_should_propagate_errors();
@@ -122,7 +132,7 @@ void HTMLVideoElement::on_paused()
 void HTMLVideoElement::on_seek(double position, MediaSeekMode seek_mode)
 {
     if (m_video_track)
-        m_video_track->seek(Duration::from_milliseconds(position * 1000.0), seek_mode);
+        m_video_track->seek(AK::Duration::from_milliseconds(position * 1000.0), seek_mode);
 }
 
 // https://html.spec.whatwg.org/multipage/media.html#attr-video-poster
@@ -178,21 +188,24 @@ WebIDL::ExceptionOr<void> HTMLVideoElement::determine_element_poster_frame(Optio
             response = filtered_response.internal_response();
         }
 
-        auto on_image_data_read = [this](auto image_data) mutable {
+        auto on_image_data_read = JS::create_heap_function(heap(), [this](ByteBuffer image_data) mutable {
             m_fetch_controller = nullptr;
 
             // 6. If an image is thus obtained, the poster frame is that image. Otherwise, there is no poster frame.
-            auto image = Platform::ImageCodecPlugin::the().decode_image(image_data);
-            if (!image.has_value() || image->frames.is_empty())
-                return;
-
-            m_poster_frame = move(image.release_value().frames[0].bitmap);
-        };
+            (void)Platform::ImageCodecPlugin::the().decode_image(
+                image_data,
+                [strong_this = JS::Handle(*this)](Web::Platform::DecodedImage& image) -> ErrorOr<void> {
+                    if (!image.frames.is_empty())
+                        strong_this->m_poster_frame = move(image.frames[0].bitmap);
+                    return {};
+                },
+                [](auto&) {});
+        });
 
         VERIFY(response->body());
-        auto empty_algorithm = [](auto) {};
+        auto empty_algorithm = JS::create_heap_function(heap(), [](JS::Value) {});
 
-        response->body()->fully_read(realm, move(on_image_data_read), move(empty_algorithm), JS::NonnullGCPtr { global }).release_value_but_fixme_should_propagate_errors();
+        response->body()->fully_read(realm, on_image_data_read, empty_algorithm, JS::NonnullGCPtr { global });
     };
 
     m_fetch_controller = TRY(Fetch::Fetching::fetch(realm, request, Fetch::Infrastructure::FetchAlgorithms::create(vm, move(fetch_algorithms_input))));

@@ -1,29 +1,56 @@
-source_set("sources") {
+# These are the minimal set of sources needed to build the code generators. We separate them to allow
+# LibCore to depend on generated sources.
+shared_library("minimal") {
+  output_name = "core-minimal"
+
   include_dirs = [ "//Userland/Libraries" ]
-  deps = [ "//AK" ]
+
   sources = [
-    "AnonymousBuffer.cpp",
-    "AnonymousBuffer.h",
     "ArgsParser.cpp",
     "ArgsParser.h",
-    "Command.cpp",
-    "Command.h",
     "ConfigFile.cpp",
     "ConfigFile.h",
-    "DateTime.cpp",
-    "DateTime.h",
-    "Debounce.h",
-    "DeferredInvocationContext.h",
     "DirIterator.cpp",
     "DirIterator.h",
     "Directory.cpp",
     "Directory.h",
     "DirectoryEntry.cpp",
     "DirectoryEntry.h",
-    "ElapsedTimer.cpp",
-    "ElapsedTimer.h",
     "Environment.cpp",
     "Environment.h",
+    "File.cpp",
+    "File.h",
+    "Forward.h",
+    "SessionManagement.cpp",
+    "SessionManagement.h",
+    "StandardPaths.cpp",
+    "StandardPaths.h",
+    "System.cpp",
+    "System.h",
+    "Version.cpp",
+    "Version.h",
+  ]
+
+  deps = [
+    "//AK",
+    "//Userland/Libraries/LibSystem",
+  ]
+}
+
+source_set("sources") {
+  include_dirs = [ "//Userland/Libraries" ]
+  deps = [ "//AK" ]
+  sources = [
+    "AnonymousBuffer.cpp",
+    "AnonymousBuffer.h",
+    "Command.cpp",
+    "Command.h",
+    "DateTime.cpp",
+    "DateTime.h",
+    "Debounce.h",
+    "DeferredInvocationContext.h",
+    "ElapsedTimer.cpp",
+    "ElapsedTimer.h",
     "Event.cpp",
     "Event.h",
     "EventLoop.cpp",
@@ -34,9 +61,6 @@ source_set("sources") {
     "EventLoopImplementationUnix.h",
     "EventReceiver.cpp",
     "EventReceiver.h",
-    "File.cpp",
-    "File.h",
-    "Forward.h",
     "LockFile.cpp",
     "LockFile.h",
     "MappedFile.cpp",
@@ -48,6 +72,8 @@ source_set("sources") {
     "NetworkResponse.h",
     "Notifier.cpp",
     "Notifier.h",
+    "Platform/ProcessInfo.h",
+    "Platform/ProcessStatistics.h",
     "Process.cpp",
     "Process.h",
     "ProcessStatisticsReader.cpp",
@@ -61,16 +87,10 @@ source_set("sources") {
     "SOCKSProxyClient.h",
     "SecretString.cpp",
     "SecretString.h",
-    "SessionManagement.cpp",
-    "SessionManagement.h",
     "SharedCircularQueue.h",
     "Socket.cpp",
     "Socket.h",
     "SocketAddress.h",
-    "StandardPaths.cpp",
-    "StandardPaths.h",
-    "System.cpp",
-    "System.h",
     "SystemServerTakeover.cpp",
     "SystemServerTakeover.h",
     "TCPServer.cpp",
@@ -83,8 +103,6 @@ source_set("sources") {
     "UDPServer.cpp",
     "UDPServer.h",
     "UmaskScope.h",
-    "Version.cpp",
-    "Version.h",
   ]
   if (current_os != "android") {
     sources += [
@@ -99,6 +117,22 @@ source_set("sources") {
       "LocalServer.cpp",
       "LocalServer.h",
     ]
+  }
+  if (current_os == "mac") {
+    sources += [ "MachPort.cpp" ]
+  }
+
+  if (current_os == "serenity") {
+    sources += [ "Platform/ProcessStatisticsSerenity.cpp" ]
+  } else if (current_os == "linux") {
+    sources += [ "Platform/ProcessStatisticsLinux.cpp" ]
+  } else if (current_os == "mac") {
+    sources += [
+      "Platform/ProcessStatisticsMach.cpp",
+      "Platform/ProcessStatisticsMach.h",
+    ]
+  } else {
+    sources += [ "Platform/ProcessStatisticsUnimplemented.cpp" ]
   }
 }
 
@@ -141,5 +175,9 @@ shared_library("LibCore") {
     "//Meta/gn/build/libs/crypt",
     "//Meta/gn/build/libs/pthread",
     "//Userland/Libraries/LibSystem",
+    "//Userland/Libraries/LibTimeZone",
+    "//Userland/Libraries/LibURL",
   ]
+
+  public_deps = [ ":minimal" ]
 }

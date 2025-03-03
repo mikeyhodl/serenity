@@ -30,6 +30,7 @@ public:
 
     Type type() const { return m_type; }
     double raw_value() const { return m_value; }
+    StringView unit_name() const;
 
     bool operator==(Time const& other) const
     {
@@ -48,9 +49,9 @@ public:
         return 0;
     }
 
-private:
-    StringView unit_name() const;
+    static Time resolve_calculated(NonnullRefPtr<CSSMathValue> const&, Layout::Node const&, Time const& reference_value);
 
+private:
     Type m_type;
     double m_value { 0 };
 };

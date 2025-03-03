@@ -31,6 +31,8 @@ StringView PCIeTransportLink::determine_device_class_name() const
             return "VirtIOConsole"sv;
         case 4:
             return "VirtIORNG"sv;
+        case 18:
+            return "VirtIOInput"sv;
         default:
             dbgln("VirtIO: Unknown subsystem_device_id {}", subsystem_device_id);
             VERIFY_NOT_REACHED();
@@ -50,8 +52,10 @@ StringView PCIeTransportLink::determine_device_class_name() const
         return "VirtIORNG"sv;
     case PCI::DeviceID::VirtIOGPU:
         return "VirtIOGPU"sv;
+    case PCI::DeviceID::VirtIOInput:
+        return "VirtIOInput"sv;
     default:
-        dbgln("VirtIO: Unknown device_id {}", id.vendor_id);
+        dbgln("VirtIO: Unknown device_id {:#x}", id.device_id);
         VERIFY_NOT_REACHED();
     }
 }
@@ -123,7 +127,7 @@ ErrorOr<void> PCIeTransportLink::locate_configurations_and_resources(Badge<VirtI
             }
             dbgln_if(VIRTIO_DEBUG, "{}: Found configuration {}, resource: {}, offset: {}, length: {}", device_name(), (u32)config.cfg_type, config.resource_index, config.offset, config.length);
             if (config.cfg_type == ConfigurationType::Common)
-                m_use_mmio = true;
+                m_use_mmio.set();
             else if (config.cfg_type == ConfigurationType::Notify)
                 m_notify_multiplier = capability.read32(0x10);
 
@@ -131,7 +135,7 @@ ErrorOr<void> PCIeTransportLink::locate_configurations_and_resources(Badge<VirtI
         }
     }
 
-    if (m_use_mmio) {
+    if (m_use_mmio.was_set()) {
         for (auto& cfg : m_configs) {
             auto mapping_io_window = TRY(IOWindow::create_for_pci_device_bar(device_identifier(), static_cast<PCI::HeaderType0BaseRegister>(cfg.resource_index)));
             m_register_bases[cfg.resource_index] = move(mapping_io_window);

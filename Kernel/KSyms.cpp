@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StackUnwinder.h>
 #include <AK/TemporaryChange.h>
 #include <Kernel/Arch/SafeMem.h>
 #include <Kernel/Arch/SmapDisabler.h>
@@ -17,10 +18,10 @@ namespace Kernel {
 
 FlatPtr g_lowest_kernel_symbol_address = 0xffffffff;
 FlatPtr g_highest_kernel_symbol_address = 0;
-bool g_kernel_symbols_available = false;
+SetOnce g_kernel_symbols_available;
 
 extern "C" {
-__attribute__((section(".kernel_symbols"))) char kernel_symbols[5 * MiB] {};
+__attribute__((section(".kernel_symbols"))) char kernel_symbols[8 * MiB] {};
 }
 
 static KernelSymbol* s_symbols;
@@ -85,16 +86,11 @@ UNMAP_AFTER_INIT static void load_kernel_symbols_from_data(Bytes buffer)
         }
         auto& ksym = s_symbols[current_symbol_index];
 
-        // FIXME: Remove this ifdef once the aarch64 kernel is loaded by the Prekernel.
-        //        Currently, the aarch64 kernel is linked at a high virtual memory address, instead
-        //        of zero, so the address of a symbol does not need to be offset by the kernel_load_base.
-#if ARCH(X86_64)
-        ksym.address = kernel_load_base + address;
-#elif ARCH(AARCH64) || ARCH(RISCV64)
-        ksym.address = address;
-#else
-#    error "Unknown architecture"
-#endif
+        if (g_boot_info.boot_method == BootMethod::PreInit)
+            ksym.address = address;
+        else
+            ksym.address = g_boot_info.kernel_load_base + address;
+
         ksym.name = start_of_name;
 
         *bufptr = '\0';
@@ -107,7 +103,7 @@ UNMAP_AFTER_INIT static void load_kernel_symbols_from_data(Bytes buffer)
         ++bufptr;
         ++current_symbol_index;
     }
-    g_kernel_symbols_available = true;
+    g_kernel_symbols_available.set();
 }
 
 NEVER_INLINE static void dump_backtrace_impl(FlatPtr frame_pointer, bool use_ksyms, PrintToScreen print_to_screen)
@@ -121,7 +117,7 @@ NEVER_INLINE static void dump_backtrace_impl(FlatPtr frame_pointer, bool use_ksy
     } while (0)
 
     SmapDisabler disabler;
-    if (use_ksyms && !g_kernel_symbols_available)
+    if (use_ksyms && !g_kernel_symbols_available.was_set())
         Processor::halt();
 
     struct RecognizedSymbol {
@@ -129,94 +125,52 @@ NEVER_INLINE static void dump_backtrace_impl(FlatPtr frame_pointer, bool use_ksy
         KernelSymbol const* symbol { nullptr };
     };
 
-    struct FrameRecord {
-        FlatPtr previous_frame_pointer;
-        FlatPtr return_address;
-    };
-
-    auto safe_memcpy_frame_record_from_stack = [](FlatPtr current_frame_pointer) -> ErrorOr<FrameRecord> {
-#if ARCH(X86_64) || ARCH(AARCH64)
-        // x86_64/aarch64 frame record layout:
-        // rbp/fp+8: return address
-        // rbp/fp+0: previous base/frame pointer
-
-        FlatPtr previous_frame_pointer_and_return_address[2];
-        void* fault_at;
-        if (!safe_memcpy(previous_frame_pointer_and_return_address, bit_cast<FlatPtr*>(current_frame_pointer), sizeof(previous_frame_pointer_and_return_address), fault_at))
-            return EFAULT;
-
-        return FrameRecord {
-            .previous_frame_pointer = previous_frame_pointer_and_return_address[0],
-            .return_address = previous_frame_pointer_and_return_address[1],
-        };
-#elif ARCH(RISCV64)
-        // riscv64 frame record layout:
-        // fp-8: return address
-        // fp-16: previous frame pointer
-
-        FlatPtr previous_frame_pointer_and_return_address[2];
-        void* fault_at;
-        if (!safe_memcpy(previous_frame_pointer_and_return_address, bit_cast<FlatPtr*>(current_frame_pointer) - 2, sizeof(previous_frame_pointer_and_return_address), fault_at))
-            return EFAULT;
-
-        return FrameRecord {
-            .previous_frame_pointer = previous_frame_pointer_and_return_address[0],
-            .return_address = previous_frame_pointer_and_return_address[1],
-        };
-#else
-#    error Unknown architecture
-#endif
-    };
-
     constexpr size_t max_recognized_symbol_count = 256;
     RecognizedSymbol recognized_symbols[max_recognized_symbol_count];
     size_t recognized_symbol_count = 0;
-    if (use_ksyms) {
-        FlatPtr current_frame_pointer = frame_pointer;
 
-        while (current_frame_pointer != 0 && recognized_symbol_count < max_recognized_symbol_count) {
-            if (current_frame_pointer < kernel_mapping_base)
-                break;
+    MUST(AK::unwind_stack_from_frame_pointer(
+        frame_pointer,
+        [](FlatPtr address) -> ErrorOr<FlatPtr> {
+            if (address < g_boot_info.kernel_mapping_base)
+                return EINVAL;
 
-            auto frame_record_or_error = safe_memcpy_frame_record_from_stack(current_frame_pointer);
-            if (frame_record_or_error.is_error())
-                break;
+            FlatPtr value;
+            void* fault_at;
+            if (!safe_memcpy(&value, bit_cast<FlatPtr*>(address), sizeof(FlatPtr), fault_at))
+                return EFAULT;
 
-            auto frame_record = frame_record_or_error.release_value();
+            return value;
+        },
+        [use_ksyms, print_to_screen, &recognized_symbol_count, &recognized_symbols](AK::StackFrame stack_frame) -> ErrorOr<IterationDecision> {
+            if (use_ksyms) {
+                if (recognized_symbol_count >= max_recognized_symbol_count)
+                    return IterationDecision::Break;
 
-            recognized_symbols[recognized_symbol_count++] = { frame_record.return_address, symbolicate_kernel_address(frame_record.return_address) };
-            current_frame_pointer = frame_record.previous_frame_pointer;
-        }
-    } else {
-        FlatPtr current_frame_pointer = frame_pointer;
+                recognized_symbols[recognized_symbol_count++] = { stack_frame.return_address, symbolicate_kernel_address(stack_frame.return_address) };
+            } else {
+                PRINT_LINE("{:p}", stack_frame.return_address);
+            }
+            return IterationDecision::Continue;
+        }));
 
-        while (current_frame_pointer != 0) {
-            auto frame_record_or_error = safe_memcpy_frame_record_from_stack(current_frame_pointer);
-            if (frame_record_or_error.is_error())
-                break;
-
-            auto frame_record = frame_record_or_error.release_value();
-
-            PRINT_LINE("{:p} (next: {:p})", frame_record.return_address, frame_record.previous_frame_pointer);
-            current_frame_pointer = frame_record.previous_frame_pointer;
-        }
-
+    if (!use_ksyms)
         return;
-    }
+
     VERIFY(recognized_symbol_count <= max_recognized_symbol_count);
     for (size_t i = 0; i < recognized_symbol_count; ++i) {
         auto& symbol = recognized_symbols[i];
         if (!symbol.address)
             break;
         if (!symbol.symbol) {
-            PRINT_LINE("Kernel + {:p}", symbol.address - kernel_load_base);
+            PRINT_LINE("Kernel + {:p}", symbol.address - g_boot_info.kernel_load_base);
             continue;
         }
         size_t offset = symbol.address - symbol.symbol->address;
         if (symbol.symbol->address == g_highest_kernel_symbol_address && offset > 4096)
-            PRINT_LINE("Kernel + {:p}", symbol.address - kernel_load_base);
+            PRINT_LINE("Kernel + {:p}", symbol.address - g_boot_info.kernel_load_base);
         else
-            PRINT_LINE("Kernel + {:p}  {} +{:#x}", symbol.address - kernel_load_base, symbol.symbol->name, offset);
+            PRINT_LINE("Kernel + {:p}  {} +{:#x}", symbol.address - g_boot_info.kernel_load_base, symbol.symbol->name, offset);
     }
 }
 
@@ -235,7 +189,7 @@ void dump_backtrace(PrintToScreen print_to_screen)
     TemporaryChange disable_kmalloc_stacks(g_dump_kmalloc_stacks, false);
 
     FlatPtr base_pointer = (FlatPtr)__builtin_frame_address(0);
-    dump_backtrace_impl(base_pointer, g_kernel_symbols_available, print_to_screen);
+    dump_backtrace_impl(base_pointer, g_kernel_symbols_available.was_set(), print_to_screen);
 }
 
 UNMAP_AFTER_INIT void load_kernel_symbol_table()

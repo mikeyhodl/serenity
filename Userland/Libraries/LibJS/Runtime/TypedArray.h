@@ -54,15 +54,15 @@ public:
     u32 element_size() const { return m_element_size; }
     virtual DeprecatedFlyString const& element_name() const = 0;
 
-    // 25.1.3.10 IsUnclampedIntegerElementType ( type ), https://tc39.es/ecma262/#sec-isunclampedintegerelementtype
+    // 25.1.3.11 IsUnclampedIntegerElementType ( type ), https://tc39.es/ecma262/#sec-isunclampedintegerelementtype
     virtual bool is_unclamped_integer_element_type() const = 0;
-    // 25.1.3.11 IsBigIntElementType ( type ), https://tc39.es/ecma262/#sec-isbigintelementtype
+    // 25.1.3.12 IsBigIntElementType ( type ), https://tc39.es/ecma262/#sec-isbigintelementtype
     virtual bool is_bigint_element_type() const = 0;
-    // 25.1.3.15 GetValueFromBuffer ( arrayBuffer, byteIndex, type, isTypedArray, order [ , isLittleEndian ] ), https://tc39.es/ecma262/#sec-getvaluefrombuffer
+    // 25.1.3.16 GetValueFromBuffer ( arrayBuffer, byteIndex, type, isTypedArray, order [ , isLittleEndian ] ), https://tc39.es/ecma262/#sec-getvaluefrombuffer
     virtual Value get_value_from_buffer(size_t byte_index, ArrayBuffer::Order, bool is_little_endian = true) const = 0;
-    // 25.1.3.17 SetValueInBuffer ( arrayBuffer, byteIndex, type, value, isTypedArray, order [ , isLittleEndian ] ), https://tc39.es/ecma262/#sec-setvalueinbuffer
+    // 25.1.3.18 SetValueInBuffer ( arrayBuffer, byteIndex, type, value, isTypedArray, order [ , isLittleEndian ] ), https://tc39.es/ecma262/#sec-setvalueinbuffer
     virtual void set_value_in_buffer(size_t byte_index, Value, ArrayBuffer::Order, bool is_little_endian = true) = 0;
-    // 25.1.3.18 GetModifySetValueInBuffer ( arrayBuffer, byteIndex, type, value, op ), https://tc39.es/ecma262/#sec-getmodifysetvalueinbuffer
+    // 25.1.3.19 GetModifySetValueInBuffer ( arrayBuffer, byteIndex, type, value, op ), https://tc39.es/ecma262/#sec-getmodifysetvalueinbuffer
     virtual Value get_modify_set_value_in_buffer(size_t byte_index, Value value, ReadWriteModifyFunction operation, bool is_little_endian = true) = 0;
 
 protected:
@@ -268,7 +268,7 @@ public:
     }
 
     // 10.4.5.3 [[DefineOwnProperty]] ( P, Desc ), https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-defineownproperty-p-desc
-    virtual ThrowCompletionOr<bool> internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& property_descriptor) override
+    virtual ThrowCompletionOr<bool> internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& property_descriptor, Optional<PropertyDescriptor>* precomputed_get_own_property = nullptr) override
     {
         VERIFY(property_key.is_valid());
 
@@ -313,11 +313,11 @@ public:
         }
 
         // 2. Return ! OrdinaryDefineOwnProperty(O, P, Desc).
-        return Object::internal_define_own_property(property_key, property_descriptor);
+        return Object::internal_define_own_property(property_key, property_descriptor, precomputed_get_own_property);
     }
 
     // 10.4.5.4 [[Get]] ( P, Receiver ), 10.4.5.4 [[Get]] ( P, Receiver )
-    virtual ThrowCompletionOr<Value> internal_get(PropertyKey const& property_key, Value receiver, CacheablePropertyMetadata* cacheable_metadata) const override
+    virtual ThrowCompletionOr<Value> internal_get(PropertyKey const& property_key, Value receiver, CacheablePropertyMetadata* cacheable_metadata, PropertyLookupPhase phase) const override
     {
         VERIFY(!receiver.is_empty());
 
@@ -339,7 +339,7 @@ public:
         }
 
         // 2. Return ? OrdinaryGet(O, P, Receiver).
-        return Object::internal_get(property_key, receiver, cacheable_metadata);
+        return Object::internal_get(property_key, receiver, cacheable_metadata, phase);
     }
 
     // 10.4.5.5 [[Set]] ( P, V, Receiver ), https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-set-p-v-receiver
@@ -425,7 +425,7 @@ public:
             // b. For each integer i such that 0 ≤ i < length, in ascending order, do
             for (size_t i = 0; i < length; ++i) {
                 // i. Append ! ToString(𝔽(i)) to keys.
-                keys.append(PrimitiveString::create(vm, MUST(String::number(i))));
+                keys.append(PrimitiveString::create(vm, String::number(i)));
             }
         }
 

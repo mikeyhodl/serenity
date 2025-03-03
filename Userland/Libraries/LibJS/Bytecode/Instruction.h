@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Forward.h>
+#include <AK/Function.h>
 #include <AK/Span.h>
 #include <LibJS/Bytecode/Executable.h>
 #include <LibJS/Forward.h>
@@ -14,6 +15,7 @@
 
 #define ENUMERATE_BYTECODE_OPS(O)      \
     O(Add)                             \
+    O(AddPrivateName)                  \
     O(ArrayAppend)                     \
     O(AsyncIteratorClose)              \
     O(Await)                           \
@@ -28,8 +30,12 @@
     O(ConcatString)                    \
     O(ContinuePendingUnwind)           \
     O(CopyObjectExcludingProperties)   \
+    O(CreateArguments)                 \
     O(CreateLexicalEnvironment)        \
+    O(CreatePrivateEnvironment)        \
+    O(CreateRestParams)                \
     O(CreateVariable)                  \
+    O(CreateVariableEnvironment)       \
     O(Decrement)                       \
     O(DeleteById)                      \
     O(DeleteByIdWithThis)              \
@@ -39,39 +45,56 @@
     O(Div)                             \
     O(Dump)                            \
     O(End)                             \
-    O(EnterUnwindContext)              \
     O(EnterObjectEnvironment)          \
+    O(EnterUnwindContext)              \
     O(Exp)                             \
+    O(GetArgument)                     \
     O(GetById)                         \
     O(GetByIdWithThis)                 \
     O(GetByValue)                      \
     O(GetByValueWithThis)              \
     O(GetCalleeAndThisFromEnvironment) \
+    O(GetGlobal)                       \
+    O(GetImportMeta)                   \
     O(GetIterator)                     \
-    O(GetObjectFromIteratorRecord)     \
+    O(GetLength)                       \
+    O(GetLengthWithThis)               \
     O(GetMethod)                       \
     O(GetNewTarget)                    \
     O(GetNextMethodFromIteratorRecord) \
-    O(GetImportMeta)                   \
+    O(GetObjectFromIteratorRecord)     \
     O(GetObjectPropertyIterator)       \
     O(GetPrivateById)                  \
-    O(GetVariable)                     \
-    O(GetGlobal)                       \
+    O(GetBinding)                      \
     O(GreaterThan)                     \
     O(GreaterThanEquals)               \
     O(HasPrivateId)                    \
     O(ImportCall)                      \
     O(In)                              \
     O(Increment)                       \
+    O(InitializeLexicalBinding)        \
+    O(InitializeVariableBinding)       \
     O(InstanceOf)                      \
     O(IteratorClose)                   \
     O(IteratorNext)                    \
     O(IteratorToArray)                 \
     O(Jump)                            \
+    O(JumpFalse)                       \
+    O(JumpGreaterThan)                 \
+    O(JumpGreaterThanEquals)           \
     O(JumpIf)                          \
+    O(JumpLessThan)                    \
+    O(JumpLessThanEquals)              \
+    O(JumpLooselyEquals)               \
+    O(JumpLooselyInequals)             \
     O(JumpNullish)                     \
+    O(JumpStrictlyEquals)              \
+    O(JumpStrictlyInequals)            \
+    O(JumpTrue)                        \
     O(JumpUndefined)                   \
+    O(LeaveFinally)                    \
     O(LeaveLexicalEnvironment)         \
+    O(LeavePrivateEnvironment)         \
     O(LeaveUnwindContext)              \
     O(LeftShift)                       \
     O(LessThan)                        \
@@ -89,6 +112,7 @@
     O(NewRegExp)                       \
     O(NewTypeError)                    \
     O(Not)                             \
+    O(PrepareYield)                    \
     O(PostfixDecrement)                \
     O(PostfixIncrement)                \
     O(PutById)                         \
@@ -96,13 +120,15 @@
     O(PutByValue)                      \
     O(PutByValueWithThis)              \
     O(PutPrivateById)                  \
-    O(ResolveThisBinding)              \
     O(ResolveSuperBase)                \
+    O(ResolveThisBinding)              \
+    O(RestoreScheduledJump)            \
     O(Return)                          \
     O(RightShift)                      \
     O(ScheduleJump)                    \
-    O(SetVariable)                     \
-    O(SetLocal)                        \
+    O(SetArgument)                     \
+    O(SetLexicalBinding)               \
+    O(SetVariableBinding)              \
     O(StrictlyEquals)                  \
     O(StrictlyInequals)                \
     O(Sub)                             \
@@ -112,7 +138,7 @@
     O(ThrowIfNullish)                  \
     O(ThrowIfTDZ)                      \
     O(Typeof)                          \
-    O(TypeofVariable)                  \
+    O(TypeofBinding)                   \
     O(UnaryMinus)                      \
     O(UnaryPlus)                       \
     O(UnsignedRightShift)              \
@@ -123,6 +149,7 @@ namespace JS::Bytecode {
 class alignas(void*) Instruction {
 public:
     constexpr static bool IsTerminator = false;
+    static constexpr bool IsVariableLength = false;
 
     enum class Type {
 #define __BYTECODE_OP(op) \
@@ -132,26 +159,23 @@ public:
     };
 
     Type type() const { return m_type; }
-    size_t length() const { return m_length; }
+    size_t length() const;
     ByteString to_byte_string(Bytecode::Executable const&) const;
-    ThrowCompletionOr<void> execute(Bytecode::Interpreter&) const;
+    void visit_labels(Function<void(Label&)> visitor);
+    void visit_operands(Function<void(Operand&)> visitor);
     static void destroy(Instruction&);
 
-    // FIXME: Find a better way to organize this information
-    void set_source_record(SourceRecord rec) { m_source_record = rec; }
-    SourceRecord source_record() const { return m_source_record; }
-
 protected:
-    Instruction(Type type, size_t length)
+    explicit Instruction(Type type)
         : m_type(type)
-        , m_length(length)
     {
     }
 
+    void visit_labels_impl(Function<void(Label&)>) { }
+    void visit_operands_impl(Function<void(Operand&)>) { }
+
 private:
-    SourceRecord m_source_record {};
     Type m_type {};
-    size_t m_length {};
 };
 
 class InstructionStreamIterator {

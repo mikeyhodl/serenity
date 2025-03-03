@@ -63,10 +63,9 @@ public:
         Throw,
     };
 
-    ALWAYS_INLINE Completion(Type type, Optional<Value> value, Optional<DeprecatedFlyString> target)
+    ALWAYS_INLINE Completion(Type type, Optional<Value> value)
         : m_type(type)
         , m_value(move(value))
-        , m_target(move(target))
     {
         VERIFY(type != Type::Empty);
         if (m_value.has_value())
@@ -78,12 +77,12 @@ public:
     // 5.2.3.1 Implicit Completion Values, https://tc39.es/ecma262/#sec-implicit-completion-values
     // Not `explicit` on purpose.
     ALWAYS_INLINE Completion(Value value)
-        : Completion(Type::Normal, value, {})
+        : Completion(Type::Normal, value)
     {
     }
 
     ALWAYS_INLINE Completion(Optional<Value> value)
-        : Completion(Type::Normal, move(value), {})
+        : Completion(Type::Normal, move(value))
     {
     }
 
@@ -104,8 +103,6 @@ public:
     }
     [[nodiscard]] Optional<Value>& value() { return m_value; }
     [[nodiscard]] Optional<Value> const& value() const { return m_value; }
-    [[nodiscard]] Optional<DeprecatedFlyString>& target() { return m_target; }
-    [[nodiscard]] Optional<DeprecatedFlyString> const& target() const { return m_target; }
 
     // "abrupt completion refers to any completion with a [[Type]] value other than normal"
     [[nodiscard]] bool is_abrupt() const { return m_type != Type::Normal; }
@@ -117,7 +114,7 @@ public:
     {
         VERIFY(is_error());
         VERIFY(m_value.has_value());
-        return { m_type, release_value(), move(m_target) };
+        return { m_type, release_value() };
     }
 
     // 6.2.3.4 UpdateEmpty ( completionRecord, value ), https://tc39.es/ecma262/#sec-updateempty
@@ -132,7 +129,7 @@ public:
             return *this;
 
         // 3. Return Completion Record { [[Type]]: completionRecord.[[Type]], [[Value]]: value, [[Target]]: completionRecord.[[Target]] }.
-        return { m_type, move(value), m_target };
+        return { m_type, move(value) };
     }
 
 private:
@@ -150,9 +147,9 @@ private:
         return m_type == Type::Empty;
     }
 
-    Type m_type { Type::Normal };           // [[Type]]
-    Optional<Value> m_value;                // [[Value]]
-    Optional<DeprecatedFlyString> m_target; // [[Target]]
+    Type m_type { Type::Normal }; // [[Type]]
+    Optional<Value> m_value;      // [[Value]]
+    // NOTE: We don't need the [[Target]] slot since control flow is handled in bytecode.
 };
 
 }
@@ -268,29 +265,32 @@ private:
 
 namespace JS {
 
+struct ErrorValue {
+    Value error;
+};
+
 template<typename ValueType>
 requires(!IsLvalueReference<ValueType>)
 class [[nodiscard]] ThrowCompletionOr {
 public:
     ALWAYS_INLINE ThrowCompletionOr()
     requires(IsSame<ValueType, Empty>)
-        : m_value_or_throw_completion(Empty {})
+        : m_value_or_error(Empty {})
     {
     }
 
     // Not `explicit` on purpose so that `return vm.throw_completion<Error>(...);` is possible.
     ALWAYS_INLINE ThrowCompletionOr(Completion throw_completion)
-        : m_value_or_throw_completion(move(throw_completion))
+        : m_value_or_error(ErrorValue { throw_completion.release_error().value().value() })
     {
-        VERIFY(m_value_or_throw_completion.template get<Completion>().is_error());
     }
 
     // Not `explicit` on purpose so that `return value;` is possible.
     ALWAYS_INLINE ThrowCompletionOr(ValueType value)
-        : m_value_or_throw_completion(move(value))
+        : m_value_or_error(move(value))
     {
         if constexpr (IsSame<ValueType, Value>)
-            VERIFY(!m_value_or_throw_completion.template get<ValueType>().is_empty());
+            VERIFY(!m_value_or_error.template get<ValueType>().is_empty());
     }
 
     ALWAYS_INLINE ThrowCompletionOr(ThrowCompletionOr const&) = default;
@@ -299,7 +299,7 @@ public:
     ALWAYS_INLINE ThrowCompletionOr& operator=(ThrowCompletionOr&&) = default;
 
     ALWAYS_INLINE ThrowCompletionOr(OptionalNone value)
-        : m_value_or_throw_completion(ValueType { value })
+        : m_value_or_error(ValueType { value })
     {
     }
 
@@ -309,28 +309,34 @@ public:
     template<typename WrappedValueType>
     ALWAYS_INLINE ThrowCompletionOr(WrappedValueType&& value)
     requires(!IsPOD<ValueType>)
-        : m_value_or_throw_completion(ValueType { value })
+        : m_value_or_error(ValueType { value })
     {
     }
 
-    [[nodiscard]] bool is_throw_completion() const { return m_value_or_throw_completion.template has<Completion>(); }
-    Completion const& throw_completion() const { return m_value_or_throw_completion.template get<Completion>(); }
+    [[nodiscard]] bool is_throw_completion() const { return m_value_or_error.template has<ErrorValue>(); }
+    [[nodiscard]] Completion throw_completion() const { return error(); }
+    [[nodiscard]] Value error_value() const { return m_value_or_error.template get<ErrorValue>().error; }
 
     [[nodiscard]] bool has_value() const
     requires(!IsSame<ValueType, Empty>)
     {
-        return m_value_or_throw_completion.template has<ValueType>();
+        return m_value_or_error.template has<ValueType>();
     }
     [[nodiscard]] ValueType const& value() const
     requires(!IsSame<ValueType, Empty>)
     {
-        return m_value_or_throw_completion.template get<ValueType>();
+        return m_value_or_error.template get<ValueType>();
     }
 
     // These are for compatibility with the TRY() macro in AK.
-    [[nodiscard]] bool is_error() const { return m_value_or_throw_completion.template has<Completion>(); }
-    [[nodiscard]] ValueType release_value() { return move(m_value_or_throw_completion.template get<ValueType>()); }
-    Completion release_error() { return move(m_value_or_throw_completion.template get<Completion>()); }
+    [[nodiscard]] bool is_error() const { return m_value_or_error.template has<ErrorValue>(); }
+    [[nodiscard]] ValueType release_value() { return move(m_value_or_error.template get<ValueType>()); }
+    Completion error() const { return Completion { Completion::Type::Throw, m_value_or_error.template get<ErrorValue>().error }; }
+    Completion release_error()
+    {
+        auto error = move(m_value_or_error.template get<ErrorValue>());
+        return Completion { Completion::Type::Throw, error.error };
+    }
 
     ValueType release_allocated_value_but_fixme_should_propagate_errors()
     {
@@ -339,7 +345,7 @@ public:
     }
 
 private:
-    Variant<ValueType, Completion> m_value_or_throw_completion;
+    Variant<ValueType, ErrorValue> m_value_or_error;
 };
 
 template<>
@@ -354,7 +360,7 @@ ThrowCompletionOr<Value> await(VM&, Value);
 inline Completion normal_completion(Optional<Value> value)
 {
     // 1. Return Completion Record { [[Type]]: normal, [[Value]]: value, [[Target]]: empty }.
-    return { Completion::Type::Normal, move(value), {} };
+    return { Completion::Type::Normal, move(value) };
 }
 
 // 6.2.4.2 ThrowCompletion ( value ), https://tc39.es/ecma262/#sec-throwcompletion

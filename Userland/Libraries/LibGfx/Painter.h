@@ -16,14 +16,17 @@
 #include <LibGfx/Forward.h>
 #include <LibGfx/Gradients.h>
 #include <LibGfx/GrayscaleBitmap.h>
+#include <LibGfx/LineStyle.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
+#include <LibGfx/ScalingMode.h>
 #include <LibGfx/Size.h>
 #include <LibGfx/TextAlignment.h>
 #include <LibGfx/TextDirection.h>
 #include <LibGfx/TextElision.h>
 #include <LibGfx/TextWrapping.h>
+#include <LibGfx/WindingRule.h>
 
 namespace Gfx {
 
@@ -46,20 +49,6 @@ public:
 
     explicit Painter(Gfx::Bitmap&);
     ~Painter() = default;
-
-    enum class LineStyle {
-        Solid,
-        Dotted,
-        Dashed,
-    };
-
-    enum class ScalingMode {
-        NearestNeighbor,
-        SmoothPixels,
-        BilinearBlend,
-        BoxSampling,
-        None,
-    };
 
     void clear_rect(IntRect const&, Color);
     void fill_rect(IntRect const&, Color);
@@ -127,7 +116,6 @@ public:
     void draw_glyph_or_emoji(FloatPoint, u32, Font const&, Color);
     void draw_glyph_or_emoji(FloatPoint, Utf8CodePointIterator&, Font const&, Color);
     void draw_circle_arc_intersecting(IntRect const&, IntPoint, int radius, Color, int thickness);
-    void draw_signed_distance_field(IntRect const& dst_rect, Color, Gfx::GrayscaleBitmap const&, float smoothing);
 
     // Streamlined text drawing routine that does no wrapping/elision/alignment.
     void draw_text_run(IntPoint baseline_start, Utf8View const&, Font const&, Color);
@@ -151,11 +139,6 @@ public:
     static void for_each_line_segment_on_elliptical_arc(FloatPoint p1, FloatPoint p2, FloatPoint center, FloatSize radii, float x_axis_rotation, float theta_1, float theta_delta, Function<void(FloatPoint, FloatPoint)>&&);
 
     void stroke_path(Path const&, Color, int thickness);
-
-    enum class WindingRule {
-        Nonzero,
-        EvenOdd,
-    };
 
     void fill_path(Path const&, Color, WindingRule rule = WindingRule::Nonzero);
     void fill_path(Path const&, PaintStyle const& paint_style, float opacity = 1.0f, WindingRule rule = WindingRule::Nonzero);
@@ -184,7 +167,7 @@ public:
 
     IntPoint translation() const { return state().translation; }
 
-    Gfx::Bitmap* target() { return m_target.ptr(); }
+    [[nodiscard]] Gfx::Bitmap& target() { return *m_target; }
 
     void save() { m_state_stack.append(m_state_stack.last()); }
     void restore()

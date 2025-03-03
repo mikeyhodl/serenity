@@ -67,7 +67,7 @@ TextEditor::TextEditor(Type type)
     if (is_multi_line()) {
         set_font(Gfx::FontDatabase::default_fixed_width_font());
         set_wrapping_mode(WrappingMode::WrapAtWords);
-        m_search_banner = GUI::IncrementalSearchBanner::construct(*this);
+        m_search_banner = GUI::IncrementalSearchBanner::try_create(*this).release_value_but_fixme_should_propagate_errors();
         set_banner_widget(m_search_banner);
     }
     vertical_scrollbar().set_step(line_height());
@@ -1704,8 +1704,8 @@ ErrorOr<void> TextEditor::write_to_file(Core::File& file)
         // A size 0 file doesn't need a data copy.
     } else {
         for (size_t i = 0; i < line_count(); ++i) {
-            TRY(file.write_until_depleted(line(i).to_utf8().bytes()));
-            TRY(file.write_until_depleted("\n"sv.bytes()));
+            TRY(file.write_until_depleted(line(i).to_utf8()));
+            TRY(file.write_until_depleted("\n"sv));
         }
     }
     document().set_unmodified();
@@ -1947,7 +1947,7 @@ void TextEditor::did_change(AllowCallback allow_callback)
     if (on_change && allow_callback == AllowCallback::Yes)
         on_change();
 }
-void TextEditor::set_mode(const Mode mode)
+void TextEditor::set_mode(Mode const mode)
 {
     if (m_mode == mode)
         return;
@@ -2476,7 +2476,7 @@ void TextEditor::set_should_autocomplete_automatically(bool value)
         m_autocomplete_timer = Core::Timer::create_single_shot(m_automatic_autocomplete_delay_ms, [this] {
             if (m_autocomplete_box && !m_autocomplete_box->is_visible())
                 try_show_autocomplete(UserRequestedAutocomplete::No);
-        }).release_value_but_fixme_should_propagate_errors();
+        });
         return;
     }
 

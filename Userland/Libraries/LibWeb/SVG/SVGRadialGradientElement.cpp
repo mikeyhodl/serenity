@@ -5,6 +5,8 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGRadialGradientElementPrototype.h>
+#include <LibWeb/Painting/PaintStyle.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/SVGRadialGradientElement.h>
 
@@ -23,9 +25,9 @@ void SVGRadialGradientElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGRadialGradientElement);
 }
 
-void SVGRadialGradientElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void SVGRadialGradientElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGGradientElement::attribute_changed(name, value);
+    SVGGradientElement::attribute_changed(name, old_value, value);
 
     // FIXME: These are <length> or <coordinate> in the spec, but all examples seem to allow percentages
     // and unitless values.
@@ -159,7 +161,7 @@ NumberPercentage SVGRadialGradientElement::end_circle_radius_impl(HashTable<SVGG
     return NumberPercentage::create_percentage(50);
 }
 
-Optional<Gfx::PaintStyle const&> SVGRadialGradientElement::to_gfx_paint_style(SVGPaintContext const& paint_context) const
+Optional<Painting::PaintStyle> SVGRadialGradientElement::to_gfx_paint_style(SVGPaintContext const& paint_context) const
 {
     auto units = gradient_units();
     Gfx::FloatPoint start_center;
@@ -199,8 +201,7 @@ Optional<Gfx::PaintStyle const&> SVGRadialGradientElement::to_gfx_paint_style(SV
     }
 
     if (!m_paint_style) {
-        m_paint_style = Gfx::SVGRadialGradientPaintStyle::create(start_center, start_radius, end_center, end_radius)
-                            .release_value_but_fixme_should_propagate_errors();
+        m_paint_style = Painting::SVGRadialGradientPaintStyle::create(start_center, start_radius, end_center, end_radius);
         // FIXME: Update stops in DOM changes:
         add_color_stops(*m_paint_style);
     } else {
@@ -210,7 +211,7 @@ Optional<Gfx::PaintStyle const&> SVGRadialGradientElement::to_gfx_paint_style(SV
         m_paint_style->set_end_radius(end_radius);
     }
     m_paint_style->set_gradient_transform(gradient_paint_transform(paint_context));
-    m_paint_style->set_spread_method(to_gfx_spread_method(spread_method()));
+    m_paint_style->set_spread_method(to_painting_spread_method(spread_method()));
     return *m_paint_style;
 }
 

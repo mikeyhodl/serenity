@@ -17,29 +17,73 @@ Gfx::AffineTransform CanvasPath::active_transform() const
     return {};
 }
 
+void CanvasPath::ensure_subpath(float x, float y)
+{
+    if (m_path.is_empty())
+        m_path.move_to(active_transform().map(Gfx::FloatPoint { x, y }));
+}
+
 void CanvasPath::close_path()
 {
     m_path.close();
 }
 
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-moveto
 void CanvasPath::move_to(float x, float y)
 {
+    // 1. If either of the arguments are infinite or NaN, then return.
+    if (!isfinite(x) || !isfinite(y))
+        return;
+
+    // 2. Create a new subpath with the specified point as its first (and only) point.
     m_path.move_to(active_transform().map(Gfx::FloatPoint { x, y }));
 }
 
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-lineto
 void CanvasPath::line_to(float x, float y)
 {
-    m_path.line_to(active_transform().map(Gfx::FloatPoint { x, y }));
+    // 1. If either of the arguments are infinite or NaN, then return.
+    if (!isfinite(x) || !isfinite(y))
+        return;
+
+    if (m_path.is_empty()) {
+        // 2. If the object's path has no subpaths, then ensure there is a subpath for (x, y).
+        ensure_subpath(x, y);
+    } else {
+        // 3. Otherwise, connect the last point in the subpath to the given point (x, y) using a straight line,
+        // and then add the given point (x, y) to the subpath.
+        m_path.line_to(active_transform().map(Gfx::FloatPoint { x, y }));
+    }
 }
 
-void CanvasPath::quadratic_curve_to(float cx, float cy, float x, float y)
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-quadraticcurveto
+void CanvasPath::quadratic_curve_to(float cpx, float cpy, float x, float y)
 {
+    // 1. If any of the arguments are infinite or NaN, then return.
+    if (!isfinite(cpx) || !isfinite(cpy) || !isfinite(x) || !isfinite(y))
+        return;
+
+    // 2. Ensure there is a subpath for (cpx, cpy)
+    ensure_subpath(cpx, cpy);
+
+    // 3. Connect the last point in the subpath to the given point (x, y) using a quadratic Bézier curve with control point (cpx, cpy).
+    // 4. Add the given point (x, y) to the subpath.
     auto transform = active_transform();
-    m_path.quadratic_bezier_curve_to(transform.map(Gfx::FloatPoint { cx, cy }), transform.map(Gfx::FloatPoint { x, y }));
+    m_path.quadratic_bezier_curve_to(transform.map(Gfx::FloatPoint { cpx, cpy }), transform.map(Gfx::FloatPoint { x, y }));
 }
 
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beziercurveto
 void CanvasPath::bezier_curve_to(double cp1x, double cp1y, double cp2x, double cp2y, double x, double y)
 {
+    // 1. If any of the arguments are infinite or NaN, then return.
+    if (!isfinite(cp1x) || !isfinite(cp1y) || !isfinite(cp2x) || !isfinite(cp2y) || !isfinite(x) || !isfinite(y))
+        return;
+
+    // 2. Ensure there is a subpath for (cp1x, cp1y)
+    ensure_subpath(cp1x, cp1y);
+
+    // 3. Connect the last point in the subpath to the given point (x, y) using a cubic Bézier curve with control poits (cp1x, cp1y) and (cp2x, cp2y).
+    // 4. Add the point (x, y) to the subpath.
     auto transform = active_transform();
     m_path.cubic_bezier_curve_to(
         transform.map(Gfx::FloatPoint { cp1x, cp1y }), transform.map(Gfx::FloatPoint { cp2x, cp2y }), transform.map(Gfx::FloatPoint { x, y }));
@@ -52,11 +96,16 @@ WebIDL::ExceptionOr<void> CanvasPath::arc(float x, float y, float radius, float 
     return ellipse(x, y, radius, radius, 0, start_angle, end_angle, counter_clockwise);
 }
 
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-ellipse
 WebIDL::ExceptionOr<void> CanvasPath::ellipse(float x, float y, float radius_x, float radius_y, float rotation, float start_angle, float end_angle, bool counter_clockwise)
 {
+    // 1. If any of the arguments are infinite or NaN, then return.
+    if (!isfinite(x) || !isfinite(y) || !isfinite(radius_x) || !isfinite(radius_y) || !isfinite(rotation) || !isfinite(start_angle) || !isfinite(end_angle))
+        return {};
+
+    // 2. If either radiusX or radiusY are negative, then throw an "IndexSizeError" DOMException.
     if (radius_x < 0)
         return WebIDL::IndexSizeError::create(m_self->realm(), MUST(String::formatted("The major-axis radius provided ({}) is negative.", radius_x)));
-
     if (radius_y < 0)
         return WebIDL::IndexSizeError::create(m_self->realm(), MUST(String::formatted("The minor-axis radius provided ({}) is negative.", radius_y)));
 
@@ -108,9 +157,18 @@ WebIDL::ExceptionOr<void> CanvasPath::ellipse(float x, float y, float radius_x, 
     auto end_point = resolve_point_with_angle(end_angle);
 
     auto delta_theta = end_angle - start_angle;
+    if (delta_theta < 0)
+        delta_theta += AK::Pi<float> * 2;
 
     auto transform = active_transform();
-    m_path.move_to(transform.map(start_point));
+
+    // 3. If canvasPath's path has any subpaths, then add a straight line from the last point in the subpath to the start point of the arc.
+    if (!m_path.is_empty())
+        m_path.line_to(transform.map(start_point));
+    else
+        m_path.move_to(transform.map(start_point));
+
+    // 4. Add the start and end points of the arc to the subpath, and connect them with an arc.
     m_path.elliptical_arc_to(
         transform.map(Gfx::FloatPoint { end_point }),
         transform.map(Gfx::FloatSize { radius_x, radius_y }),
@@ -128,13 +186,13 @@ WebIDL::ExceptionOr<void> CanvasPath::arc_to(double x1, double y1, double x2, do
         return {};
 
     // 2. Ensure there is a subpath for (x1, y1).
-    auto transform = active_transform();
-    if (m_path.is_empty())
-        m_path.move_to(transform.map(Gfx::FloatPoint { x1, y1 }));
+    ensure_subpath(x1, y1);
 
     // 3. If radius is negative, then throw an "IndexSizeError" DOMException.
     if (radius < 0)
         return WebIDL::IndexSizeError::create(m_self->realm(), MUST(String::formatted("The radius provided ({}) is negative.", radius)));
+
+    auto transform = active_transform();
 
     // 4. Let the point (x0, y0) be the last point in the subpath,
     //    transformed by the inverse of the current transformation matrix

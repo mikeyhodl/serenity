@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/IntegralMath.h>
+#include <Kernel/API/MajorNumberAllocation.h>
 #include <Kernel/Devices/Device.h>
 #include <Kernel/Library/LockWeakable.h>
 
@@ -28,15 +29,7 @@ public:
     virtual void start_request(AsyncBlockDeviceRequest&) = 0;
 
 protected:
-    BlockDevice(MajorNumber major, MinorNumber minor, size_t block_size = PAGE_SIZE)
-        : Device(major, minor)
-        , m_block_size(block_size)
-    {
-        // 512 is the minimum sector size in most block devices
-        VERIFY(m_block_size >= 512);
-        VERIFY(is_power_of_two(m_block_size));
-        m_block_size_log = AK::log2(m_block_size);
-    }
+    BlockDevice(MajorAllocation::BlockDeviceFamily, MinorNumber minor, size_t block_size = PAGE_SIZE);
 
 protected:
     virtual bool is_block_device() const final { return true; }
@@ -85,11 +78,11 @@ public:
 
 private:
     BlockDevice& m_block_device;
-    const RequestType m_request_type;
-    const u64 m_block_index;
-    const u32 m_block_count;
+    RequestType const m_request_type;
+    u64 const m_block_index;
+    u32 const m_block_count;
     UserOrKernelBuffer m_buffer;
-    const size_t m_buffer_size;
+    size_t const m_buffer_size;
 };
 
 }

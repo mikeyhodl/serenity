@@ -13,9 +13,10 @@
 
 namespace Kernel::RISCV64 {
 
-class Timer final : public HardwareTimer<GenericInterruptHandler> {
+class Timer final : public HardwareTimerBase {
 public:
     static NonnullLockRefPtr<Timer> initialize();
+    static Timer& the();
 
     virtual HardwareTimerType timer_type() const override { return HardwareTimerType::RISCVTimer; }
     virtual StringView model() const override { return "RISC-V Timer"sv; }
@@ -32,8 +33,17 @@ public:
     virtual bool is_capable_of_frequency(size_t) const override { TODO_RISCV64(); }
     virtual size_t calculate_nearest_possible_frequency(size_t) const override { TODO_RISCV64(); }
 
+    virtual void will_be_destroyed() override { }
+    virtual Function<void()> set_callback(Function<void()> callback) override
+    {
+        auto previous_callback = move(m_callback);
+        m_callback = move(callback);
+        return previous_callback;
+    }
+
     // FIXME: Share code with HPET::update_time
     u64 update_time(u64& seconds_since_boot, u32& ticks_this_second, bool query_only);
+    void handle_interrupt();
 
 private:
     Timer();
@@ -41,9 +51,8 @@ private:
     static u64 current_ticks();
     static void set_compare(u64 compare);
 
-    //^ GenericInterruptHandler
-    virtual bool handle_interrupt(RegisterState const&) override;
-
+    Function<void()> m_callback;
+    u64 m_frequency { 0 };
     u32 m_interrupt_interval { 0 };
 
     u64 m_main_counter_last_read { 0 };

@@ -5,10 +5,15 @@ source_set("UIEvents") {
     "//Userland/",  # For LibGUI needing WindowServer types
   ]
   sources = [
+    "CompositionEvent.cpp",
     "EventNames.cpp",
     "FocusEvent.cpp",
+    "InputEvent.cpp",
+    "InputTypes.cpp",
     "KeyboardEvent.cpp",
     "MouseEvent.cpp",
+    "PointerEvent.cpp",
+    "TextEvent.cpp",
     "UIEvent.cpp",
     "WheelEvent.cpp",
   ]

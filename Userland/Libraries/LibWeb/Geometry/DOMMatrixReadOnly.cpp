@@ -7,6 +7,7 @@
  */
 
 #include <LibJS/Runtime/TypedArray.h>
+#include <LibWeb/Bindings/DOMMatrixReadOnlyPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/StyleProperties.h>
 #include <LibWeb/CSS/StyleValues/ShorthandStyleValue.h>
@@ -19,6 +20,8 @@
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::Geometry {
+
+JS_DEFINE_ALLOCATOR(DOMMatrixReadOnly);
 
 // https://drafts.fxtf.org/geometry/#dom-dommatrixreadonly-dommatrixreadonly
 WebIDL::ExceptionOr<JS::NonnullGCPtr<DOMMatrixReadOnly>> DOMMatrixReadOnly::construct_impl(JS::Realm& realm, Optional<Variant<String, Vector<double>>> const& init)
@@ -447,12 +450,12 @@ JS::NonnullGCPtr<DOMMatrix> DOMMatrixReadOnly::flip_x()
     auto result = DOMMatrix::create_from_dom_matrix_read_only(realm(), *this);
 
     // 2. Post-multiply result with new DOMMatrix([-1, 0, 0, 1, 0, 0]).
-    // clang-format off
-    Gfx::DoubleMatrix4x4 flip_matrix = { -1, 0, 0, 0,
+    Gfx::DoubleMatrix4x4 flip_matrix = {
+        -1, 0, 0, 0,
         0, 1, 0, 0,
         0, 0, 1, 0,
-        0, 0, 0, 1 };
-    // clang-format on
+        0, 0, 0, 1
+    };
     result->m_matrix = result->m_matrix * flip_matrix;
 
     // 3. Return result.
@@ -466,12 +469,12 @@ JS::NonnullGCPtr<DOMMatrix> DOMMatrixReadOnly::flip_y()
     auto result = DOMMatrix::create_from_dom_matrix_read_only(realm(), *this);
 
     // 2. Post-multiply result with new DOMMatrix([1, 0, 0, -1, 0, 0]).
-    // clang-format off
-    Gfx::DoubleMatrix4x4 flip_matrix = { 1, 0, 0, 0,
+    Gfx::DoubleMatrix4x4 flip_matrix = {
+        1, 0, 0, 0,
         0, -1, 0, 0,
         0, 0, 1, 0,
-        0, 0, 0, 1 };
-    // clang-format on
+        0, 0, 0, 1
+    };
     result->m_matrix = result->m_matrix * flip_matrix;
 
     // 3. Return result.
@@ -560,7 +563,7 @@ WebIDL::ExceptionOr<String> DOMMatrixReadOnly::to_string() const
         || !isfinite(m21()) || !isfinite(m22()) || !isfinite(m23()) || !isfinite(m24())
         || !isfinite(m31()) || !isfinite(m32()) || !isfinite(m33()) || !isfinite(m34())
         || !isfinite(m41()) || !isfinite(m42()) || !isfinite(m43()) || !isfinite(m44())) {
-        return WebIDL::InvalidStateError::create(realm(), "Cannot stringify non-finite matrix values"_fly_string);
+        return WebIDL::InvalidStateError::create(realm(), "Cannot stringify non-finite matrix values"_string);
     }
 
     // 2. Let string be the empty string.
@@ -946,7 +949,7 @@ WebIDL::ExceptionOr<ParsedMatrix> parse_dom_matrix_init_string(JS::Realm& realm,
     auto parsing_context = CSS::Parser::ParsingContext { realm };
     auto transform_style_value = parse_css_value(parsing_context, transform_list, CSS::PropertyID::Transform);
     if (!transform_style_value)
-        return WebIDL::SyntaxError::create(realm, "Failed to parse CSS transform string."_fly_string);
+        return WebIDL::SyntaxError::create(realm, "Failed to parse CSS transform string."_string);
     auto parsed_value = CSS::StyleProperties::transformations_for_style_value(*transform_style_value);
 
     // 3. If parsedValue is none, set parsedValue to a <transform-list> containing a single identity matrix.
@@ -978,7 +981,7 @@ WebIDL::ExceptionOr<ParsedMatrix> parse_dom_matrix_init_string(JS::Realm& realm,
     for (auto const& transform : parsed_value) {
         auto const& transform_matrix = transform.to_matrix({});
         if (transform_matrix.is_error())
-            return WebIDL::SyntaxError::create(realm, "Failed to parse CSS transform string."_fly_string);
+            return WebIDL::SyntaxError::create(realm, "Failed to parse CSS transform string."_string);
         matrix = matrix * transform_matrix.value();
     }
 

@@ -12,59 +12,14 @@
 #include <AK/HashMap.h>
 #include <LibCore/EventReceiver.h>
 #include <LibCore/Proxy.h>
+#include <LibJS/SafeFunction.h>
+#include <LibProtocol/Request.h>
 #include <LibURL/URL.h>
 #include <LibWeb/Loader/Resource.h>
+#include <LibWeb/Loader/UserAgent.h>
 #include <LibWeb/Page/Page.h>
 
 namespace Web {
-
-#if ARCH(X86_64)
-#    define CPU_STRING "x86_64"
-#elif ARCH(AARCH64)
-#    define CPU_STRING "AArch64"
-#elif ARCH(I386)
-#    define CPU_STRING "x86"
-#elif ARCH(RISCV64)
-#    define CPU_STRING "RISC-V 64"
-#else
-#    error Unknown architecture
-#endif
-
-#if defined(AK_OS_SERENITY)
-#    define OS_STRING "SerenityOS"
-#elif defined(AK_OS_ANDROID)
-#    define OS_STRING "Android 10"
-#elif defined(AK_OS_LINUX)
-#    define OS_STRING "Linux"
-#elif defined(AK_OS_MACOS)
-#    define OS_STRING "macOS"
-#elif defined(AK_OS_IOS)
-#    define OS_STRING "iOS"
-#elif defined(AK_OS_WINDOWS)
-#    define OS_STRING "Windows"
-#elif defined(AK_OS_FREEBSD)
-#    define OS_STRING "FreeBSD"
-#elif defined(AK_OS_OPENBSD)
-#    define OS_STRING "OpenBSD"
-#elif defined(AK_OS_NETBSD)
-#    define OS_STRING "NetBSD"
-#elif defined(AK_OS_DRAGONFLY)
-#    define OS_STRING "DragonFly"
-#elif defined(AK_OS_SOLARIS)
-#    define OS_STRING "SunOS"
-#elif defined(AK_OS_HAIKU)
-#    define OS_STRING "Haiku"
-#elif defined(AK_OS_GNU_HURD)
-#    define OS_STRING "GNU/Hurd"
-#else
-#    error Unknown OS
-#endif
-
-#define BROWSER_NAME "Ladybird"
-#define BROWSER_VERSION "1.0"
-
-constexpr auto default_user_agent = "Mozilla/5.0 (" OS_STRING "; " CPU_STRING ") " BROWSER_NAME "/" BROWSER_VERSION ""sv;
-constexpr auto default_platform = OS_STRING " " CPU_STRING ""sv;
 
 namespace WebSockets {
 class WebSocketClientSocket;
@@ -79,13 +34,16 @@ public:
         ByteString key;
     };
 
-    virtual void set_should_buffer_all_input(bool) = 0;
+    // Configure the request such that the entirety of the response data is buffered. The callback receives that data and
+    // the response headers all at once. Using this method is mutually exclusive with `set_unbuffered_data_received_callback`.
+    virtual void set_buffered_request_finished_callback(Protocol::Request::BufferedRequestFinished) = 0;
+
+    // Configure the request such that the response data is provided unbuffered as it is received. Using this method is
+    // mutually exclusive with `set_buffered_request_finished_callback`.
+    virtual void set_unbuffered_request_callbacks(Protocol::Request::HeadersReceived, Protocol::Request::DataReceived, Protocol::Request::RequestFinished) = 0;
+
     virtual bool stop() = 0;
 
-    virtual void stream_into(Stream&) = 0;
-
-    Function<void(bool success, u64 total_size, HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> const& response_headers, Optional<u32> response_code, ReadonlyBytes payload)> on_buffered_request_finish;
-    Function<void(bool success, u64 total_size)> on_finish;
     Function<void(Optional<u64> total_size, u64 downloaded_size)> on_progress;
     Function<CertificateAndKey()> on_certificate_requested;
 
@@ -100,7 +58,7 @@ public:
     virtual void prefetch_dns(URL::URL const&) = 0;
     virtual void preconnect(URL::URL const&) = 0;
 
-    virtual RefPtr<ResourceLoaderConnectorRequest> start_request(ByteString const& method, URL::URL const&, HashMap<ByteString, ByteString> const& request_headers = {}, ReadonlyBytes request_body = {}, Core::ProxyData const& = {}) = 0;
+    virtual RefPtr<ResourceLoaderConnectorRequest> start_request(ByteString const& method, URL::URL const&, HTTP::HeaderMap const& request_headers = {}, ReadonlyBytes request_body = {}, Core::ProxyData const& = {}) = 0;
     virtual RefPtr<Web::WebSockets::WebSocketClientSocket> websocket_connect(const URL::URL&, ByteString const& origin, Vector<ByteString> const& protocols) = 0;
 
 protected:
@@ -115,11 +73,17 @@ public:
 
     RefPtr<Resource> load_resource(Resource::Type, LoadRequest&);
 
-    using SuccessCallback = Function<void(ReadonlyBytes, HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> const& response_headers, Optional<u32> status_code)>;
-    using ErrorCallback = Function<void(ByteString const&, Optional<u32> status_code, ReadonlyBytes payload, HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> const& response_headers)>;
-    using TimeoutCallback = Function<void()>;
+    using SuccessCallback = JS::SafeFunction<void(ReadonlyBytes, HTTP::HeaderMap const& response_headers, Optional<u32> status_code)>;
+    using ErrorCallback = JS::SafeFunction<void(ByteString const&, Optional<u32> status_code, ReadonlyBytes payload, HTTP::HeaderMap const& response_headers)>;
+    using TimeoutCallback = JS::SafeFunction<void()>;
 
     void load(LoadRequest&, SuccessCallback success_callback, ErrorCallback error_callback = nullptr, Optional<u32> timeout = {}, TimeoutCallback timeout_callback = nullptr);
+
+    using OnHeadersReceived = JS::SafeFunction<void(HTTP::HeaderMap const& response_headers, Optional<u32> status_code)>;
+    using OnDataReceived = JS::SafeFunction<void(ReadonlyBytes data)>;
+    using OnComplete = JS::SafeFunction<void(bool success, Optional<StringView> error_message)>;
+
+    void load_unbuffered(LoadRequest&, OnHeadersReceived, OnDataReceived, OnComplete);
 
     ResourceLoaderConnector& connector() { return *m_connector; }
 
@@ -136,6 +100,23 @@ public:
     String const& platform() const { return m_platform; }
     void set_platform(String platform) { m_platform = move(platform); }
 
+    Vector<String> preferred_languages() const { return m_preferred_languages; }
+    void set_preferred_languages(Vector<String> preferred_languages)
+    {
+        // Default to "en" if no preferred languages are specified.
+        if (preferred_languages.is_empty() || (preferred_languages.size() == 1 && preferred_languages[0].is_empty())) {
+            m_preferred_languages = { "en"_string };
+        } else {
+            m_preferred_languages = move(preferred_languages);
+        }
+    }
+
+    NavigatorCompatibilityMode navigator_compatibility_mode() { return m_navigator_compatibility_mode; }
+    void set_navigator_compatibility_mode(NavigatorCompatibilityMode mode) { m_navigator_compatibility_mode = mode; }
+
+    bool enable_do_not_track() const { return m_enable_do_not_track; }
+    void set_enable_do_not_track(bool enable) { m_enable_do_not_track = enable; }
+
     void clear_cache();
     void evict_from_cache(LoadRequest const&);
 
@@ -143,7 +124,9 @@ private:
     ResourceLoader(NonnullRefPtr<ResourceLoaderConnector>);
     static ErrorOr<NonnullRefPtr<ResourceLoader>> try_create(NonnullRefPtr<ResourceLoaderConnector>);
 
-    static bool is_port_blocked(int port);
+    RefPtr<ResourceLoaderConnectorRequest> start_network_request(LoadRequest const&);
+    void handle_network_response_headers(LoadRequest const&, HTTP::HeaderMap const&);
+    void finish_network_request(NonnullRefPtr<ResourceLoaderConnectorRequest> const&);
 
     int m_pending_loads { 0 };
 
@@ -151,6 +134,9 @@ private:
     NonnullRefPtr<ResourceLoaderConnector> m_connector;
     String m_user_agent;
     String m_platform;
+    Vector<String> m_preferred_languages = { "en"_string };
+    NavigatorCompatibilityMode m_navigator_compatibility_mode;
+    bool m_enable_do_not_track { false };
     Optional<JS::GCPtr<Page>> m_page {};
 };
 

@@ -4,23 +4,21 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/API/MajorNumberAllocation.h>
 #include <Kernel/API/POSIX/errno.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Generic/FullDevice.h>
 #include <Kernel/Sections.h>
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<FullDevice> FullDevice::must_create()
+UNMAP_AFTER_INIT NonnullRefPtr<FullDevice> FullDevice::must_create()
 {
-    auto full_device_or_error = DeviceManagement::try_create_device<FullDevice>();
-    // FIXME: Find a way to propagate errors
-    VERIFY(!full_device_or_error.is_error());
-    return full_device_or_error.release_value();
+    return MUST(Device::try_create_device<FullDevice>());
 }
 
 UNMAP_AFTER_INIT FullDevice::FullDevice()
-    : CharacterDevice(1, 7)
+    : CharacterDevice(MajorAllocation::CharacterDeviceFamily::Generic, 7)
 {
 }
 

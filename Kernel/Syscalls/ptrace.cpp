@@ -33,7 +33,7 @@ static ErrorOr<FlatPtr> handle_ptrace(Kernel::Syscall::SC_ptrace_params const& p
     if (params.tid == caller.pid().value())
         return EINVAL;
 
-    auto peer = Thread::from_tid_in_same_jail(params.tid);
+    auto peer = Thread::from_tid_in_same_process_list(params.tid);
     if (!peer)
         return ESRCH;
 
@@ -260,7 +260,8 @@ ErrorOr<FlatPtr> Thread::peek_debug_register(u32 register_index)
     TODO_AARCH64();
 #elif ARCH(RISCV64)
     (void)register_index;
-    TODO_RISCV64();
+    dbgln("FIXME: Implement Thread::peek_debug_register on RISC-V");
+    return ENOTSUP;
 #else
 #    error "Unknown architecture"
 #endif
@@ -296,7 +297,8 @@ ErrorOr<void> Thread::poke_debug_register(u32 register_index, FlatPtr data)
 #elif ARCH(RISCV64)
     (void)register_index;
     (void)data;
-    TODO_RISCV64();
+    dbgln("FIXME: Implement Thread::poke_debug_register on RISC-V");
+    return ENOTSUP;
 #else
 #    error "Unknown architecture"
 #endif

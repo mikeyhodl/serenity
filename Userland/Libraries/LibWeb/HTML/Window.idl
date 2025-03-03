@@ -1,11 +1,9 @@
-#import <Crypto/Crypto.idl>
 #import <CSS/MediaQueryList.idl>
 #import <CSS/Screen.idl>
 #import <CSS/VisualViewport.idl>
 #import <DOM/Document.idl>
 #import <DOM/EventHandler.idl>
 #import <DOM/EventTarget.idl>
-#import <HighResolutionTime/Performance.idl>
 #import <HTML/AnimationFrameProvider.idl>
 #import <HTML/CustomElements/CustomElementRegistry.idl>
 #import <HTML/History.idl>
@@ -25,11 +23,14 @@ interface Window : EventTarget {
     [LegacyUnforgeable] readonly attribute Document document;
     attribute DOMString name;
     attribute DOMString status;
+    undefined close();
+    readonly attribute boolean closed;
     [PutForwards=href, LegacyUnforgeable] readonly attribute Location location;
     readonly attribute History history;
     readonly attribute Navigation navigation;
     readonly attribute CustomElementRegistry customElements;
     undefined focus();
+    undefined blur();
 
     // other browsing contexts
     [Replaceable] readonly attribute WindowProxy frames;
@@ -106,12 +107,11 @@ interface Window : EventTarget {
     // https://w3c.github.io/selection-api/#extensions-to-window-interface
     Selection? getSelection();
 
-    // FIXME: Everything from here on should be shared through WindowOrWorkerGlobalScope
-    // https://w3c.github.io/hr-time/#the-performance-attribute
-    [Replaceable] readonly attribute Performance performance;
+    undefined captureEvents();
+    undefined releaseEvents();
 
-    // https://w3c.github.io/webcrypto/#crypto-interface
-    [SameObject] readonly attribute Crypto crypto;
+    // This function is non-standard.
+    boolean find(optional DOMString string = "");
 };
 Window includes AnimationFrameProvider;
 Window includes GlobalEventHandlers;

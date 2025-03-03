@@ -5,6 +5,7 @@
 This installation guide assumes that you have [Homebrew](https://brew.sh) and Xcode installed. You need to open Xcode at least once for it to install the required tools.
 
 Before you build, you must set your command line tools to Xcode's tools instead of the ones installed via Homebrew:
+
 ```console
 sudo xcode-select --switch /Applications/Xcode.app
 ```
@@ -30,22 +31,23 @@ brew install x86_64-elf-gdb
 If you have Xcode version 14.2 or older, also install a newer host compiler from homebrew. Xcode 14.3 is known to work.
 
 ```console
-brew install llvm@15
+brew install llvm@18
 # OR
-brew install gcc@12
+brew install gcc@13
+```
+
+# Nix
+
+If Nix is installed, entering the devshell will provide an environment with all required build dependencies already included.
+
+```
+nix --extra-experimental-features "nix-command flakes" develop
 ```
 
 # Notes
 
-You can use both Intel and Apple Silicon Macs to run the x86-64 version of SerenityOS. You do not
-need to install Rosetta for this. An emulator is used when running on an Apple Silicon, so Serenity
-will be slower compared to running natively with hardware-assisted virtualization on an Intel machine.
-
-If you're building on M1 Mac and have Homebrew installed in both Rosetta and native environments,
-you have to make sure that required packages are installed only in one of the environments. Otherwise,
-these installations can conflict during the build process, which is manifested in hard to diagnose issues.
-Building on M1 natively without Rosetta is recommended, as the build process should be faster without Rosetta
-overhead.
+You can use both Intel and Apple Silicon Macs to run a native architecture version of SerenityOS.
+If Rosetta 2 is installed on an Apple Silicon Mac, it should be disabled in order to build the native aarch64 version.
 
 Installing macfuse for the first time requires enabling its system extension in System Preferences and then restarting your machine. The output from installing macfuse with brew says this, but it's easy to miss.
 

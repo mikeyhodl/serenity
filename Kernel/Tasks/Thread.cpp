@@ -14,7 +14,6 @@
 #include <Kernel/Arch/SmapDisabler.h>
 #include <Kernel/Arch/TrapFrame.h>
 #include <Kernel/Debug.h>
-#include <Kernel/Devices/KCOVDevice.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/KSyms.h>
@@ -26,6 +25,7 @@
 #include <Kernel/Tasks/PowerStateSwitchTask.h>
 #include <Kernel/Tasks/Process.h>
 #include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/Tasks/ScopedProcessList.h>
 #include <Kernel/Tasks/Thread.h>
 #include <Kernel/Tasks/ThreadTracer.h>
 #include <Kernel/Time/TimerQueue.h>
@@ -435,15 +435,6 @@ void Thread::exit(void* exit_value)
     set_should_die();
     u32 unlock_count;
     [[maybe_unused]] auto rc = unlock_process_if_locked(unlock_count);
-    if (m_thread_specific_range.has_value()) {
-        process().address_space().with([&](auto& space) {
-            auto* region = space->find_region_from_range(m_thread_specific_range.value());
-            space->deallocate_region(*region);
-        });
-    }
-#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
-    KCOVDevice::free_thread();
-#endif
     die_if_needed();
 }
 
@@ -565,12 +556,7 @@ void Thread::finalize()
     }
 
     if (m_dump_backtrace_on_finalization) {
-        auto trace_or_error = backtrace();
-        if (!trace_or_error.is_error()) {
-            auto trace = trace_or_error.release_value();
-            dbgln("Backtrace:");
-            kernelputstr(trace->characters(), trace->length());
-        }
+        print_backtrace();
     }
 
     drop_thread_count();
@@ -589,7 +575,7 @@ void Thread::finalize_dying_threads()
     Vector<Thread*, 32> dying_threads;
     {
         SpinlockLocker lock(g_scheduler_lock);
-        for_each_in_state_ignoring_jails(Thread::State::Dying, [&](Thread& thread) {
+        for_each_in_state_ignoring_process_lists(Thread::State::Dying, [&](Thread& thread) {
             if (!thread.is_finalizable())
                 return;
             auto result = dying_threads.try_append(&thread);
@@ -940,7 +926,7 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
 
     auto& action = m_process->m_signal_action_data[signal];
     auto sender_pid = m_signal_senders[signal];
-    auto sender = Process::from_pid_ignoring_jails(sender_pid);
+    auto sender = Process::from_pid_ignoring_process_lists(sender_pid);
 
     if (!current_trap() && !action.handler_or_sigaction.is_null()) {
         // We're trying dispatch a handled signal to a user process that was scheduled
@@ -1190,7 +1176,7 @@ DispatchSignalResult Thread::dispatch_signal(u8 signal)
     regs.set_flags(2 | (regs.rflags & ~safe_eflags_mask));
 #endif
 
-    dbgln_if(SIGNAL_DEBUG, "Thread in state '{}' has been primed with signal handler {:p} to deliver {}", state_string(), m_regs.ip(), signal);
+    dbgln_if(SIGNAL_DEBUG, "Thread in state '{}' has been primed with signal handler {:p} to deliver {}", state_string(), regs.ip(), signal);
 
     return DispatchSignalResult::Continue;
 }
@@ -1218,7 +1204,7 @@ ErrorOr<NonnullRefPtr<Thread>> Thread::clone(NonnullRefPtr<Process> process)
     m_signal_action_masks.span().copy_to(clone->m_signal_action_masks);
     clone->m_signal_mask = m_signal_mask;
     clone->m_fpu_state = m_fpu_state;
-    clone->m_thread_specific_data = m_thread_specific_data;
+    clone->m_arch_specific_data = m_arch_specific_data;
     return clone;
 }
 
@@ -1259,7 +1245,7 @@ void Thread::set_state(State new_state, u8 stop_signal)
             });
             process.unblock_waiters(Thread::WaitBlocker::UnblockFlags::Continued);
             // Tell the parent process (if any) about this change.
-            if (auto parent = Process::from_pid_ignoring_jails(process.ppid())) {
+            if (auto parent = Process::from_pid_ignoring_process_lists(process.ppid())) {
                 [[maybe_unused]] auto result = parent->send_signal(SIGCHLD, &process);
             }
         }
@@ -1277,7 +1263,7 @@ void Thread::set_state(State new_state, u8 stop_signal)
             // enter/exit a syscall, or once their current time slice runs out.
             process.unblock_waiters(Thread::WaitBlocker::UnblockFlags::Stopped, stop_signal);
             // Tell the parent process (if any) about this change.
-            if (auto parent = Process::from_pid_ignoring_jails(process.ppid())) {
+            if (auto parent = Process::from_pid_ignoring_process_lists(process.ppid())) {
                 [[maybe_unused]] auto result = parent->send_signal(SIGCHLD, &process);
             }
         }
@@ -1354,53 +1340,42 @@ ErrorOr<NonnullOwnPtr<KString>> Thread::backtrace()
     return KString::try_create(builder.string_view());
 }
 
-ErrorOr<void> Thread::make_thread_specific_region(Badge<Process>)
+void Thread::print_backtrace()
 {
-    return process().m_master_tls.with([&](auto& master_tls) -> ErrorOr<void> {
-        // The process may not require a TLS region, or allocate TLS later with sys$allocate_tls (which is what dynamically loaded programs do)
-        if (!master_tls.region)
-            return {};
+    auto trace_or_error = this->backtrace();
+    if (!trace_or_error.is_error()) {
+        auto trace = trace_or_error.release_value();
+        dbgln("Backtrace:");
+        kernelputstr(trace->characters(), trace->length());
+    }
+}
 
-        return process().address_space().with([&](auto& space) -> ErrorOr<void> {
-            auto region_alignment = max(master_tls.alignment, alignof(ThreadSpecificData));
-            auto region_size = align_up_to(master_tls.size, region_alignment) + sizeof(ThreadSpecificData);
-            auto* region = TRY(space->allocate_region(Memory::RandomizeVirtualAddress::Yes, {}, region_size, PAGE_SIZE, "Thread-specific"sv, PROT_READ | PROT_WRITE));
-
-            m_thread_specific_range = region->range();
-
-            SmapDisabler disabler;
-            auto* thread_specific_data = (ThreadSpecificData*)region->vaddr().offset(align_up_to(master_tls.size, region_alignment)).as_ptr();
-            auto* thread_local_storage = (u8*)((u8*)thread_specific_data) - align_up_to(master_tls.size, master_tls.size);
-            m_thread_specific_data = VirtualAddress(thread_specific_data);
-            thread_specific_data->self = thread_specific_data;
-
-            if (master_tls.size != 0)
-                memcpy(thread_local_storage, master_tls.region.unsafe_ptr()->vaddr().as_ptr(), master_tls.size);
-
+RefPtr<Thread> Thread::from_tid_in_same_process_list(ThreadID tid)
+{
+    return Thread::all_instances().with([&](auto& list) -> RefPtr<Thread> {
+        return Process::current().m_scoped_process_list.with([&](auto const& list_ptr) -> RefPtr<Thread> {
+            if (list_ptr) {
+                for (Thread& thread : list) {
+                    if (thread.tid() == tid) {
+                        return thread.process().m_scoped_process_list.with([list_ptr, &thread](auto const& other_thread_process_list) -> RefPtr<Thread> {
+                            if (list_ptr.ptr() != other_thread_process_list.ptr())
+                                return nullptr;
+                            return thread;
+                        });
+                    }
+                }
+            }
+            for (Thread& thread : list) {
+                if (thread.tid() == tid) {
+                    return thread;
+                }
+            }
             return {};
         });
     });
 }
 
-RefPtr<Thread> Thread::from_tid_in_same_jail(ThreadID tid)
-{
-    return Thread::all_instances().with([&](auto& list) -> RefPtr<Thread> {
-        for (Thread& thread : list) {
-            if (thread.tid() == tid) {
-                return Process::current().jail().with([&thread](auto const& my_jail) -> RefPtr<Thread> {
-                    return thread.process().jail().with([&thread, my_jail](auto const& other_thread_process_jail) -> RefPtr<Thread> {
-                        if (my_jail && my_jail.ptr() != other_thread_process_jail.ptr())
-                            return nullptr;
-                        return thread;
-                    });
-                });
-            }
-        }
-        return nullptr;
-    });
-}
-
-RefPtr<Thread> Thread::from_tid_ignoring_jails(ThreadID tid)
+RefPtr<Thread> Thread::from_tid_ignoring_process_lists(ThreadID tid)
 {
     return Thread::all_instances().with([&](auto& list) -> RefPtr<Thread> {
         for (Thread& thread : list) {

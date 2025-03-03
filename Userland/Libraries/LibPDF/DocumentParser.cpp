@@ -372,7 +372,7 @@ PDFErrorOr<void> DocumentParser::validate_xref_table_and_fix_if_necessary()
        Like most other PDF parsers seem to do, we still try to salvage the situation.
        NOTE: This is probably not spec-compliant behavior.*/
     size_t first_valid_index = 0;
-    while (m_xref_table->byte_offset_for_object(first_valid_index) == invalid_byte_offset)
+    while (!m_xref_table->has_object(first_valid_index))
         first_valid_index++;
 
     if (first_valid_index) {
@@ -428,6 +428,7 @@ static PDFErrorOr<NonnullRefPtr<StreamObject>> indirect_value_as_stream(NonnullR
 
 PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_stream()
 {
+    // PDF 1.7 spec, 3.4.7 "Cross-Reference Streams"
     auto xref_stream = TRY(parse_indirect_value());
     auto stream = TRY(indirect_value_as_stream(xref_stream));
 
@@ -436,7 +437,7 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_stream()
     if (type != "XRef")
         return error("Malformed xref dictionary");
 
-    auto field_sizes = TRY(dict->get_array(m_document, "W"));
+    auto field_sizes = TRY(dict->get_array(m_document, CommonNames::W));
     if (field_sizes->size() != 3)
         return error("Malformed xref dictionary");
     if (field_sizes->at(1).get_u32() == 0)
@@ -464,7 +465,7 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_stream()
 
     auto field_to_long = [](ReadonlyBytes field) -> long {
         long value = 0;
-        const u8 max = (field.size() - 1) * 8;
+        u8 const max = (field.size() - 1) * 8;
         for (size_t i = 0; i < field.size(); ++i) {
             value |= static_cast<long>(field[i]) << (max - (i * 8));
         }
@@ -477,7 +478,7 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_stream()
         Vector<XRefEntry> entries;
 
         for (int i = 0; i < count; i++) {
-            Array<long, 3> fields;
+            Array<u64, 3> fields;
             for (size_t field_index = 0; field_index < 3; ++field_index) {
                 if (!field_sizes->at(field_index).has_u32())
                     return error("Malformed xref stream");
@@ -494,9 +495,9 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_stream()
                 byte_index += field_size;
             }
 
-            u8 type = fields[0];
-            if (field_sizes->at(0).get_u32() == 0)
-                type = 1;
+            u8 type = 1;
+            if (field_sizes->at(0).get_u32() != 0)
+                type = fields[0];
 
             entries.append({ fields[1], static_cast<u16>(fields[2]), type != 0, type == 2 });
         }
@@ -562,7 +563,7 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_table()
                 m_reader.move_by(2);
             }
 
-            auto offset = strtol(offset_string.characters(), nullptr, 10);
+            u64 offset = strtoll(offset_string.characters(), nullptr, 10);
             auto generation = strtol(generation_string.characters(), nullptr, 10);
 
             entries.append({ offset, static_cast<u16>(generation), letter == 'n' });
@@ -642,13 +643,13 @@ PDFErrorOr<DocumentParser::PageOffsetHintTable> DocumentParser::parse_page_offse
     size_t offset = 0;
 
     auto read_u32 = [&] {
-        u32 data = reinterpret_cast<const u32*>(hint_stream_bytes.data() + offset)[0];
+        u32 data = reinterpret_cast<u32 const*>(hint_stream_bytes.data() + offset)[0];
         offset += 4;
         return AK::convert_between_host_and_big_endian(data);
     };
 
     auto read_u16 = [&] {
-        u16 data = reinterpret_cast<const u16*>(hint_stream_bytes.data() + offset)[0];
+        u16 data = reinterpret_cast<u16 const*>(hint_stream_bytes.data() + offset)[0];
         offset += 2;
         return AK::convert_between_host_and_big_endian(data);
     };

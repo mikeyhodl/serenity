@@ -165,7 +165,7 @@ ErrorOr<void> NetworkSettingsWidget::apply_settings_impl()
         (void)TRY(Core::System::posix_spawn("/bin/Escalator"sv, &file_actions, nullptr, const_cast<char**>(argv), environ));
 
         auto outfile = TRY(Core::File::adopt_fd(pipefds[1], Core::File::OpenMode::Write, Core::File::ShouldCloseFileDescriptor::No));
-        TRY(outfile->write_until_depleted(json.serialized<StringBuilder>().bytes()));
+        TRY(outfile->write_until_depleted(json.serialized<StringBuilder>()));
     }
 
     return {};
@@ -201,8 +201,7 @@ ErrorOr<Optional<JsonObject>> NetworkSettingsWidget::create_settings_object()
 
 void NetworkSettingsWidget::switch_adapter(ByteString const& adapter)
 {
-    m_adapters_combobox->set_text(adapter, GUI::AllowCallback::No);
-    on_switch_adapter(adapter);
+    m_adapters_combobox->set_text(adapter);
 }
 
 }

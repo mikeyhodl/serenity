@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/API/MajorNumberAllocation.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Generic/MemoryDevice.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/TypedMapping.h>
@@ -12,16 +13,13 @@
 
 namespace Kernel {
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<MemoryDevice> MemoryDevice::must_create()
+UNMAP_AFTER_INIT NonnullRefPtr<MemoryDevice> MemoryDevice::must_create()
 {
-    auto memory_device_or_error = DeviceManagement::try_create_device<MemoryDevice>();
-    // FIXME: Find a way to propagate errors
-    VERIFY(!memory_device_or_error.is_error());
-    return memory_device_or_error.release_value();
+    return MUST(Device::try_create_device<MemoryDevice>());
 }
 
 UNMAP_AFTER_INIT MemoryDevice::MemoryDevice()
-    : CharacterDevice(1, 1)
+    : CharacterDevice(MajorAllocation::CharacterDeviceFamily::Generic, 1)
 {
 }
 
@@ -40,7 +38,7 @@ ErrorOr<size_t> MemoryDevice::read(OpenFileDescription&, u64 offset, UserOrKerne
     return length;
 }
 
-ErrorOr<NonnullLockRefPtr<Memory::VMObject>> MemoryDevice::vmobject_for_mmap(Process&, Memory::VirtualRange const& range, u64& offset, bool)
+ErrorOr<File::VMObjectAndMemoryType> MemoryDevice::vmobject_and_memory_type_for_mmap(Process&, Memory::VirtualRange const& range, u64& offset, bool)
 {
     auto viewed_address = PhysicalAddress(offset);
 
@@ -60,7 +58,10 @@ ErrorOr<NonnullLockRefPtr<Memory::VMObject>> MemoryDevice::vmobject_for_mmap(Pro
     }
 
     offset = 0;
-    return TRY(Memory::AnonymousVMObject::try_create_for_physical_range(viewed_address, range.size()));
+    return VMObjectAndMemoryType {
+        .vmobject = TRY(Memory::AnonymousVMObject::try_create_for_physical_range(viewed_address, range.size())),
+        .memory_type = Memory::MemoryType::IO,
+    };
 }
 
 }

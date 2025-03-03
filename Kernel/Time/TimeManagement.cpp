@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/NeverDestroyed.h>
 #include <AK/Singleton.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Time.h>
@@ -18,6 +19,7 @@
 #    include <Kernel/Arch/x86_64/Time/RTC.h>
 #elif ARCH(AARCH64)
 #    include <Kernel/Arch/aarch64/RPi/Timer.h>
+#    include <Kernel/Arch/aarch64/Time/ARMv8Timer.h>
 #elif ARCH(RISCV64)
 #    include <Kernel/Arch/riscv64/Timer.h>
 #else
@@ -28,6 +30,7 @@
 #include <Kernel/Boot/CommandLine.h>
 #include <Kernel/Firmware/ACPI/Parser.h>
 #include <Kernel/Interrupts/InterruptDisabler.h>
+#include <Kernel/Library/Panic.h>
 #include <Kernel/Sections.h>
 #include <Kernel/Tasks/PerformanceManager.h>
 #include <Kernel/Tasks/Scheduler.h>
@@ -37,6 +40,7 @@
 
 namespace Kernel {
 
+static NeverDestroyed<Vector<DeviceTree::DeviceRecipe<NonnullLockRefPtr<HardwareTimerBase>>>> s_recipes;
 static Singleton<TimeManagement> s_the;
 
 bool TimeManagement::is_initialized()
@@ -47,6 +51,15 @@ bool TimeManagement::is_initialized()
 TimeManagement& TimeManagement::the()
 {
     return *s_the;
+}
+
+void TimeManagement::add_recipe(DeviceTree::DeviceRecipe<NonnullLockRefPtr<HardwareTimerBase>> recipe)
+{
+    // This function has to be called before TimeManagement is initialized,
+    // as we do not support dynamic registration of timers.
+    VERIFY(!is_initialized());
+
+    s_recipes->append(move(recipe));
 }
 
 // The s_scheduler_specific_current_time function provides a current time for scheduling purposes,
@@ -118,7 +131,7 @@ MonotonicTime TimeManagement::monotonic_time(TimePrecision precision) const
     u64 seconds;
     u32 ticks;
 
-    bool do_query = precision == TimePrecision::Precise && m_can_query_precise_time;
+    bool do_query = precision == TimePrecision::Precise && m_can_query_precise_time.was_set();
 
     u32 update_iteration;
     do {
@@ -136,7 +149,12 @@ MonotonicTime TimeManagement::monotonic_time(TimePrecision precision) const
             HPET::the().update_time(seconds, ticks, true);
 #elif ARCH(AARCH64)
             // FIXME: Get rid of these horrible casts
-            const_cast<RPi::Timer*>(static_cast<RPi::Timer const*>(m_system_timer.ptr()))->update_time(seconds, ticks, true);
+            if (m_system_timer->timer_type() == HardwareTimerType::RPiTimer)
+                const_cast<RPi::Timer*>(static_cast<RPi::Timer const*>(m_system_timer.ptr()))->update_time(seconds, ticks, true);
+            else if (m_system_timer->timer_type() == HardwareTimerType::ARMv8Timer)
+                const_cast<ARMv8Timer*>(static_cast<ARMv8Timer const*>(m_system_timer.ptr()))->update_time(seconds, ticks, true);
+            else
+                VERIFY_NOT_REACHED();
 #elif ARCH(RISCV64)
             TODO_RISCV64();
 #else
@@ -365,7 +383,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_x86_non_legacy_hardware_time
         taken_non_periodic_timers_count += 1;
     }
 
-    m_system_timer->set_callback([this](RegisterState const& regs) {
+    m_system_timer->set_callback([this]() {
         // Update the time. We don't really care too much about the
         // frequency of the interrupt because we'll query the main
         // counter to get an accurate time.
@@ -374,13 +392,13 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_x86_non_legacy_hardware_time
             increment_time_since_boot_hpet();
         }
 
-        system_timer_tick(regs);
+        system_timer_tick();
     });
 
     // Use the HPET main counter frequency for time purposes. This is likely
     // a much higher frequency than the interrupt itself and allows us to
     // keep a more accurate time
-    m_can_query_precise_time = true;
+    m_can_query_precise_time.set();
     m_time_ticks_per_second = HPET::the().frequency();
 
     m_system_timer->try_to_set_frequency(m_system_timer->calculate_nearest_possible_frequency(OPTIMAL_TICKS_PER_SECOND_RATE));
@@ -426,7 +444,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_x86_legacy_hardware_timers()
     return true;
 }
 
-void TimeManagement::update_time(RegisterState const&)
+void TimeManagement::update_time()
 {
     TimeManagement::the().increment_time_since_boot();
 }
@@ -459,14 +477,36 @@ void TimeManagement::increment_time_since_boot_hpet()
 #elif ARCH(AARCH64)
 UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_aarch64_hardware_timers()
 {
-    m_hardware_timers.append(RPi::Timer::initialize());
-    m_system_timer = m_hardware_timers[0];
-    m_time_ticks_per_second = m_system_timer->frequency();
+    for (auto& recipe : *s_recipes) {
+        auto device_or_error = recipe.create_device();
+        if (device_or_error.is_error()) {
+            dmesgln("TimeManagement: Failed to create timer for device \"{}\" with driver {}: {}", recipe.node_name, recipe.driver_name, device_or_error.release_error());
+            continue;
+        }
 
-    m_system_timer->set_callback([this](RegisterState const& regs) {
+        m_hardware_timers.append(device_or_error.release_value());
+    }
+
+    if (m_hardware_timers.is_empty())
+        PANIC("TimeManagement: No supported timer found in devicetree");
+
+    // TODO: Use some kind of heuristic to decide which timer to use.
+    m_system_timer = m_hardware_timers.last();
+    dbgln("TimeManagement: System timer: {}", m_system_timer->model());
+
+    m_time_ticks_per_second = m_system_timer->ticks_per_second();
+
+    m_system_timer->set_callback([this]() {
         auto seconds_since_boot = m_seconds_since_boot;
         auto ticks_this_second = m_ticks_this_second;
-        auto delta_ns = static_cast<RPi::Timer*>(m_system_timer.ptr())->update_time(seconds_since_boot, ticks_this_second, false);
+
+        u64 delta_ns;
+        if (m_system_timer->timer_type() == HardwareTimerType::RPiTimer)
+            delta_ns = static_cast<RPi::Timer*>(m_system_timer.ptr())->update_time(seconds_since_boot, ticks_this_second, false);
+        else if (m_system_timer->timer_type() == HardwareTimerType::ARMv8Timer)
+            delta_ns = static_cast<ARMv8Timer*>(m_system_timer.ptr())->update_time(seconds_since_boot, ticks_this_second, false);
+        else
+            VERIFY_NOT_REACHED();
 
         u32 update_iteration = m_update2.fetch_add(1, AK::MemoryOrder::memory_order_acquire);
         m_seconds_since_boot = seconds_since_boot;
@@ -478,7 +518,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_aarch64_hardware_timers()
 
         update_time_page();
 
-        system_timer_tick(regs);
+        system_timer_tick();
     });
 
     m_time_keeper_timer = m_system_timer;
@@ -490,9 +530,9 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_riscv64_hardware_timers()
 {
     m_hardware_timers.append(RISCV64::Timer::initialize());
     m_system_timer = m_hardware_timers[0];
-    m_time_ticks_per_second = m_system_timer->frequency();
+    m_time_ticks_per_second = m_system_timer->ticks_per_second();
 
-    m_system_timer->set_callback([this](RegisterState const& regs) {
+    m_system_timer->set_callback([this]() {
         auto seconds_since_boot = m_seconds_since_boot;
         auto ticks_this_second = m_ticks_this_second;
         auto delta_ns = static_cast<RISCV64::Timer*>(m_system_timer.ptr())->update_time(seconds_since_boot, ticks_this_second, false);
@@ -507,7 +547,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_riscv64_hardware_timers()
 
         update_time_page();
 
-        system_timer_tick(regs);
+        system_timer_tick();
     });
 
     m_time_keeper_timer = m_system_timer;
@@ -525,7 +565,7 @@ void TimeManagement::increment_time_since_boot()
     // Compute time adjustment for adjtime. Let the clock run up to 1% fast or slow.
     // That way, adjtime can adjust up to 36 seconds per hour, without time getting very jumpy.
     // Once we have a smarter NTP service that also adjusts the frequency instead of just slewing time, maybe we can lower this.
-    long nanos_per_tick = 1'000'000'000 / m_time_keeper_timer->frequency();
+    long nanos_per_tick = 1'000'000'000 / m_time_keeper_timer->ticks_per_second();
     time_t max_slew_nanos = nanos_per_tick / 100;
 
     u32 update_iteration = m_update2.fetch_add(1, AK::MemoryOrder::memory_order_acquire);
@@ -547,13 +587,13 @@ void TimeManagement::increment_time_since_boot()
     update_time_page();
 }
 
-void TimeManagement::system_timer_tick(RegisterState const& regs)
+void TimeManagement::system_timer_tick()
 {
     if (Processor::current_in_irq() <= 1) {
         // Don't expire timers while handling IRQs
         TimerQueue::the().fire();
     }
-    Scheduler::timer_tick(regs);
+    Scheduler::timer_tick();
 }
 
 bool TimeManagement::enable_profile_timer()

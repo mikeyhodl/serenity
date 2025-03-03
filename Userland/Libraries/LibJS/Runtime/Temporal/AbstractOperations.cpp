@@ -274,74 +274,62 @@ ThrowCompletionOr<String> to_show_offset_option(VM& vm, Object const& normalized
 }
 
 // 13.12 ToTemporalRoundingIncrement ( normalizedOptions, dividend, inclusive ), https://tc39.es/proposal-temporal/#sec-temporal-totemporalroundingincrement
-ThrowCompletionOr<u64> to_temporal_rounding_increment(VM& vm, Object const& normalized_options, Optional<double> dividend, bool inclusive)
+ThrowCompletionOr<u64> to_temporal_rounding_increment(VM& vm, Object const& normalized_options)
 {
-    double maximum;
-    // 1. If dividend is undefined, then
-    if (!dividend.has_value()) {
-        // a. Let maximum be +∞𝔽.
-        maximum = INFINITY;
-    }
-    // 2. Else if inclusive is true, then
-    else if (inclusive) {
-        // a. Let maximum be 𝔽(dividend).
-        maximum = *dividend;
-    }
-    // 3. Else if dividend is more than 1, then
-    else if (*dividend > 1) {
-        // a. Let maximum be 𝔽(dividend - 1).
-        maximum = *dividend - 1;
-    }
-    // 4. Else,
-    else {
-        // a. Let maximum be 1𝔽.
-        maximum = 1;
-    }
-
-    // 5. Let increment be ? GetOption(normalizedOptions, "roundingIncrement", "number", undefined, 1𝔽).
+    // 1. Let increment be ? GetOption(normalizedOptions, "roundingIncrement", "number", undefined, 1𝔽)
     auto increment_value = TRY(get_option(vm, normalized_options, vm.names.roundingIncrement, OptionType::Number, {}, 1.0));
     VERIFY(increment_value.is_number());
     auto increment = increment_value.as_double();
 
-    // 6. If increment < 1𝔽 or increment > maximum, throw a RangeError exception.
-    if (increment < 1 || increment > maximum)
+    // 2. If increment is not finite, throw a RangeError exception
+    if (!increment_value.is_finite_number())
         return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
 
-    // 7. Set increment to floor(ℝ(increment)).
-    auto floored_increment = static_cast<u64>(increment);
-
-    // 8. If dividend is not undefined and dividend modulo increment ≠ 0, then
-    if (dividend.has_value() && static_cast<u64>(*dividend) % floored_increment != 0)
-        // a. Throw a RangeError exception.
+    // 3. If increment < 1𝔽, throw a RangeError exception.
+    if (increment < 1) {
         return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
+    }
 
-    // 9. Return increment.
-    return floored_increment;
+    // 4. Return truncate(ℝ(increment))
+    return static_cast<u64>(trunc(increment));
 }
 
-// 13.13 ToTemporalDateTimeRoundingIncrement ( normalizedOptions, smallestUnit ), https://tc39.es/proposal-temporal/#sec-temporal-totemporaldatetimeroundingincrement
-ThrowCompletionOr<u64> to_temporal_date_time_rounding_increment(VM& vm, Object const& normalized_options, StringView smallest_unit)
+// 13.13 ValidateTemporalRoundingIncrement ( increment, dividend, inclusive ), https://tc39.es/proposal-temporal/#sec-validatetemporalroundingincrement
+ThrowCompletionOr<void> validate_temporal_rounding_increment(VM& vm, u64 increment, u64 dividend, bool inclusive)
 {
-    u16 maximum;
-
-    // 1. If smallestUnit is "day", then
-    if (smallest_unit == "day"sv) {
+    u64 maximum;
+    // 1. If inclusive is true, then
+    if (inclusive) {
+        // a. Let maximum be dividend.
+        maximum = dividend;
+    }
+    // 2. Else if dividend is more than 1, then
+    else if (dividend > 1) {
+        // a. Let maximum be dividend - 1.
+        maximum = dividend - 1;
+    }
+    // 3. Else
+    else {
         // a. Let maximum be 1.
         maximum = 1;
     }
-    // 2. Else,
-    else {
-        // a. Let maximum be ! MaximumTemporalDurationRoundingIncrement(smallestUnit).
-        // b. Assert: maximum is not undefined.
-        maximum = *maximum_temporal_duration_rounding_increment(smallest_unit);
+    // 4. If increment > maximum, throw a RangeError exception.
+    if (increment > maximum) {
+        return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
     }
 
-    // 3. Return ? ToTemporalRoundingIncrement(normalizedOptions, maximum, false).
-    return to_temporal_rounding_increment(vm, normalized_options, maximum, false);
+    // 5. If dividend modulo increment is not zero, then
+    if (modulo(dividend, increment) != 0) {
+        // a. Throw a RangeError exception.
+        return vm.throw_completion<RangeError>(ErrorType::OptionIsNotValidValue, increment, "roundingIncrement");
+    }
+
+    // 6. Return UNUSED.
+    return {};
 }
 
-// 13.14 ToSecondsStringPrecision ( normalizedOptions ), https://tc39.es/proposal-temporal/#sec-temporal-tosecondsstringprecision
-ThrowCompletionOr<SecondsStringPrecision> to_seconds_string_precision(VM& vm, Object const& normalized_options)
+// 13.14 ToSecondsStringPrecisionRecord ( normalizedOptions ), https://tc39.es/proposal-temporal/#sec-temporal-tosecondsstringprecisionrecord
+ThrowCompletionOr<SecondsStringPrecision> to_seconds_string_precision_record(VM& vm, Object const& normalized_options)
 {
     // 1. Let smallestUnit be ? GetTemporalUnit(normalizedOptions, "smallestUnit", time, undefined).
     auto smallest_unit = TRY(get_temporal_unit(vm, normalized_options, vm.names.smallestUnit, UnitGroup::Time, Optional<StringView> {}));
@@ -1946,10 +1934,15 @@ ThrowCompletionOr<DifferenceSettings> get_difference_settings(VM& vm, Difference
     // 11. Let maximum be ! MaximumTemporalDurationRoundingIncrement(smallestUnit).
     auto maximum = maximum_temporal_duration_rounding_increment(*smallest_unit);
 
-    // 12. Let roundingIncrement be ? ToTemporalRoundingIncrement(options, maximum, false).
-    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *options, Optional<double> { maximum }, false));
+    // 12. Let roundingIncrement be ? ToTemporalRoundingIncrement(options).
+    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *options));
 
-    // 13. Return the Record { [[SmallestUnit]]: smallestUnit, [[LargestUnit]]: largestUnit, [[RoundingMode]]: roundingMode, [[RoundingIncrement]]: roundingIncrement, [[Options]]: options }.
+    // 13. If maximum is not undefined, perform ? ValidateTemporalRoundingIncrement(roundingIncrement, maximum, false).
+    if (maximum.has_value()) {
+        TRY(validate_temporal_rounding_increment(vm, rounding_increment, *maximum, false));
+    }
+
+    // 14. Return the Record { [[SmallestUnit]]: smallestUnit, [[LargestUnit]]: largestUnit, [[RoundingMode]]: roundingMode, [[RoundingIncrement]]: roundingIncrement, [[Options]]: options }.
     return DifferenceSettings {
         .smallest_unit = smallest_unit.release_value(),
         .largest_unit = largest_unit.release_value(),

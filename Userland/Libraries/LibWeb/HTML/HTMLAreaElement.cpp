@@ -5,6 +5,8 @@
  */
 
 #include <LibWeb/ARIA/Roles.h>
+#include <LibWeb/Bindings/HTMLAreaElementPrototype.h>
+#include <LibWeb/DOM/DOMTokenList.h>
 #include <LibWeb/HTML/HTMLAreaElement.h>
 #include <LibWeb/HTML/Window.h>
 
@@ -25,12 +27,30 @@ void HTMLAreaElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLAreaElement);
 }
 
-void HTMLAreaElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLAreaElement::visit_edges(Cell::Visitor& visitor)
 {
-    HTMLElement::attribute_changed(name, value);
+    Base::visit_edges(visitor);
+    visitor.visit(m_rel_list);
+}
+
+void HTMLAreaElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
+{
+    HTMLElement::attribute_changed(name, old_value, value);
     if (name == HTML::AttributeNames::href) {
         set_the_url();
+    } else if (name == HTML::AttributeNames::rel) {
+        if (m_rel_list)
+            m_rel_list->associated_attribute_changed(value.value_or(String {}));
     }
+}
+
+// https://html.spec.whatwg.org/multipage/image-maps.html#dom-area-rellist
+JS::NonnullGCPtr<DOM::DOMTokenList> HTMLAreaElement::rel_list()
+{
+    // The IDL attribute relList must reflect the rel content attribute.
+    if (!m_rel_list)
+        m_rel_list = DOM::DOMTokenList::create(*this, HTML::AttributeNames::rel);
+    return *m_rel_list;
 }
 
 Optional<String> HTMLAreaElement::hyperlink_element_utils_href() const
@@ -41,6 +61,11 @@ Optional<String> HTMLAreaElement::hyperlink_element_utils_href() const
 WebIDL::ExceptionOr<void> HTMLAreaElement::set_hyperlink_element_utils_href(String href)
 {
     return set_attribute(HTML::AttributeNames::href, move(href));
+}
+
+Optional<String> HTMLAreaElement::hyperlink_element_utils_referrerpolicy() const
+{
+    return attribute(HTML::AttributeNames::referrerpolicy);
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex

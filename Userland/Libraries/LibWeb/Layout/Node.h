@@ -37,8 +37,7 @@ enum class LayoutMode {
 
 class Node
     : public JS::Cell
-    , public TreeNode<Node>
-    , public Weakable<Node> {
+    , public TreeNode<Node> {
     JS_CELL(Node, JS::Cell);
 
 public:
@@ -84,7 +83,7 @@ public:
 
     bool is_root_element() const;
 
-    ByteString debug_description() const;
+    String debug_description() const;
 
     bool has_style() const { return m_has_style; }
     bool has_style_or_parent_with_style() const;
@@ -107,6 +106,7 @@ public:
     virtual bool is_viewport() const { return false; }
     virtual bool is_svg_box() const { return false; }
     virtual bool is_svg_geometry_box() const { return false; }
+    virtual bool is_svg_mask_box() const { return false; }
     virtual bool is_svg_svg_box() const { return false; }
     virtual bool is_label() const { return false; }
     virtual bool is_replaced_box() const { return false; }
@@ -131,6 +131,9 @@ public:
 
     Box const* containing_block() const;
     Box* containing_block() { return const_cast<Box*>(const_cast<Node const*>(this)->containing_block()); }
+
+    [[nodiscard]] Box const* static_position_containing_block() const;
+    [[nodiscard]] Box* static_position_containing_block() { return const_cast<Box*>(const_cast<Node const*>(this)->static_position_containing_block()); }
 
     // Closest non-anonymous ancestor box, to be used when resolving percentage values.
     // Anonymous block boxes are ignored when resolving percentage values that would refer to it:
@@ -160,6 +163,14 @@ public:
 
     u32 initial_quote_nesting_level() const { return m_initial_quote_nesting_level; }
     void set_initial_quote_nesting_level(u32 value) { m_initial_quote_nesting_level = value; }
+
+    // An element is called out of flow if it is floated, absolutely positioned, or is the root element.
+    // https://www.w3.org/TR/CSS22/visuren.html#positioning-scheme
+    bool is_out_of_flow() const { return is_floating() || is_absolutely_positioned(); }
+
+    // An element is called in-flow if it is not out-of-flow.
+    // https://www.w3.org/TR/CSS22/visuren.html#positioning-scheme
+    bool is_in_flow() const { return !is_out_of_flow(); }
 
 protected:
     Node(DOM::Document&, DOM::Node*);
@@ -269,7 +280,7 @@ inline Gfx::Font const& Node::scaled_font(PaintContext& context) const
 inline Gfx::Font const& Node::scaled_font(float scale_factor) const
 {
     auto const& font = first_available_font();
-    return *font.with_size(font.point_size() * scale_factor);
+    return font.with_size(font.point_size() * scale_factor);
 }
 
 inline const CSS::ImmutableComputedValues& Node::computed_values() const

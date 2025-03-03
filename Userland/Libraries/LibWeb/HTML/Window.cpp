@@ -7,7 +7,6 @@
  */
 
 #include <AK/Base64.h>
-#include <AK/GenericLexer.h>
 #include <AK/Utf8View.h>
 #include <LibIPC/File.h>
 #include <LibJS/Runtime/AbstractOperations.h>
@@ -19,6 +18,7 @@
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/Shape.h>
 #include <LibTextCodec/Decoder.h>
+#include <LibURL/Origin.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/WindowExposedInterfaces.h>
 #include <LibWeb/Bindings/WindowPrototype.h>
@@ -26,7 +26,6 @@
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/ResolvedCSSStyleDeclaration.h>
 #include <LibWeb/CSS/Screen.h>
-#include <LibWeb/Crypto/Crypto.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/Event.h>
@@ -34,6 +33,7 @@
 #include <LibWeb/DOM/HTMLCollection.h>
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/HTML/BrowsingContext.h>
+#include <LibWeb/HTML/CloseWatcherManager.h>
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/HTML/DocumentState.h>
 #include <LibWeb/HTML/EventHandler.h>
@@ -45,9 +45,9 @@
 #include <LibWeb/HTML/HTMLObjectElement.h>
 #include <LibWeb/HTML/Location.h>
 #include <LibWeb/HTML/MessageEvent.h>
+#include <LibWeb/HTML/MessagePort.h>
 #include <LibWeb/HTML/Navigation.h>
 #include <LibWeb/HTML/Navigator.h>
-#include <LibWeb/HTML/Origin.h>
 #include <LibWeb/HTML/PageTransitionEvent.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
@@ -58,7 +58,6 @@
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WindowProxy.h>
-#include <LibWeb/HighResolutionTime/Performance.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Infra/Base64.h>
 #include <LibWeb/Infra/CharacterTypes.h>
@@ -84,7 +83,7 @@ void run_animation_frame_callbacks(DOM::Document& document, double now)
 
 class IdleCallback : public RefCounted<IdleCallback> {
 public:
-    explicit IdleCallback(Function<JS::Completion(JS::NonnullGCPtr<RequestIdleCallback::IdleDeadline>)> handler, u32 handle)
+    explicit IdleCallback(ESCAPING Function<JS::Completion(JS::NonnullGCPtr<RequestIdleCallback::IdleDeadline>)> handler, u32 handle)
         : m_handler(move(handler))
         , m_handle(handle)
     {
@@ -121,19 +120,16 @@ void Window::visit_edges(JS::Cell::Visitor& visitor)
 
     visitor.visit(m_associated_document);
     visitor.visit(m_current_event);
-    visitor.visit(m_performance);
     visitor.visit(m_screen);
     visitor.visit(m_location);
-    visitor.visit(m_crypto);
     visitor.visit(m_navigator);
     visitor.visit(m_navigation);
     visitor.visit(m_custom_element_registry);
-    for (auto& plugin_object : m_pdf_viewer_plugin_objects)
-        visitor.visit(plugin_object);
-    for (auto& mime_type_object : m_pdf_viewer_mime_type_objects)
-        visitor.visit(mime_type_object);
+    visitor.visit(m_pdf_viewer_plugin_objects);
+    visitor.visit(m_pdf_viewer_mime_type_objects);
     visitor.visit(m_count_queuing_strategy_size_function);
     visitor.visit(m_byte_length_queuing_strategy_size_function);
+    visitor.visit(m_close_watcher_manager);
 }
 
 void Window::finalize()
@@ -144,204 +140,56 @@ void Window::finalize()
 
 Window::~Window() = default;
 
-// https://html.spec.whatwg.org/multipage/nav-history-apis.html#normalizing-the-feature-name
-static String normalize_feature_name(String const& name)
+// https://html.spec.whatwg.org/multipage/window-object.html#window-open-steps
+WebIDL::ExceptionOr<JS::GCPtr<WindowProxy>> Window::window_open_steps(StringView url, StringView target, StringView features)
 {
-    // For legacy reasons, there are some aliases of some feature names. To normalize a feature name name, switch on name:
+    auto [target_navigable, no_opener, window_type] = TRY(window_open_steps_internal(url, target, features));
+    if (target_navigable == nullptr)
+        return nullptr;
 
-    // "screenx"
-    if (name == "screenx"sv) {
-        // Return "left".
-        return "left"_string;
-    }
-    // "screeny"
-    else if (name == "screeny"sv) {
-        // Return "top".
-        return "top"_string;
-    }
-    // "innerwidth"
-    else if (name == "innerwidth"sv) {
-        // Return "width".
-        return "width"_string;
-    }
-    // "innerheight"
-    else if (name == "innerheight") {
-        // Return "height".
-        return "height"_string;
-    }
-    // Anything else
-    else {
-        // Return name.
-        return name;
-    }
-}
+    // 14. If noopener is true or windowType is "new with no opener", then return null.
+    if (no_opener == TokenizedFeature::NoOpener::Yes || window_type == Navigable::WindowType::NewWithNoOpener)
+        return nullptr;
 
-// https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-window-open-features-tokenize
-static OrderedHashMap<String, String> tokenize_open_features(StringView features)
-{
-    // 1. Let tokenizedFeatures be a new ordered map.
-    OrderedHashMap<String, String> tokenized_features;
-
-    // 2. Let position point at the first code point of features.
-    GenericLexer lexer(features);
-
-    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#feature-separator
-    auto is_feature_separator = [](auto character) {
-        return Infra::is_ascii_whitespace(character) || character == '=' || character == ',';
-    };
-
-    // 3. While position is not past the end of features:
-    while (!lexer.is_eof()) {
-        // 1. Let name be the empty string.
-        String name;
-
-        // 2. Let value be the empty string.
-        String value;
-
-        // 3. Collect a sequence of code points that are feature separators from features given position. This skips past leading separators before the name.
-        lexer.ignore_while(is_feature_separator);
-
-        // 4. Collect a sequence of code points that are not feature separators from features given position. Set name to the collected characters, converted to ASCII lowercase.
-        name = MUST(String::from_byte_string(lexer.consume_until(is_feature_separator).to_lowercase_string()));
-
-        // 5. Set name to the result of normalizing the feature name name.
-        name = normalize_feature_name(name);
-
-        // 6. While position is not past the end of features and the code point at position in features is not U+003D (=):
-        //    1. If the code point at position in features is U+002C (,), or if it is not a feature separator, then break.
-        //    2. Advance position by 1.
-        lexer.ignore_while(Infra::is_ascii_whitespace);
-
-        // 7. If the code point at position in features is a feature separator:
-        //    1. While position is not past the end of features and the code point at position in features is a feature separator:
-        //       1. If the code point at position in features is U+002C (,), then break.
-        //       2. Advance position by 1.
-        lexer.ignore_while([](auto character) { return Infra::is_ascii_whitespace(character) || character == '='; });
-
-        // 2. Collect a sequence of code points that are not feature separators code points from features given position. Set value to the collected code points, converted to ASCII lowercase.
-        value = MUST(String::from_byte_string(lexer.consume_until(is_feature_separator).to_lowercase_string()));
-
-        // 8. If name is not the empty string, then set tokenizedFeatures[name] to value.
-        if (!name.is_empty())
-            tokenized_features.set(move(name), move(value));
-    }
-
-    // 4. Return tokenizedFeatures.
-    return tokenized_features;
-}
-
-// https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-window-open-features-parse-boolean
-template<Enum T>
-static T parse_boolean_feature(StringView value)
-{
-    // 1. If value is the empty string, then return true.
-    if (value.is_empty())
-        return T::Yes;
-
-    // 2. If value is "yes", then return true.
-    if (value == "yes"sv)
-        return T::Yes;
-
-    // 3. If value is "true", then return true.
-    if (value == "true"sv)
-        return T::Yes;
-
-    // 4. Let parsed be the result of parsing value as an integer.
-    auto parsed = value.to_number<i64>();
-
-    // 5. If parsed is an error, then set it to 0.
-    if (!parsed.has_value())
-        parsed = 0;
-
-    // 6. Return false if parsed is 0, and true otherwise.
-    return parsed == 0 ? T::No : T::Yes;
-}
-
-//  https://html.spec.whatwg.org/multipage/window-object.html#popup-window-is-requested
-static TokenizedFeature::Popup check_if_a_popup_window_is_requested(OrderedHashMap<String, String> const& tokenized_features)
-{
-    // 1. If tokenizedFeatures is empty, then return false.
-    if (tokenized_features.is_empty())
-        return TokenizedFeature::Popup::No;
-
-    // 2. If tokenizedFeatures["popup"] exists, then return the result of parsing tokenizedFeatures["popup"] as a boolean feature.
-    if (auto popup_feature = tokenized_features.get("popup"sv); popup_feature.has_value())
-        return parse_boolean_feature<TokenizedFeature::Popup>(*popup_feature);
-
-    // https://html.spec.whatwg.org/multipage/window-object.html#window-feature-is-set
-    auto check_if_a_window_feature_is_set = [&]<Enum T>(StringView feature_name, T default_value) {
-        // 1. If tokenizedFeatures[featureName] exists, then return the result of parsing tokenizedFeatures[featureName] as a boolean feature.
-        if (auto feature = tokenized_features.get(feature_name); feature.has_value())
-            return parse_boolean_feature<T>(*feature);
-
-        // 2. Return defaultValue.
-        return default_value;
-    };
-
-    // 3. Let location be the result of checking if a window feature is set, given tokenizedFeatures, "location", and false.
-    auto location = check_if_a_window_feature_is_set("location"sv, TokenizedFeature::Location::No);
-
-    // 4. Let toolbar be the result of checking if a window feature is set, given tokenizedFeatures, "toolbar", and false.
-    auto toolbar = check_if_a_window_feature_is_set("toolbar"sv, TokenizedFeature::Toolbar::No);
-
-    // 5. If location and toolbar are both false, then return true.
-    if (location == TokenizedFeature::Location::No && toolbar == TokenizedFeature::Toolbar::No)
-        return TokenizedFeature::Popup::Yes;
-
-    // 6. Let menubar be the result of checking if a window feature is set, given tokenizedFeatures, menubar", and false.
-    auto menubar = check_if_a_window_feature_is_set("menubar"sv, TokenizedFeature::Menubar::No);
-
-    // 7. If menubar is false, then return true.
-    if (menubar == TokenizedFeature::Menubar::No)
-        return TokenizedFeature::Popup::Yes;
-
-    // 8. Let resizable be the result of checking if a window feature is set, given tokenizedFeatures, "resizable", and true.
-    auto resizable = check_if_a_window_feature_is_set("resizable"sv, TokenizedFeature::Resizable::Yes);
-
-    // 9. If resizable is false, then return true.
-    if (resizable == TokenizedFeature::Resizable::No)
-        return TokenizedFeature::Popup::Yes;
-
-    // 10. Let scrollbars be the result of checking if a window feature is set, given tokenizedFeatures, "scrollbars", and false.
-    auto scrollbars = check_if_a_window_feature_is_set("scrollbars"sv, TokenizedFeature::Scrollbars::No);
-
-    // 11. If scrollbars is false, then return true.
-    if (scrollbars == TokenizedFeature::Scrollbars::No)
-        return TokenizedFeature::Popup::Yes;
-
-    // 12. Let status be the result of checking if a window feature is set, given tokenizedFeatures, "status", and false.
-    auto status = check_if_a_window_feature_is_set("status"sv, TokenizedFeature::Status::No);
-
-    // 13. If status is false, then return true.
-    if (status == TokenizedFeature::Status::No)
-        return TokenizedFeature::Popup::Yes;
-
-    // 14. Return false.
-    return TokenizedFeature::Popup::No;
+    // 15. Return targetNavigable's active WindowProxy.
+    return target_navigable->active_window_proxy();
 }
 
 // https://html.spec.whatwg.org/multipage/window-object.html#window-open-steps
-WebIDL::ExceptionOr<JS::GCPtr<WindowProxy>> Window::open_impl(StringView url, StringView target, StringView features)
+WebIDL::ExceptionOr<Window::OpenedWindow> Window::window_open_steps_internal(StringView url, StringView target, StringView features)
 {
     // 1. If the event loop's termination nesting level is nonzero, return null.
     if (main_thread_event_loop().termination_nesting_level() != 0)
-        return nullptr;
+        return OpenedWindow {};
 
     // 2. Let sourceDocument be the entry global object's associated Document.
     auto& source_document = verify_cast<Window>(entry_global_object()).associated_document();
 
-    // 3. If target is the empty string, then set target to "_blank".
+    // 3. Let urlRecord be null.
+    Optional<URL::URL> url_record;
+
+    // 4. If url is not the empty string, then:
+    if (!url.is_empty()) {
+        // FIXME: 1. Set urlRecord to the result of encoding-parsing a URL given url, relative to sourceDocument.
+        url_record = entry_settings_object().parse_url(url);
+
+        // 2. If urlRecord is failure, then throw a "SyntaxError" DOMException.
+        if (!url_record->is_valid())
+            return WebIDL::SyntaxError::create(realm(), MUST(String::formatted("Invalid URL '{}'", url)));
+    }
+
+    // 5. If target is the empty string, then set target to "_blank".
     if (target.is_empty())
         target = "_blank"sv;
 
-    // 4. Let tokenizedFeatures be the result of tokenizing features.
+    // 6. Let tokenizedFeatures be the result of tokenizing features.
     auto tokenized_features = tokenize_open_features(features);
 
-    // 5. Let noopener and noreferrer be false.
+    // 7. Let noopener and noreferrer be false.
     auto no_opener = TokenizedFeature::NoOpener::No;
     auto no_referrer = TokenizedFeature::NoReferrer::No;
 
-    // 6. If tokenizedFeatures["noopener"] exists, then:
+    // 8. If tokenizedFeatures["noopener"] exists, then:
     if (auto no_opener_feature = tokenized_features.get("noopener"sv); no_opener_feature.has_value()) {
         // 1. Set noopener to the result of parsing tokenizedFeatures["noopener"] as a boolean feature.
         no_opener = parse_boolean_feature<TokenizedFeature::NoOpener>(*no_opener_feature);
@@ -350,7 +198,7 @@ WebIDL::ExceptionOr<JS::GCPtr<WindowProxy>> Window::open_impl(StringView url, St
         tokenized_features.remove("noopener"sv);
     }
 
-    // 7. If tokenizedFeatures["noreferrer"] exists, then:
+    // 9. If tokenizedFeatures["noreferrer"] exists, then:
     if (auto no_referrer_feature = tokenized_features.get("noreferrer"sv); no_referrer_feature.has_value()) {
         // 1. Set noreferrer to the result of parsing tokenizedFeatures["noreferrer"] as a boolean feature.
         no_referrer = parse_boolean_feature<TokenizedFeature::NoReferrer>(*no_referrer_feature);
@@ -359,83 +207,61 @@ WebIDL::ExceptionOr<JS::GCPtr<WindowProxy>> Window::open_impl(StringView url, St
         tokenized_features.remove("noreferrer"sv);
     }
 
-    // 8. Let referrerPolicy be the empty string.
+    // 10. Let referrerPolicy be the empty string.
     auto referrer_policy = ReferrerPolicy::ReferrerPolicy::EmptyString;
 
-    // 9. If noreferrer is true, then set noopener to true and set referrerPolicy to "no-referrer".
+    // 11. If noreferrer is true, then set noopener to true and set referrerPolicy to "no-referrer".
     if (no_referrer == TokenizedFeature::NoReferrer::Yes) {
         no_opener = TokenizedFeature::NoOpener::Yes;
         referrer_policy = ReferrerPolicy::ReferrerPolicy::NoReferrer;
     }
 
-    // 10. Let targetNavigable and windowType be the result of applying the rules for choosing a navigable given target, sourceDocument's node navigable, and noopener.
+    // 12. Let targetNavigable and windowType be the result of applying the rules for choosing a navigable given target, sourceDocument's node navigable, and noopener.
     VERIFY(source_document.navigable());
-    auto [target_navigable, window_type] = source_document.navigable()->choose_a_navigable(target, no_opener);
+    auto [target_navigable, window_type] = source_document.navigable()->choose_a_navigable(target, no_opener, ActivateTab::Yes, tokenized_features);
 
-    // 11. If targetNavigable is null, then return null.
+    // 13. If targetNavigable is null, then return null.
     if (target_navigable == nullptr)
-        return nullptr;
+        return OpenedWindow {};
 
-    // 12. If windowType is either "new and unrestricted" or "new with no opener", then:
+    // 14. If windowType is either "new and unrestricted" or "new with no opener", then:
     if (window_type == Navigable::WindowType::NewAndUnrestricted || window_type == Navigable::WindowType::NewWithNoOpener) {
         // 1. Set the target browsing context's is popup to the result of checking if a popup window is requested, given tokenizedFeatures.
         target_navigable->set_is_popup(check_if_a_popup_window_is_requested(tokenized_features));
 
-        // FIXME: 2. Set up browsing context features for target browsing context given tokenizedFeatures. [CSSOMVIEW]
-        // NOTE: While this is not implemented yet, all of observable actions taken by this operation are optional (implementation-defined).
+        // 2. Set up browsing context features for target browsing context given tokenizedFeatures. [CSSOMVIEW]
+        // NOTE: This is implemented in choose_a_navigable when creating the top level traversable.
 
-        // 3. Let urlRecord be the URL record about:blank.
-        auto url_record = URL::URL("about:blank"sv);
+        // 3. If urlRecord is null, then set urlRecord to a URL record representing about:blank.
+        if (!url_record.has_value())
+            url_record = URL::URL("about:blank"sv);
 
-        // 4. If url is not the empty string, then set urlRecord to the result of encoding-parsing a URL given url, relative to the entry settings object.
-        if (!url.is_empty()) {
-            url_record = entry_settings_object().parse_url(url);
-            // 5. If urlRecord is failure, then throw a "SyntaxError" DOMException.
-            if (!url_record.is_valid())
-                return WebIDL::SyntaxError::create(realm(), "URL is not valid"_fly_string);
-        }
-
-        // 6. If urlRecord matches about:blank, then perform the URL and history update steps given targetNavigable's active document and urlRecord.
-        if (url_matches_about_blank(url_record)) {
+        // 4. If urlRecord matches about:blank, then perform the URL and history update steps given targetNavigable's active document and urlRecord.
+        if (url_matches_about_blank(url_record.value())) {
             // AD-HOC: Mark the initial about:blank for the new window as load complete
             // FIXME: We do this other places too when creating a new about:blank document. Perhaps it's worth a spec issue?
             HTML::HTMLParser::the_end(*target_navigable->active_document());
 
-            perform_url_and_history_update_steps(*target_navigable->active_document(), url_record);
+            perform_url_and_history_update_steps(*target_navigable->active_document(), url_record.release_value());
         }
 
-        // 7. Otherwise, navigate targetNavigable to urlRecord using sourceDocument, with referrerPolicy set to referrerPolicy and exceptionsEnabled set to true.
+        // 5. Otherwise, navigate targetNavigable to urlRecord using sourceDocument, with referrerPolicy set to referrerPolicy and exceptionsEnabled set to true.
         else {
-            TRY(target_navigable->navigate({ .url = url_record, .source_document = source_document, .exceptions_enabled = true, .referrer_policy = referrer_policy }));
+            TRY(target_navigable->navigate({ .url = url_record.release_value(), .source_document = source_document, .exceptions_enabled = true, .referrer_policy = referrer_policy }));
         }
     }
-
-    // 13. Otherwise:
+    // 15. Otherwise:
     else {
-        // 1. If url is not the empty string, then:
-        if (!url.is_empty()) {
-            // 1. Let urlRecord be the result of encoding-parsing a URL url, relative to the entry settings object.
-            auto url_record = entry_settings_object().parse_url(url);
-
-            // 2. If urlRecord is failure, then throw a "SyntaxError" DOMException.
-            if (!url_record.is_valid())
-                return WebIDL::SyntaxError::create(realm(), "URL is not valid"_fly_string);
-
-            // 3. Navigate targetNavigable to urlRecord using sourceDocument, with referrerPolicy set to referrerPolicy and exceptionsEnabled set to true.
-            TRY(target_navigable->navigate({ .url = url_record, .source_document = source_document, .exceptions_enabled = true, .referrer_policy = referrer_policy }));
-        }
+        // 1. If urlRecord is not null, then navigate targetNavigable to urlRecord using sourceDocument, with referrerPolicy set to referrerPolicy and exceptionsEnabled set to true.
+        if (url_record.has_value())
+            TRY(target_navigable->navigate({ .url = url_record.release_value(), .source_document = source_document, .exceptions_enabled = true, .referrer_policy = referrer_policy }));
 
         // 2. If noopener is false, then set targetNavigable's active browsing context's opener browsing context to sourceDocument's browsing context.
         if (no_opener == TokenizedFeature::NoOpener::No)
             target_navigable->active_browsing_context()->set_opener_browsing_context(source_document.browsing_context());
     }
 
-    // 14. If noopener is true or windowType is "new with no opener", then return null.
-    if (no_opener == TokenizedFeature::NoOpener::Yes || window_type == Navigable::WindowType::NewWithNoOpener)
-        return nullptr;
-
-    // 15. Return targetNavigable's active WindowProxy.
-    return target_navigable->active_window_proxy();
+    return OpenedWindow { target_navigable, no_opener, window_type };
 }
 
 bool Window::dispatch_event(DOM::Event& event)
@@ -460,15 +286,15 @@ Optional<CSS::MediaFeatureValue> Window::query_media_feature(CSS::MediaFeatureID
     // https://www.w3.org/TR/mediaqueries-5/#media-descriptor-table
     switch (media_feature) {
     case CSS::MediaFeatureID::AnyHover:
-        return CSS::MediaFeatureValue(CSS::ValueID::Hover);
+        return CSS::MediaFeatureValue(CSS::Keyword::Hover);
     case CSS::MediaFeatureID::AnyPointer:
-        return CSS::MediaFeatureValue(CSS::ValueID::Fine);
+        return CSS::MediaFeatureValue(CSS::Keyword::Fine);
     case CSS::MediaFeatureID::AspectRatio:
         return CSS::MediaFeatureValue(CSS::Ratio(inner_width(), inner_height()));
     case CSS::MediaFeatureID::Color:
         return CSS::MediaFeatureValue(8);
     case CSS::MediaFeatureID::ColorGamut:
-        return CSS::MediaFeatureValue(CSS::ValueID::Srgb);
+        return CSS::MediaFeatureValue(CSS::Keyword::Srgb);
     case CSS::MediaFeatureID::ColorIndex:
         return CSS::MediaFeatureValue(0);
     // FIXME: device-aspect-ratio
@@ -478,13 +304,13 @@ Optional<CSS::MediaFeatureValue> Window::query_media_feature(CSS::MediaFeatureID
         return CSS::MediaFeatureValue(CSS::Length::make_px(page().web_exposed_screen_area().width()));
     case CSS::MediaFeatureID::DisplayMode:
         // FIXME: Detect if window is fullscreen
-        return CSS::MediaFeatureValue(CSS::ValueID::Browser);
+        return CSS::MediaFeatureValue(CSS::Keyword::Browser);
     case CSS::MediaFeatureID::DynamicRange:
-        return CSS::MediaFeatureValue(CSS::ValueID::Standard);
+        return CSS::MediaFeatureValue(CSS::Keyword::Standard);
     case CSS::MediaFeatureID::EnvironmentBlending:
-        return CSS::MediaFeatureValue(CSS::ValueID::Opaque);
+        return CSS::MediaFeatureValue(CSS::Keyword::Opaque);
     case CSS::MediaFeatureID::ForcedColors:
-        return CSS::MediaFeatureValue(CSS::ValueID::None);
+        return CSS::MediaFeatureValue(CSS::Keyword::None);
     case CSS::MediaFeatureID::Grid:
         return CSS::MediaFeatureValue(0);
     case CSS::MediaFeatureID::Height:
@@ -492,60 +318,78 @@ Optional<CSS::MediaFeatureValue> Window::query_media_feature(CSS::MediaFeatureID
     case CSS::MediaFeatureID::HorizontalViewportSegments:
         return CSS::MediaFeatureValue(1);
     case CSS::MediaFeatureID::Hover:
-        return CSS::MediaFeatureValue(CSS::ValueID::Hover);
+        return CSS::MediaFeatureValue(CSS::Keyword::Hover);
     case CSS::MediaFeatureID::InvertedColors:
-        return CSS::MediaFeatureValue(CSS::ValueID::None);
+        return CSS::MediaFeatureValue(CSS::Keyword::None);
     case CSS::MediaFeatureID::Monochrome:
         return CSS::MediaFeatureValue(0);
     case CSS::MediaFeatureID::NavControls:
-        return CSS::MediaFeatureValue(CSS::ValueID::Back);
+        return CSS::MediaFeatureValue(CSS::Keyword::Back);
     case CSS::MediaFeatureID::Orientation:
-        return CSS::MediaFeatureValue(inner_height() >= inner_width() ? CSS::ValueID::Portrait : CSS::ValueID::Landscape);
+        return CSS::MediaFeatureValue(inner_height() >= inner_width() ? CSS::Keyword::Portrait : CSS::Keyword::Landscape);
     case CSS::MediaFeatureID::OverflowBlock:
-        return CSS::MediaFeatureValue(CSS::ValueID::Scroll);
+        return CSS::MediaFeatureValue(CSS::Keyword::Scroll);
     case CSS::MediaFeatureID::OverflowInline:
-        return CSS::MediaFeatureValue(CSS::ValueID::Scroll);
+        return CSS::MediaFeatureValue(CSS::Keyword::Scroll);
     case CSS::MediaFeatureID::Pointer:
-        return CSS::MediaFeatureValue(CSS::ValueID::Fine);
+        return CSS::MediaFeatureValue(CSS::Keyword::Fine);
     case CSS::MediaFeatureID::PrefersColorScheme: {
         switch (page().preferred_color_scheme()) {
         case CSS::PreferredColorScheme::Light:
-            return CSS::MediaFeatureValue(CSS::ValueID::Light);
+            return CSS::MediaFeatureValue(CSS::Keyword::Light);
         case CSS::PreferredColorScheme::Dark:
-            return CSS::MediaFeatureValue(CSS::ValueID::Dark);
+            return CSS::MediaFeatureValue(CSS::Keyword::Dark);
         case CSS::PreferredColorScheme::Auto:
         default:
-            return CSS::MediaFeatureValue(page().palette().is_dark() ? CSS::ValueID::Dark : CSS::ValueID::Light);
+            return CSS::MediaFeatureValue(page().palette().is_dark() ? CSS::Keyword::Dark : CSS::Keyword::Light);
         }
     }
     case CSS::MediaFeatureID::PrefersContrast:
-        // FIXME: Make this a preference
-        return CSS::MediaFeatureValue(CSS::ValueID::NoPreference);
+        switch (page().preferred_contrast()) {
+        case CSS::PreferredContrast::Less:
+            return CSS::MediaFeatureValue(CSS::Keyword::Less);
+        case CSS::PreferredContrast::More:
+            return CSS::MediaFeatureValue(CSS::Keyword::More);
+        case CSS::PreferredContrast::NoPreference:
+            return CSS::MediaFeatureValue(CSS::Keyword::NoPreference);
+        case CSS::PreferredContrast::Auto:
+        default:
+            // FIXME: Fallback to system settings
+            return CSS::MediaFeatureValue(CSS::Keyword::NoPreference);
+        }
     case CSS::MediaFeatureID::PrefersReducedData:
         // FIXME: Make this a preference
-        return CSS::MediaFeatureValue(CSS::ValueID::NoPreference);
+        return CSS::MediaFeatureValue(CSS::Keyword::NoPreference);
     case CSS::MediaFeatureID::PrefersReducedMotion:
-        // FIXME: Make this a preference
-        return CSS::MediaFeatureValue(CSS::ValueID::NoPreference);
+        switch (page().preferred_motion()) {
+        case CSS::PreferredMotion::NoPreference:
+            return CSS::MediaFeatureValue(CSS::Keyword::NoPreference);
+        case CSS::PreferredMotion::Reduce:
+            return CSS::MediaFeatureValue(CSS::Keyword::Reduce);
+        case CSS::PreferredMotion::Auto:
+        default:
+            // FIXME: Fallback to system settings
+            return CSS::MediaFeatureValue(CSS::Keyword::NoPreference);
+        }
     case CSS::MediaFeatureID::PrefersReducedTransparency:
         // FIXME: Make this a preference
-        return CSS::MediaFeatureValue(CSS::ValueID::NoPreference);
+        return CSS::MediaFeatureValue(CSS::Keyword::NoPreference);
     case CSS::MediaFeatureID::Resolution:
         return CSS::MediaFeatureValue(CSS::Resolution(device_pixel_ratio(), CSS::Resolution::Type::Dppx));
     case CSS::MediaFeatureID::Scan:
-        return CSS::MediaFeatureValue(CSS::ValueID::Progressive);
+        return CSS::MediaFeatureValue(CSS::Keyword::Progressive);
     case CSS::MediaFeatureID::Scripting:
         if (associated_document().is_scripting_enabled())
-            return CSS::MediaFeatureValue(CSS::ValueID::Enabled);
-        return CSS::MediaFeatureValue(CSS::ValueID::None);
+            return CSS::MediaFeatureValue(CSS::Keyword::Enabled);
+        return CSS::MediaFeatureValue(CSS::Keyword::None);
     case CSS::MediaFeatureID::Update:
-        return CSS::MediaFeatureValue(CSS::ValueID::Fast);
+        return CSS::MediaFeatureValue(CSS::Keyword::Fast);
     case CSS::MediaFeatureID::VerticalViewportSegments:
         return CSS::MediaFeatureValue(1);
     case CSS::MediaFeatureID::VideoColorGamut:
-        return CSS::MediaFeatureValue(CSS::ValueID::Srgb);
+        return CSS::MediaFeatureValue(CSS::Keyword::Srgb);
     case CSS::MediaFeatureID::VideoDynamicRange:
-        return CSS::MediaFeatureValue(CSS::ValueID::Standard);
+        return CSS::MediaFeatureValue(CSS::Keyword::Standard);
     case CSS::MediaFeatureID::Width:
         return CSS::MediaFeatureValue(CSS::Length::make_px(inner_width()));
 
@@ -572,6 +416,9 @@ void Window::fire_a_page_transition_event(FlyString const& event_name, bool pers
     // the bubbles attribute initialized to true,
     event->set_bubbles(true);
 
+    // isTrusted is a convenience that indicates whether an event is dispatched by the user agent (as opposed to using dispatchEvent())
+    event->set_is_trusted(true);
+
     // and legacy target override flag set.
     dispatch_event(event);
 }
@@ -580,7 +427,7 @@ void Window::fire_a_page_transition_event(FlyString const& event_name, bool pers
 WebIDL::ExceptionOr<JS::NonnullGCPtr<Storage>> Window::local_storage()
 {
     // FIXME: Implement according to spec.
-    static HashMap<Origin, JS::Handle<Storage>> local_storage_per_origin;
+    static HashMap<URL::Origin, JS::Handle<Storage>> local_storage_per_origin;
     auto storage = local_storage_per_origin.ensure(associated_document().origin(), [this]() -> JS::Handle<Storage> {
         return Storage::create(realm());
     });
@@ -591,11 +438,26 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Storage>> Window::local_storage()
 WebIDL::ExceptionOr<JS::NonnullGCPtr<Storage>> Window::session_storage()
 {
     // FIXME: Implement according to spec.
-    static HashMap<Origin, JS::Handle<Storage>> session_storage_per_origin;
+    static HashMap<URL::Origin, JS::Handle<Storage>> session_storage_per_origin;
     auto storage = session_storage_per_origin.ensure(associated_document().origin(), [this]() -> JS::Handle<Storage> {
         return Storage::create(realm());
     });
     return JS::NonnullGCPtr { *storage };
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#sticky-activation
+bool Window::has_sticky_activation() const
+{
+    // When the current high resolution time given W
+    auto current_time = HighResolutionTime::current_high_resolution_time(*this);
+
+    // is greater than or equal to the last activation timestamp in W
+    if (current_time >= m_last_activation_timestamp) {
+        // W is said to have sticky activation.
+        return true;
+    }
+
+    return false;
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#transient-activation
@@ -606,8 +468,7 @@ bool Window::has_transient_activation() const
     static constexpr HighResolutionTime::DOMHighResTimeStamp transient_activation_duration_ms = 5000;
 
     // When the current high resolution time given W
-    auto unsafe_shared_time = HighResolutionTime::unsafe_shared_current_time();
-    auto current_time = HighResolutionTime::relative_high_resolution_time(unsafe_shared_time, realm().global_object());
+    auto current_time = HighResolutionTime::current_high_resolution_time(*this);
 
     // is greater than or equal to the last activation timestamp in W
     if (current_time >= m_last_activation_timestamp) {
@@ -619,6 +480,65 @@ bool Window::has_transient_activation() const
     }
 
     return false;
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#history-action-activation
+bool Window::has_history_action_activation() const
+{
+    // When the last history-action activation timestamp of W is not equal to the last activation timestamp of W, then W is said to have history-action activation.
+    return m_last_history_action_activation_timestamp != m_last_activation_timestamp;
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#consume-history-action-user-activation
+void Window::consume_history_action_user_activation()
+{
+    auto navigable = this->navigable();
+
+    // 1. If W's navigable is null, then return.
+    if (navigable == nullptr)
+        return;
+
+    // 2. Let top be W's navigable's top-level traversable.
+    auto top = navigable->top_level_traversable();
+
+    // 3. Let navigables be the inclusive descendant navigables of top's active document.
+    auto navigables = top->active_document()->inclusive_descendant_navigables();
+
+    // 4. Let windows be the list of Window objects constructed by taking the active window of each item in navigables.
+    JS::MarkedVector<JS::GCPtr<Window>> windows(heap());
+    for (auto& n : navigables)
+        windows.append(n->active_window());
+
+    // 5. For each window in windows, set window's last history-action activation timestamp to window's last activation timestamp.
+    for (auto& window : windows)
+        window->set_last_history_action_activation_timestamp(window->last_activation_timestamp());
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#consume-user-activation
+void Window::consume_user_activation()
+{
+    auto navigable = this->navigable();
+
+    // 1. If W's navigable is null, then return.
+    if (navigable == nullptr)
+        return;
+
+    // 2. Let top be W's navigable's top-level traversable.
+    auto top = navigable->top_level_traversable();
+
+    // 3. Let navigables be the inclusive descendant navigables of top's active document.
+    auto navigables = top->active_document()->inclusive_descendant_navigables();
+
+    // 4. Let windows be the list of Window objects constructed by taking the active window of each item in navigables.
+    JS::MarkedVector<JS::GCPtr<Window>> windows(heap());
+    for (auto& n : navigables)
+        windows.append(n->active_window());
+
+    // 5. For each window in windows, if window's last activation timestamp is not positive infinity, then set window's last activation timestamp to negative infinity.
+    for (auto& window : windows) {
+        if (window->last_activation_timestamp() != AK::Infinity<HighResolutionTime::DOMHighResTimeStamp>)
+            window->set_last_activation_timestamp(-AK::Infinity<HighResolutionTime::DOMHighResTimeStamp>);
+    }
 }
 
 // https://w3c.github.io/requestidlecallback/#start-an-idle-period-algorithm
@@ -640,9 +560,9 @@ void Window::start_an_idle_period()
 
     // 5. Queue a task on the queue associated with the idle-task task source,
     //    which performs the steps defined in the invoke idle callbacks algorithm with window and getDeadline as parameters.
-    queue_global_task(Task::Source::IdleTask, *this, [this] {
+    queue_global_task(Task::Source::IdleTask, *this, JS::create_heap_function(heap(), [this] {
         invoke_idle_callbacks();
-    });
+    }));
 }
 
 // https://w3c.github.io/requestidlecallback/#invoke-idle-callbacks-algorithm
@@ -664,9 +584,9 @@ void Window::invoke_idle_callbacks()
             report_exception(result, realm());
         // 4. If window's list of runnable idle callbacks is not empty, queue a task which performs the steps
         //    in the invoke idle callbacks algorithm with getDeadline and window as a parameters and return from this algorithm
-        queue_global_task(Task::Source::IdleTask, *this, [this] {
+        queue_global_task(Task::Source::IdleTask, *this, JS::create_heap_function(heap(), [this] {
             invoke_idle_callbacks();
-        });
+        }));
     }
 }
 
@@ -743,7 +663,7 @@ Vector<JS::NonnullGCPtr<MimeType>> Window::pdf_viewer_mime_type_objects()
 }
 
 // https://streams.spec.whatwg.org/#count-queuing-strategy-size-function
-WebIDL::ExceptionOr<JS::NonnullGCPtr<WebIDL::CallbackType>> Window::count_queuing_strategy_size_function()
+JS::NonnullGCPtr<WebIDL::CallbackType> Window::count_queuing_strategy_size_function()
 {
     auto& realm = this->realm();
 
@@ -765,7 +685,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<WebIDL::CallbackType>> Window::count_queuin
 }
 
 // https://streams.spec.whatwg.org/#byte-length-queuing-strategy-size-function
-WebIDL::ExceptionOr<JS::NonnullGCPtr<WebIDL::CallbackType>> Window::byte_length_queuing_strategy_size_function()
+JS::NonnullGCPtr<WebIDL::CallbackType> Window::byte_length_queuing_strategy_size_function()
 {
     auto& realm = this->realm();
 
@@ -866,7 +786,7 @@ void Window::set_name(String const& name)
         return;
 
     // 2. Set this's navigable's active session history entry's document state's navigable target name to the given value.
-    navigable()->active_session_history_entry()->document_state->set_navigable_target_name(name);
+    navigable()->active_session_history_entry()->document_state()->set_navigable_target_name(name);
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-status
@@ -874,6 +794,21 @@ String Window::status() const
 {
     // the status attribute on the Window object must, on getting, return the last string it was set to
     return m_status;
+}
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-close
+void Window::close()
+{
+    // FIXME: Implement this properly
+    dbgln("(STUBBED) Window::close()");
+}
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-closed
+bool Window::closed() const
+{
+    // FIXME: Implement this properly
+    dbgln("(STUBBED) Window::closed");
+    return false;
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-status
@@ -918,6 +853,12 @@ void Window::focus()
 
     // FIXME: 4. If current is a top-level traversable, user agents are encouraged to trigger some sort of notification to
     //           indicate to the user that the page is attempting to gain focus.
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-window-blur
+void Window::blur()
+{
+    // The blur() method steps are to do nothing.
 }
 
 // https://html.spec.whatwg.org/multipage/window-object.html#dom-frames
@@ -1028,7 +969,7 @@ JS::GCPtr<DOM::Element const> Window::frame_element() const
 WebIDL::ExceptionOr<JS::GCPtr<WindowProxy>> Window::open(Optional<String> const& url, Optional<String> const& target, Optional<String> const& features)
 {
     // The open(url, target, features) method steps are to run the window open steps with url, target, and features.
-    return open_impl(*url, *target, *features);
+    return window_open_steps(*url, *target, *features);
 }
 
 // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator
@@ -1040,6 +981,16 @@ JS::NonnullGCPtr<Navigator> Window::navigator()
     if (!m_navigator)
         m_navigator = heap().allocate<Navigator>(realm, realm);
     return JS::NonnullGCPtr { *m_navigator };
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#close-watcher-manager
+JS::NonnullGCPtr<CloseWatcherManager> Window::close_watcher_manager()
+{
+    auto& realm = this->realm();
+
+    if (!m_close_watcher_manager)
+        m_close_watcher_manager = heap().allocate<CloseWatcherManager>(realm, realm);
+    return JS::NonnullGCPtr { *m_close_watcher_manager };
 }
 
 // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-alert
@@ -1078,7 +1029,7 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
     auto& incumbent_settings = incumbent_settings_object();
 
     // 3. Let targetOrigin be options["targetOrigin"].
-    Variant<String, Origin> target_origin = options.target_origin;
+    Variant<String, URL::Origin> target_origin = options.target_origin;
 
     // 4. If targetOrigin is a single U+002F SOLIDUS character (/), then set targetOrigin to incumbentSettings's origin.
     if (options.target_origin == "/"sv) {
@@ -1094,7 +1045,7 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
             return WebIDL::SyntaxError::create(target_realm, MUST(String::formatted("Invalid URL for targetOrigin: '{}'", options.target_origin)));
 
         // 3. Set targetOrigin to parsedURL's origin.
-        target_origin = DOMURL::url_origin(parsed_url);
+        target_origin = parsed_url.origin();
     }
 
     // 6. Let transfer be options["transfer"].
@@ -1104,12 +1055,12 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
     auto serialize_with_transfer_result = TRY(structured_serialize_with_transfer(target_realm.vm(), message, transfer));
 
     // 8. Queue a global task on the posted message task source given targetWindow to run the following steps:
-    queue_global_task(Task::Source::PostedMessage, *this, [this, serialize_with_transfer_result = move(serialize_with_transfer_result), target_origin = move(target_origin), &incumbent_settings, &target_realm]() mutable {
+    queue_global_task(Task::Source::PostedMessage, *this, JS::create_heap_function(heap(), [this, serialize_with_transfer_result = move(serialize_with_transfer_result), target_origin = move(target_origin), &incumbent_settings, &target_realm]() mutable {
         // 1. If the targetOrigin argument is not a single literal U+002A ASTERISK character (*) and targetWindow's
         //    associated Document's origin is not same origin with targetOrigin, then return.
         // NOTE: Due to step 4 and 5 above, the only time it's not '*' is if target_origin contains an Origin.
         if (!target_origin.has<String>()) {
-            auto const& actual_target_origin = target_origin.get<Origin>();
+            auto const& actual_target_origin = target_origin.get<URL::Origin>();
             if (!document()->origin().is_same_origin(actual_target_origin))
                 return;
         }
@@ -1144,10 +1095,10 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
         // 6. Let newPorts be a new frozen array consisting of all MessagePort objects in deserializeRecord.[[TransferredValues]],
         //    if any, maintaining their relative order.
         // FIXME: Use a FrozenArray
-        Vector<JS::Handle<JS::Object>> new_ports;
+        Vector<JS::Handle<MessagePort>> new_ports;
         for (auto const& object : deserialize_record.transferred_values) {
             if (is<HTML::MessagePort>(*object)) {
-                new_ports.append(object);
+                new_ports.append(verify_cast<MessagePort>(*object));
             }
         }
 
@@ -1161,8 +1112,9 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
         message_event_init.ports = move(new_ports);
 
         auto message_event = MessageEvent::create(target_realm, EventNames::message, message_event_init);
+        message_event->set_is_trusted(true);
         dispatch_event(message_event);
-    });
+    }));
 
     return {};
 }
@@ -1195,9 +1147,51 @@ Variant<JS::Handle<DOM::Event>, JS::Value> Window::event() const
 // https://w3c.github.io/csswg-drafts/cssom/#dom-window-getcomputedstyle
 JS::NonnullGCPtr<CSS::CSSStyleDeclaration> Window::get_computed_style(DOM::Element& element, Optional<String> const& pseudo_element) const
 {
-    // FIXME: Make this fully spec compliant.
-    (void)pseudo_element;
-    return heap().allocate<CSS::ResolvedCSSStyleDeclaration>(realm(), element);
+    // 1. Let doc be elt’s node document.
+
+    // 2. Let obj be elt.
+    Optional<CSS::Selector::PseudoElement::Type> obj_pseudo;
+
+    // 3. If pseudoElt is provided, is not the empty string, and starts with a colon, then:
+    if (pseudo_element.has_value() && pseudo_element.value().starts_with(':')) {
+        // 1. Parse pseudoElt as a <pseudo-element-selector>, and let type be the result.
+        auto type = parse_pseudo_element_selector(CSS::Parser::ParsingContext(associated_document()), pseudo_element.value());
+
+        // 2. If type is failure, or is an ::slotted() or ::part() pseudo-element, let obj be null.
+        // FIXME: We can't pass a null element to ResolvedCSSStyleDeclaration
+        if (!type.has_value()) {
+        }
+        // 3. Otherwise let obj be the given pseudo-element of elt.
+        else {
+            // TODO: Keep the function arguments of the pseudo-element if there are any.
+            obj_pseudo = type.value().type();
+        }
+    }
+
+    // AD-HOC: Just return a ResolvedCSSStyleDeclaration because that's what we have for now.
+    // FIXME: Implement CSSStyleProperties, and then follow the rest of these steps instead.
+    return heap().allocate<CSS::ResolvedCSSStyleDeclaration>(realm(), element, obj_pseudo);
+
+    // 4. Let decls be an empty list of CSS declarations.
+
+    // 5. If obj is not null, and elt is connected, part of the flat tree, and its shadow-including root
+    //    has a browsing context which either doesn’t have a browsing context container, or whose browsing
+    //    context container is being rendered, set decls to a list of all longhand properties that are
+    //    supported CSS properties, in lexicographical order, with the value being the resolved value
+    //    computed for obj using the style rules associated with doc. Additionally, append to decls all
+    //    the custom properties whose computed value for obj is not the guaranteed-invalid value.
+
+    // 6. Return a live CSSStyleProperties object with the following properties:
+    //    computed flag
+    //        Set.
+    //    readonly flag
+    //        Set.
+    //    declarations
+    //        decls.
+    //    parent CSS rule
+    //        Null.
+    //    owner node
+    //        obj.
 }
 
 // https://w3c.github.io/csswg-drafts/cssom-view/#dom-window-matchmedia
@@ -1352,8 +1346,8 @@ void Window::scroll(ScrollToOptions const& options)
     auto y = options.top.value_or(viewport_rect.y());
 
     // 3. Normalize non-finite values for x and y.
-    x = JS::Value(x).is_finite_number() ? x : 0;
-    y = JS::Value(y).is_finite_number() ? y : 0;
+    x = HTML::normalize_non_finite_values(x);
+    y = HTML::normalize_non_finite_values(y);
 
     // 5. Let viewport width be the width of the viewport excluding the width of the scroll bar, if any.
     auto viewport_width = viewport_rect.width();
@@ -1422,16 +1416,14 @@ void Window::scroll(double x, double y)
 void Window::scroll_by(ScrollToOptions options)
 {
     // 2. Normalize non-finite values for the left and top dictionary members of options.
-    auto x = options.left.value_or(0);
-    auto y = options.top.value_or(0);
-    x = JS::Value(x).is_finite_number() ? x : 0;
-    y = JS::Value(y).is_finite_number() ? y : 0;
+    auto left = HTML::normalize_non_finite_values(options.left);
+    auto top = HTML::normalize_non_finite_values(options.top);
 
     // 3. Add the value of scrollX to the left dictionary member.
-    options.left = x + scroll_x();
+    options.left = left + scroll_x();
 
     // 4. Add the value of scrollY to the top dictionary member.
-    options.top = y + scroll_y();
+    options.top = top + scroll_y();
 
     // 5. Act as if the scroll() method was invoked with options as the only argument.
     scroll(options);
@@ -1499,7 +1491,7 @@ double Window::device_pixel_ratio() const
 }
 
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-animationframeprovider-requestanimationframe
-i32 Window::request_animation_frame(WebIDL::CallbackType& callback)
+WebIDL::UnsignedLong Window::request_animation_frame(WebIDL::CallbackType& callback)
 {
     // FIXME: Make this fully spec compliant. Currently implements a mix of 'requestAnimationFrame()' and 'run the animation frame callbacks'.
     return m_animation_frame_callback_driver.add([this, callback = JS::make_handle(callback)](double now) {
@@ -1511,14 +1503,14 @@ i32 Window::request_animation_frame(WebIDL::CallbackType& callback)
 }
 
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#animationframeprovider-cancelanimationframe
-void Window::cancel_animation_frame(i32 handle)
+void Window::cancel_animation_frame(WebIDL::UnsignedLong handle)
 {
     // 1. If this is not supported, then throw a "NotSupportedError" DOMException.
     // NOTE: Doesn't apply in this Window-specific implementation.
 
     // 2. Let callbacks be this's target object's map of animation frame callbacks.
     // 3. Remove callbacks[handle].
-    m_animation_frame_callback_driver.remove(handle);
+    (void)m_animation_frame_callback_driver.remove(handle);
 }
 
 // https://w3c.github.io/requestidlecallback/#dom-window-requestidlecallback
@@ -1572,22 +1564,16 @@ JS::GCPtr<Selection::Selection> Window::get_selection() const
     return associated_document().get_selection();
 }
 
-// https://w3c.github.io/hr-time/#dom-windoworworkerglobalscope-performance
-JS::NonnullGCPtr<HighResolutionTime::Performance> Window::performance()
+// https://html.spec.whatwg.org/multipage/obsolete.html#dom-window-captureevents
+void Window::capture_events()
 {
-    if (!m_performance)
-        m_performance = heap().allocate<HighResolutionTime::Performance>(realm(), *this);
-    return JS::NonnullGCPtr { *m_performance };
+    // Do nothing.
 }
 
-// https://w3c.github.io/webcrypto/#dom-windoworworkerglobalscope-crypto
-JS::NonnullGCPtr<Crypto::Crypto> Window::crypto()
+// https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-releaseevents
+void Window::release_events()
 {
-    auto& realm = this->realm();
-
-    if (!m_crypto)
-        m_crypto = heap().allocate<Crypto::Crypto>(realm, realm);
-    return JS::NonnullGCPtr { *m_crypto };
+    // Do nothing.
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-navigation
@@ -1678,21 +1664,21 @@ Vector<FlyString> Window::supported_property_names() const
     //   that have a non-empty name content attribute and are in a document tree with window's associated Document as their root; and
     // - the value of the id content attribute for all HTML elements that have a non-empty id content attribute
     //   and are in a document tree with window's associated Document as their root.
-    associated_document().for_each_in_subtree_of_type<DOM::Element>([&property_names](auto& element) -> IterationDecision {
+    associated_document().for_each_in_subtree_of_type<DOM::Element>([&property_names](auto& element) -> TraversalDecision {
         if (is<HTMLEmbedElement>(element) || is<HTMLFormElement>(element) || is<HTMLImageElement>(element) || is<HTMLObjectElement>(element)) {
             if (element.name().has_value())
                 property_names.set(element.name().value(), AK::HashSetExistingEntryBehavior::Keep);
         }
         if (auto const& name = element.id(); name.has_value())
             property_names.set(name.value().to_string(), AK::HashSetExistingEntryBehavior::Keep);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     return property_names.values();
 }
 
 // https://html.spec.whatwg.org/#named-access-on-the-window-object
-WebIDL::ExceptionOr<JS::Value> Window::named_item_value(FlyString const& name) const
+JS::Value Window::named_item_value(FlyString const& name) const
 {
     // FIXME: Make the const-correctness of the methods this method calls less cowboy.
     auto& mutable_this = const_cast<Window&>(*this);
@@ -1709,12 +1695,12 @@ WebIDL::ExceptionOr<JS::Value> Window::named_item_value(FlyString const& name) c
         JS::GCPtr<NavigableContainer> container = nullptr;
         mutable_this.associated_document().for_each_in_subtree_of_type<HTML::NavigableContainer>([&](HTML::NavigableContainer& navigable_container) {
             if (!navigable_container.content_navigable())
-                return IterationDecision::Continue;
+                return TraversalDecision::Continue;
             if (objects.navigables.contains_slow(JS::NonnullGCPtr { *navigable_container.content_navigable() })) {
                 container = navigable_container;
-                return IterationDecision::Break;
+                return TraversalDecision::Break;
             }
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         });
         // 2. Return container's content navigable's active WindowProxy.
         VERIFY(container);
@@ -1755,16 +1741,38 @@ Window::NamedObjects Window::named_objects(StringView name)
     // embed, form, img, or object elements that have a name content attribute whose value is name
     // and are in a document tree with window's associated Document as their root; and
     // HTML elements that have an id content attribute whose value is name and are in a document tree with window's associated Document as their root.
-    associated_document().for_each_in_subtree_of_type<DOM::Element>([&objects, &name](auto& element) -> IterationDecision {
+    associated_document().for_each_in_subtree_of_type<DOM::Element>([&objects, &name](auto& element) -> TraversalDecision {
         if ((is<HTMLEmbedElement>(element) || is<HTMLFormElement>(element) || is<HTMLImageElement>(element) || is<HTMLObjectElement>(element))
             && (element.name() == name))
             objects.elements.append(element);
         else if (element.id() == name)
             objects.elements.append(element);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     return objects;
+}
+
+bool Window::find(String const& string)
+{
+    if (string.is_empty())
+        return false;
+
+    auto& page = this->page();
+    Optional<Page::FindInPageResult> result;
+    if (auto last_query = page.last_find_in_page_query(); last_query.has_value() && last_query->string == string) {
+        result = page.find_in_page_next_match();
+    } else {
+        Page::FindInPageQuery query {
+            string,
+            CaseSensitivity::CaseInsensitive,
+            Page::WrapAround::No,
+        };
+
+        result = page.find_in_page(query);
+    }
+
+    return result.has_value() && result->total_match_count.has_value() && *result->total_match_count > 0;
 }
 
 }

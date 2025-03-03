@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2023-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,29 +11,38 @@
 #import <UI/LadybirdWebView.h>
 #import <UI/Tab.h>
 #import <UI/TabController.h>
+#import <UI/TaskManagerController.h>
 #import <Utilities/Conversions.h>
 
 #if !__has_feature(objc_arc)
 #    error "This project requires ARC"
 #endif
 
-@interface ApplicationDelegate ()
+@interface ApplicationDelegate () <TaskManagerDelegate>
 {
     Vector<URL::URL> m_initial_urls;
     URL::URL m_new_tab_page_url;
 
     // This will always be populated, but we cannot have a non-default constructible instance variable.
-    Optional<WebView::CookieJar> m_cookie_jar;
+    OwnPtr<WebView::CookieJar> m_cookie_jar;
 
     Ladybird::WebContentOptions m_web_content_options;
     Optional<StringView> m_webdriver_content_ipc_path;
 
     Web::CSS::PreferredColorScheme m_preferred_color_scheme;
+    Web::CSS::PreferredContrast m_preferred_contrast;
+    Web::CSS::PreferredMotion m_preferred_motion;
+    ByteString m_navigator_compatibility_mode;
 
     WebView::SearchEngine m_search_engine;
+
+    BOOL m_allow_popups;
 }
 
 @property (nonatomic, strong) NSMutableArray<TabController*>* managed_tabs;
+@property (nonatomic, weak) Tab* active_tab;
+
+@property (nonatomic, strong) TaskManagerController* task_manager_controller;
 
 - (NSMenuItem*)createApplicationMenu;
 - (NSMenuItem*)createFileMenu;
@@ -52,9 +61,10 @@
 
 - (instancetype)init:(Vector<URL::URL>)initial_urls
               newTabPageURL:(URL::URL)new_tab_page_url
-              withCookieJar:(WebView::CookieJar)cookie_jar
+              withCookieJar:(NonnullOwnPtr<WebView::CookieJar>)cookie_jar
           webContentOptions:(Ladybird::WebContentOptions const&)web_content_options
     webdriverContentIPCPath:(StringView)webdriver_content_ipc_path
+                allowPopups:(BOOL)allow_popups
 {
     if (self = [super init]) {
         [NSApp setMainMenu:[[NSMenu alloc] init]];
@@ -84,7 +94,12 @@
         }
 
         m_preferred_color_scheme = Web::CSS::PreferredColorScheme::Auto;
+        m_preferred_contrast = Web::CSS::PreferredContrast::Auto;
+        m_preferred_motion = Web::CSS::PreferredMotion::Auto;
+        m_navigator_compatibility_mode = "chrome";
         m_search_engine = WebView::default_search_engine();
+
+        m_allow_popups = allow_popups;
 
         // Reduce the tooltip delay, as the default delay feels quite long.
         [[NSUserDefaults standardUserDefaults] setObject:@100 forKey:@"NSInitialToolTipDelay"];
@@ -116,9 +131,25 @@
     return controller;
 }
 
+- (void)setActiveTab:(Tab*)tab
+{
+    self.active_tab = tab;
+}
+
+- (Tab*)activeTab
+{
+    return self.active_tab;
+}
+
 - (void)removeTab:(TabController*)controller
 {
     [self.managed_tabs removeObject:controller];
+
+    if ([self.managed_tabs count] == 0u) {
+        if (self.task_manager_controller != nil) {
+            [self.task_manager_controller.window close];
+        }
+    }
 }
 
 - (WebView::CookieJar&)cookieJar
@@ -139,6 +170,16 @@
 - (Web::CSS::PreferredColorScheme)preferredColorScheme
 {
     return m_preferred_color_scheme;
+}
+
+- (Web::CSS::PreferredContrast)preferredContrast
+{
+    return m_preferred_contrast;
+}
+
+- (Web::CSS::PreferredMotion)preferredMotion
+{
+    return m_preferred_motion;
 }
 
 - (WebView::SearchEngine const&)searchEngine
@@ -163,7 +204,7 @@
 - (nonnull TabController*)createNewTab:(Web::HTML::ActivateTab)activate_tab
                                fromTab:(nullable Tab*)tab
 {
-    auto* controller = [[TabController alloc] init];
+    auto* controller = [[TabController alloc] init:!m_allow_popups];
     [controller showWindow:nil];
 
     if (tab) {
@@ -175,6 +216,10 @@
         }
     }
 
+    if (activate_tab == Web::HTML::ActivateTab::Yes) {
+        [[controller window] orderFrontRegardless];
+    }
+
     [self.managed_tabs addObject:controller];
     return controller;
 }
@@ -183,6 +228,17 @@
 {
     auto* current_window = [NSApp keyWindow];
     [current_window close];
+}
+
+- (void)openTaskManager:(id)sender
+{
+    if (self.task_manager_controller != nil) {
+        [self.task_manager_controller.window makeKeyAndOrderFront:sender];
+        return;
+    }
+
+    self.task_manager_controller = [[TaskManagerController alloc] init:self];
+    [self.task_manager_controller showWindow:nil];
 }
 
 - (void)openLocation:(id)sender
@@ -220,6 +276,64 @@
     for (TabController* controller in self.managed_tabs) {
         auto* tab = (Tab*)[controller window];
         [[tab web_view] setPreferredColorScheme:m_preferred_color_scheme];
+    }
+}
+
+- (void)setAutoPreferredContrast:(id)sender
+{
+    m_preferred_contrast = Web::CSS::PreferredContrast::Auto;
+    [self broadcastPreferredContrastUpdate];
+}
+
+- (void)setLessPreferredContrast:(id)sender
+{
+    m_preferred_contrast = Web::CSS::PreferredContrast::Less;
+    [self broadcastPreferredContrastUpdate];
+}
+
+- (void)setMorePreferredContrast:(id)sender
+{
+    m_preferred_contrast = Web::CSS::PreferredContrast::More;
+    [self broadcastPreferredContrastUpdate];
+}
+
+- (void)setNoPreferencePreferredContrast:(id)sender
+{
+    m_preferred_contrast = Web::CSS::PreferredContrast::NoPreference;
+    [self broadcastPreferredContrastUpdate];
+}
+
+- (void)broadcastPreferredContrastUpdate
+{
+    for (TabController* controller in self.managed_tabs) {
+        auto* tab = (Tab*)[controller window];
+        [[tab web_view] setPreferredContrast:m_preferred_contrast];
+    }
+}
+
+- (void)setAutoPreferredMotion:(id)sender
+{
+    m_preferred_motion = Web::CSS::PreferredMotion::Auto;
+    [self broadcastPreferredMotionUpdate];
+}
+
+- (void)setNoPreferencePreferredMotion:(id)sender
+{
+    m_preferred_motion = Web::CSS::PreferredMotion::NoPreference;
+    [self broadcastPreferredMotionUpdate];
+}
+
+- (void)setReducePreferredMotion:(id)sender
+{
+    m_preferred_motion = Web::CSS::PreferredMotion::Reduce;
+    [self broadcastPreferredMotionUpdate];
+}
+
+- (void)broadcastPreferredMotionUpdate
+{
+    for (TabController* controller in self.managed_tabs) {
+        auto* tab = (Tab*)[controller window];
+        [[tab web_view] setPreferredMotion:m_preferred_motion];
     }
 }
 
@@ -316,9 +430,23 @@
                                          keyEquivalent:@"v"]];
     [submenu addItem:[NSMenuItem separatorItem]];
 
-    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Select all"
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Select All"
                                                 action:@selector(selectAll:)
                                          keyEquivalent:@"a"]];
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Find..."
+                                                action:@selector(find:)
+                                         keyEquivalent:@"f"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Find Next"
+                                                action:@selector(findNextMatch:)
+                                         keyEquivalent:@"g"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Find Previous"
+                                                action:@selector(findPreviousMatch:)
+                                         keyEquivalent:@"G"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Use Selection for Find"
+                                                action:@selector(useSelectionForFind:)
+                                         keyEquivalent:@"e"]];
 
     [menu setSubmenu:submenu];
     return menu;
@@ -345,6 +473,41 @@
                                                        keyEquivalent:@""];
     [color_scheme_menu_item setSubmenu:color_scheme_menu];
 
+    auto* contrast_menu = [[NSMenu alloc] init];
+    [contrast_menu addItem:[[NSMenuItem alloc] initWithTitle:@"Auto"
+                                                      action:@selector(setAutoPreferredContrast:)
+                                               keyEquivalent:@""]];
+    [contrast_menu addItem:[[NSMenuItem alloc] initWithTitle:@"Less"
+                                                      action:@selector(setLessPreferredContrast:)
+                                               keyEquivalent:@""]];
+    [contrast_menu addItem:[[NSMenuItem alloc] initWithTitle:@"More"
+                                                      action:@selector(setMorePreferredContrast:)
+                                               keyEquivalent:@""]];
+    [contrast_menu addItem:[[NSMenuItem alloc] initWithTitle:@"No Preference"
+                                                      action:@selector(setNoPreferencePreferredContrast:)
+                                               keyEquivalent:@""]];
+
+    auto* contrast_menu_item = [[NSMenuItem alloc] initWithTitle:@"Contrast"
+                                                          action:nil
+                                                   keyEquivalent:@""];
+    [contrast_menu_item setSubmenu:contrast_menu];
+
+    auto* motion_menu = [[NSMenu alloc] init];
+    [motion_menu addItem:[[NSMenuItem alloc] initWithTitle:@"Auto"
+                                                    action:@selector(setAutoPreferredMotion:)
+                                             keyEquivalent:@""]];
+    [motion_menu addItem:[[NSMenuItem alloc] initWithTitle:@"No Preference"
+                                                    action:@selector(setNoPreferencePreferredMotion:)
+                                             keyEquivalent:@""]];
+    [motion_menu addItem:[[NSMenuItem alloc] initWithTitle:@"Reduce"
+                                                    action:@selector(setReducePreferredMotion:)
+                                             keyEquivalent:@""]];
+
+    auto* motion_menu_item = [[NSMenuItem alloc] initWithTitle:@"Motion"
+                                                        action:nil
+                                                 keyEquivalent:@""];
+    [motion_menu_item setSubmenu:motion_menu];
+
     auto* zoom_menu = [[NSMenu alloc] init];
     [zoom_menu addItem:[[NSMenuItem alloc] initWithTitle:@"Zoom In"
                                                   action:@selector(zoomIn:)
@@ -362,6 +525,8 @@
     [zoom_menu_item setSubmenu:zoom_menu];
 
     [submenu addItem:color_scheme_menu_item];
+    [submenu addItem:contrast_menu_item];
+    [submenu addItem:motion_menu_item];
     [submenu addItem:zoom_menu_item];
     [submenu addItem:[NSMenuItem separatorItem]];
 
@@ -430,6 +595,9 @@
     [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Open Inspector"
                                                 action:@selector(openInspector:)
                                          keyEquivalent:@"I"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Open Task Manager"
+                                                action:@selector(openTaskManager:)
+                                         keyEquivalent:@"M"]];
 
     [menu setSubmenu:submenu];
     return menu;
@@ -467,6 +635,9 @@
     [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Dump Local Storage"
                                                 action:@selector(dumpLocalStorage:)
                                          keyEquivalent:@""]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Dump Connection Info"
+                                                action:@selector(dumpConnectionInfo:)
+                                         keyEquivalent:@""]];
     [submenu addItem:[NSMenuItem separatorItem]];
 
     [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Show Line Box Borders"
@@ -502,6 +673,23 @@
     [spoof_user_agent_menu_item setSubmenu:spoof_user_agent_menu];
 
     [submenu addItem:spoof_user_agent_menu_item];
+
+    auto* navigator_compatibility_mode_menu = [[NSMenu alloc] init];
+    auto add_navigator_compatibility_mode = [navigator_compatibility_mode_menu](ByteString name) {
+        [navigator_compatibility_mode_menu addItem:[[NSMenuItem alloc] initWithTitle:Ladybird::string_to_ns_string(name)
+                                                                              action:@selector(setNavigatorCompatibilityMode:)
+                                                                       keyEquivalent:@""]];
+    };
+    add_navigator_compatibility_mode("Chrome");
+    add_navigator_compatibility_mode("Gecko");
+    add_navigator_compatibility_mode("WebKit");
+
+    auto* navigator_compatibility_mode_menu_item = [[NSMenuItem alloc] initWithTitle:@"Navigator Compatibility Mode"
+                                                                              action:nil
+                                                                       keyEquivalent:@""];
+    [navigator_compatibility_mode_menu_item setSubmenu:navigator_compatibility_mode_menu];
+
+    [submenu addItem:navigator_compatibility_mode_menu_item];
     [submenu addItem:[NSMenuItem separatorItem]];
 
     [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Enable Scripting"
@@ -570,20 +758,39 @@
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item
 {
-    using enum Web::CSS::PreferredColorScheme;
-
     if ([item action] == @selector(setAutoPreferredColorScheme:)) {
-        [item setState:(m_preferred_color_scheme == Auto) ? NSControlStateValueOn : NSControlStateValueOff];
+        [item setState:(m_preferred_color_scheme == Web::CSS::PreferredColorScheme::Auto) ? NSControlStateValueOn : NSControlStateValueOff];
     } else if ([item action] == @selector(setDarkPreferredColorScheme:)) {
-        [item setState:(m_preferred_color_scheme == Dark) ? NSControlStateValueOn : NSControlStateValueOff];
+        [item setState:(m_preferred_color_scheme == Web::CSS::PreferredColorScheme::Dark) ? NSControlStateValueOn : NSControlStateValueOff];
     } else if ([item action] == @selector(setLightPreferredColorScheme:)) {
-        [item setState:(m_preferred_color_scheme == Light) ? NSControlStateValueOn : NSControlStateValueOff];
+        [item setState:(m_preferred_color_scheme == Web::CSS::PreferredColorScheme::Light) ? NSControlStateValueOn : NSControlStateValueOff];
+    } else if ([item action] == @selector(setAutoPreferredContrast:)) {
+        [item setState:(m_preferred_contrast == Web::CSS::PreferredContrast::Auto) ? NSControlStateValueOn : NSControlStateValueOff];
+    } else if ([item action] == @selector(setLessPreferredContrast:)) {
+        [item setState:(m_preferred_contrast == Web::CSS::PreferredContrast::Less) ? NSControlStateValueOn : NSControlStateValueOff];
+    } else if ([item action] == @selector(setMorePreferredContrast:)) {
+        [item setState:(m_preferred_contrast == Web::CSS::PreferredContrast::More) ? NSControlStateValueOn : NSControlStateValueOff];
+    } else if ([item action] == @selector(setNoPreferencePreferredContrast:)) {
+        [item setState:(m_preferred_contrast == Web::CSS::PreferredContrast::NoPreference) ? NSControlStateValueOn : NSControlStateValueOff];
+    } else if ([item action] == @selector(setAutoPreferredMotion:)) {
+        [item setState:(m_preferred_motion == Web::CSS::PreferredMotion::Auto) ? NSControlStateValueOn : NSControlStateValueOff];
+    } else if ([item action] == @selector(setNoPreferencePreferredMotion:)) {
+        [item setState:(m_preferred_motion == Web::CSS::PreferredMotion::NoPreference) ? NSControlStateValueOn : NSControlStateValueOff];
+    } else if ([item action] == @selector(setReducePreferredMotion:)) {
+        [item setState:(m_preferred_motion == Web::CSS::PreferredMotion::Reduce) ? NSControlStateValueOn : NSControlStateValueOff];
     } else if ([item action] == @selector(setSearchEngine:)) {
         auto title = Ladybird::ns_string_to_string([item title]);
         [item setState:(m_search_engine.name == title) ? NSControlStateValueOn : NSControlStateValueOff];
     }
 
     return YES;
+}
+
+#pragma mark - TaskManagerDelegate
+
+- (void)onTaskManagerClosed
+{
+    self.task_manager_controller = nil;
 }
 
 @end

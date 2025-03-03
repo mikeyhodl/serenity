@@ -5,6 +5,7 @@
  */
 
 #include <AK/CharacterTypes.h>
+#include <LibWeb/Bindings/DOMStringMapPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
@@ -146,7 +147,7 @@ WebIDL::ExceptionOr<void> DOMStringMap::set_value_of_new_named_property(String c
         if (current_character == '-' && character_index + 1 < name_view.length()) {
             auto next_character = name_view[character_index + 1];
             if (is_ascii_lower_alpha(next_character))
-                return WebIDL::SyntaxError::create(realm(), "Name cannot contain a '-' followed by a lowercase character."_fly_string);
+                return WebIDL::SyntaxError::create(realm(), "Name cannot contain a '-' followed by a lowercase character."_string);
         }
 
         // 2. For each ASCII upper alpha in name, insert a U+002D HYPHEN-MINUS character (-) before the character and replace the character with the same character converted to ASCII lowercase.
@@ -164,7 +165,7 @@ WebIDL::ExceptionOr<void> DOMStringMap::set_value_of_new_named_property(String c
     // FIXME: 4. If name does not match the XML Name production, throw an "InvalidCharacterError" DOMException.
 
     // 5. Set an attribute value for the DOMStringMap's associated element using name and value.
-    MUST(m_associated_element->set_attribute(data_name, value));
+    TRY(m_associated_element->set_attribute(data_name, value));
 
     return {};
 }
@@ -203,7 +204,7 @@ WebIDL::ExceptionOr<Bindings::PlatformObject::DidDeletionFail> DOMStringMap::del
     return DidDeletionFail::No;
 }
 
-WebIDL::ExceptionOr<JS::Value> DOMStringMap::named_item_value(FlyString const& name) const
+JS::Value DOMStringMap::named_item_value(FlyString const& name) const
 {
     return JS::PrimitiveString::create(vm(), determine_value_of_named_property(name));
 }

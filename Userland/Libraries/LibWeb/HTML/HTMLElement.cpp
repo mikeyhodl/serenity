@@ -7,11 +7,16 @@
 #include <AK/StringBuilder.h>
 #include <LibWeb/ARIA/Roles.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
+#include <LibWeb/Bindings/HTMLElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/IDLEventListener.h>
+#include <LibWeb/DOM/LiveNodeList.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/HTML/BrowsingContext.h>
+#include <LibWeb/HTML/CustomElements/CustomElementDefinition.h>
 #include <LibWeb/HTML/DOMStringMap.h>
+#include <LibWeb/HTML/ElementInternals.h>
 #include <LibWeb/HTML/EventHandler.h>
 #include <LibWeb/HTML/Focus.h>
 #include <LibWeb/HTML/HTMLAnchorElement.h>
@@ -19,6 +24,7 @@
 #include <LibWeb/HTML/HTMLBaseElement.h>
 #include <LibWeb/HTML/HTMLBodyElement.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/HTML/HTMLLabelElement.h>
 #include <LibWeb/HTML/NavigableContainer.h>
 #include <LibWeb/HTML/VisibilityState.h>
 #include <LibWeb/HTML/Window.h>
@@ -27,10 +33,12 @@
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/BreakNode.h>
 #include <LibWeb/Layout/TextNode.h>
+#include <LibWeb/Namespace.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/UIEvents/EventNames.h>
 #include <LibWeb/UIEvents/FocusEvent.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
+#include <LibWeb/UIEvents/PointerEvent.h>
 #include <LibWeb/WebIDL/DOMException.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
@@ -49,14 +57,21 @@ void HTMLElement::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLElement);
-
-    m_dataset = DOMStringMap::create(*this);
 }
 
 void HTMLElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_dataset);
+    visitor.visit(m_labels);
+    visitor.visit(m_attached_internals);
+}
+
+JS::NonnullGCPtr<DOMStringMap> HTMLElement::dataset()
+{
+    if (!m_dataset)
+        m_dataset = DOMStringMap::create(*this);
+    return *m_dataset;
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#dom-dir
@@ -134,19 +149,71 @@ WebIDL::ExceptionOr<void> HTMLElement::set_content_editable(StringView content_e
         MUST(set_attribute(HTML::AttributeNames::contenteditable, "false"_string));
         return {};
     }
-    return WebIDL::SyntaxError::create(realm(), "Invalid contentEditable value, must be 'true', 'false', or 'inherit'"_fly_string);
+    return WebIDL::SyntaxError::create(realm(), "Invalid contentEditable value, must be 'true', 'false', or 'inherit'"_string);
 }
 
+// https://html.spec.whatwg.org/multipage/dom.html#set-the-inner-text-steps
 void HTMLElement::set_inner_text(StringView text)
 {
+    // 1. Let fragment be the rendered text fragment for value given element's node document.
+    // 2. Replace all with fragment within element.
     remove_all_children();
-    MUST(append_child(document().create_text_node(MUST(String::from_utf8(text)))));
+    append_rendered_text_fragment(text);
 
     set_needs_style_update(true);
 }
 
-String HTMLElement::inner_text()
+// https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute:dom-outertext-2
+WebIDL::ExceptionOr<void> HTMLElement::set_outer_text(String)
 {
+    dbgln("FIXME: Implement HTMLElement::set_outer_text()");
+    return {};
+}
+
+// https://html.spec.whatwg.org/multipage/dom.html#rendered-text-fragment
+void HTMLElement::append_rendered_text_fragment(StringView input)
+{
+    // FIXME: 1. Let fragment be a new DocumentFragment whose node document is document.
+    //      Instead of creating a DocumentFragment the nodes are appended directly.
+
+    // 2. Let position be a position variable for input, initially pointing at the start of input.
+    // 3. Let text be the empty string.
+    // 4. While position is not past the end of input:
+    while (!input.is_empty()) {
+        // 1. Collect a sequence of code points that are not U+000A LF or U+000D CR from input given position, and set text to the result.
+        auto newline_index = input.find_any_of("\n\r"sv);
+        size_t const sequence_end_index = newline_index.value_or(input.length());
+        StringView const text = input.substring_view(0, sequence_end_index);
+        input = input.substring_view_starting_after_substring(text);
+
+        // 2. If text is not the empty string, then append a new Text node whose data is text and node document is document to fragment.
+        if (!text.is_empty()) {
+            MUST(append_child(document().create_text_node(MUST(String::from_utf8(text)))));
+        }
+
+        // 3. While position is not past the end of input, and the code point at position is either U+000A LF or U+000D CR:
+        while (input.starts_with('\n') || input.starts_with('\r')) {
+            // 1. If the code point at position is U+000D CR and the next code point is U+000A LF, then advance position to the next code point in input.
+            if (input.starts_with("\r\n"sv)) {
+                // 2. Advance position to the next code point in input.
+                input = input.substring_view(2);
+            } else {
+                // 2. Advance position to the next code point in input.
+                input = input.substring_view(1);
+            }
+
+            // 3. Append the result of creating an element given document, br, and the HTML namespace to fragment.
+            auto br_element = DOM::create_element(document(), HTML::TagNames::br, Namespace::HTML).release_value();
+            MUST(append_child(br_element));
+        }
+    }
+}
+
+// https://html.spec.whatwg.org/multipage/dom.html#get-the-text-steps
+String HTMLElement::get_the_text_steps()
+{
+    // FIXME: Implement this according to spec.
+
     StringBuilder builder;
 
     // innerText for element being rendered takes visibility into account, so force a layout and then walk the layout tree.
@@ -166,6 +233,20 @@ String HTMLElement::inner_text()
     recurse(*layout_node());
 
     return MUST(builder.to_string());
+}
+
+// https://html.spec.whatwg.org/multipage/dom.html#dom-innertext
+String HTMLElement::inner_text()
+{
+    // The innerText and outerText getter steps are to return the result of running get the text steps with this.
+    return get_the_text_steps();
+}
+
+// https://html.spec.whatwg.org/multipage/dom.html#dom-outertext
+String HTMLElement::outer_text()
+{
+    // The innerText and outerText getter steps are to return the result of running get the text steps with this.
+    return get_the_text_steps();
 }
 
 // https://www.w3.org/TR/cssom-view-1/#dom-htmlelement-offsetparent
@@ -223,14 +304,20 @@ int HTMLElement::offset_top() const
     if (!layout_node())
         return 0;
 
+    CSSPixels top_border_edge_of_element;
+    if (paintable()->is_paintable_box()) {
+        top_border_edge_of_element = paintable_box()->absolute_border_box_rect().y();
+    } else {
+        top_border_edge_of_element = paintable()->box_type_agnostic_position().y();
+    }
+
     // 2. If the offsetParent of the element is null
     //    return the y-coordinate of the top border edge of the first CSS layout box associated with the element,
     //    relative to the initial containing block origin,
     //    ignoring any transforms that apply to the element and its ancestors, and terminate this algorithm.
     auto offset_parent = this->offset_parent();
     if (!offset_parent || !offset_parent->layout_node()) {
-        auto position = paintable()->box_type_agnostic_position();
-        return position.y().to_int();
+        return top_border_edge_of_element.to_int();
     }
 
     // 3. Return the result of subtracting the y-coordinate of the top padding edge
@@ -238,9 +325,19 @@ int HTMLElement::offset_top() const
     //    from the y-coordinate of the top border edge of the first box associated with the element,
     //    relative to the initial containing block origin,
     //    ignoring any transforms that apply to the element and its ancestors.
-    auto offset_parent_position = offset_parent->paintable()->box_type_agnostic_position();
-    auto position = paintable()->box_type_agnostic_position();
-    return position.y().to_int() - offset_parent_position.y().to_int();
+
+    // NOTE: We give special treatment to the body element to match other browsers.
+    //       Spec bug: https://github.com/w3c/csswg-drafts/issues/10549
+
+    CSSPixels top_padding_edge_of_offset_parent;
+    if (offset_parent->is_html_body_element() && !offset_parent->paintable()->is_positioned()) {
+        top_padding_edge_of_offset_parent = 0;
+    } else if (offset_parent->paintable()->is_paintable_box()) {
+        top_padding_edge_of_offset_parent = offset_parent->paintable_box()->absolute_padding_box_rect().y();
+    } else {
+        top_padding_edge_of_offset_parent = offset_parent->paintable()->box_type_agnostic_position().y();
+    }
+    return (top_border_edge_of_element - top_padding_edge_of_offset_parent).to_int();
 }
 
 // https://www.w3.org/TR/cssom-view-1/#dom-htmlelement-offsetleft
@@ -256,14 +353,20 @@ int HTMLElement::offset_left() const
     if (!layout_node())
         return 0;
 
+    CSSPixels left_border_edge_of_element;
+    if (paintable()->is_paintable_box()) {
+        left_border_edge_of_element = paintable_box()->absolute_border_box_rect().x();
+    } else {
+        left_border_edge_of_element = paintable()->box_type_agnostic_position().x();
+    }
+
     // 2. If the offsetParent of the element is null
     //    return the x-coordinate of the left border edge of the first CSS layout box associated with the element,
     //    relative to the initial containing block origin,
     //    ignoring any transforms that apply to the element and its ancestors, and terminate this algorithm.
     auto offset_parent = this->offset_parent();
     if (!offset_parent || !offset_parent->layout_node()) {
-        auto position = paintable()->box_type_agnostic_position();
-        return position.x().to_int();
+        return left_border_edge_of_element.to_int();
     }
 
     // 3. Return the result of subtracting the x-coordinate of the left padding edge
@@ -271,9 +374,19 @@ int HTMLElement::offset_left() const
     //    from the x-coordinate of the left border edge of the first CSS layout box associated with the element,
     //    relative to the initial containing block origin,
     //    ignoring any transforms that apply to the element and its ancestors.
-    auto offset_parent_position = offset_parent->paintable()->box_type_agnostic_position();
-    auto position = paintable()->box_type_agnostic_position();
-    return position.x().to_int() - offset_parent_position.x().to_int();
+
+    // NOTE: We give special treatment to the body element to match other browsers.
+    //       Spec bug: https://github.com/w3c/csswg-drafts/issues/10549
+
+    CSSPixels left_padding_edge_of_offset_parent;
+    if (offset_parent->is_html_body_element() && !offset_parent->paintable()->is_positioned()) {
+        left_padding_edge_of_offset_parent = 0;
+    } else if (offset_parent->paintable()->is_paintable_box()) {
+        left_padding_edge_of_offset_parent = offset_parent->paintable_box()->absolute_padding_box_rect().x();
+    } else {
+        left_padding_edge_of_offset_parent = offset_parent->paintable()->box_type_agnostic_position().x();
+    }
+    return (left_border_edge_of_element - left_padding_edge_of_offset_parent).to_int();
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetwidth
@@ -321,9 +434,9 @@ bool HTMLElement::cannot_navigate() const
     return !is<HTML::HTMLAnchorElement>(this) && !is_connected();
 }
 
-void HTMLElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    Element::attribute_changed(name, value);
+    Element::attribute_changed(name, old_value, value);
 
     if (name == HTML::AttributeNames::contenteditable) {
         if (!value.has_value()) {
@@ -380,8 +493,7 @@ bool HTMLElement::fire_a_synthetic_pointer_event(FlyString const& type, DOM::Ele
 {
     // 1. Let event be the result of creating an event using PointerEvent.
     // 2. Initialize event's type attribute to e.
-    // FIXME: Actually create a PointerEvent!
-    auto event = UIEvents::MouseEvent::create(realm(), type);
+    auto event = UIEvents::PointerEvent::create(realm(), type);
 
     // 3. Initialize event's bubbles and cancelable attributes to true.
     event->set_bubbles(true);
@@ -406,10 +518,33 @@ bool HTMLElement::fire_a_synthetic_pointer_event(FlyString const& type, DOM::Ele
     return target.dispatch_event(event);
 }
 
+// https://html.spec.whatwg.org/multipage/forms.html#dom-lfe-labels-dev
+JS::GCPtr<DOM::NodeList> HTMLElement::labels()
+{
+    // Labelable elements and all input elements have a live NodeList object associated with them that represents the list of label elements, in tree order,
+    // whose labeled control is the element in question. The labels IDL attribute of labelable elements that are not form-associated custom elements,
+    // and the labels IDL attribute of input elements, on getting, must return that NodeList object, and that same value must always be returned,
+    // unless this element is an input element whose type attribute is in the Hidden state, in which case it must instead return null.
+    if (!is_labelable())
+        return {};
+
+    if (!m_labels) {
+        m_labels = DOM::LiveNodeList::create(realm(), root(), DOM::LiveNodeList::Scope::Descendants, [&](auto& node) {
+            return is<HTMLLabelElement>(node) && verify_cast<HTMLLabelElement>(node).control() == this;
+        });
+    }
+
+    return m_labels;
+}
+
 // https://html.spec.whatwg.org/multipage/interaction.html#dom-click
 void HTMLElement::click()
 {
-    // FIXME: 1. If this element is a form control that is disabled, then return.
+    // 1. If this element is a form control that is disabled, then return.
+    if (auto* form_control = dynamic_cast<FormAssociatedElement*>(this)) {
+        if (!form_control->enabled())
+            return;
+    }
 
     // 2. If this element's click in progress flag is set, then return.
     if (m_click_in_progress)
@@ -418,7 +553,7 @@ void HTMLElement::click()
     // 3. Set this element's click in progress flag.
     m_click_in_progress = true;
 
-    // FIXME: 4. Fire a synthetic pointer event named click at this element, with the not trusted flag set.
+    // 4. Fire a synthetic pointer event named click at this element, with the not trusted flag set.
     fire_a_synthetic_pointer_event(HTML::EventNames::click, *this, true);
 
     // 5. Unset this element's click in progress flag.
@@ -436,6 +571,9 @@ void HTMLElement::blur()
 
 Optional<ARIA::Role> HTMLElement::default_role() const
 {
+    // https://www.w3.org/TR/html-aria/#el-address
+    if (local_name() == TagNames::address)
+        return ARIA::Role::group;
     // https://www.w3.org/TR/html-aria/#el-article
     if (local_name() == TagNames::article)
         return ARIA::Role::article;
@@ -477,7 +615,7 @@ Optional<ARIA::Role> HTMLElement::default_role() const
     }
     // https://www.w3.org/TR/html-aria/#el-hgroup
     if (local_name() == TagNames::hgroup)
-        return ARIA::Role::generic;
+        return ARIA::Role::group;
     // https://www.w3.org/TR/html-aria/#el-i
     if (local_name() == TagNames::i)
         return ARIA::Role::generic;
@@ -487,6 +625,9 @@ Optional<ARIA::Role> HTMLElement::default_role() const
     // https://www.w3.org/TR/html-aria/#el-nav
     if (local_name() == TagNames::nav)
         return ARIA::Role::navigation;
+    // https://www.w3.org/TR/html-aria/#el-s
+    if (local_name() == TagNames::s)
+        return ARIA::Role::deletion;
     // https://www.w3.org/TR/html-aria/#el-samp
     if (local_name() == TagNames::samp)
         return ARIA::Role::generic;
@@ -556,14 +697,91 @@ TokenizedFeature::NoOpener HTMLElement::get_an_elements_noopener(StringView targ
     return TokenizedFeature::NoOpener::No;
 }
 
+WebIDL::ExceptionOr<JS::NonnullGCPtr<ElementInternals>> HTMLElement::attach_internals()
+{
+    // 1. If this's is value is not null, then throw a "NotSupportedError" DOMException.
+    if (is_value().has_value())
+        return WebIDL::NotSupportedError::create(realm(), "ElementInternals cannot be attached to a customized build-in element"_string);
+
+    // 2. Let definition be the result of looking up a custom element definition given this's node document, its namespace, its local name, and null as the is value.
+    auto definition = document().lookup_custom_element_definition(namespace_uri(), local_name(), is_value());
+
+    // 3. If definition is null, then throw an "NotSupportedError" DOMException.
+    if (!definition)
+        return WebIDL::NotSupportedError::create(realm(), "ElementInternals cannot be attached to an element that is not a custom element"_string);
+
+    // 4. If definition's disable internals is true, then throw a "NotSupportedError" DOMException.
+    if (definition->disable_internals())
+        return WebIDL::NotSupportedError::create(realm(), "ElementInternals are disabled for this custom element"_string);
+
+    // 5. If this's attached internals is non-null, then throw an "NotSupportedError" DOMException.
+    if (m_attached_internals)
+        return WebIDL::NotSupportedError::create(realm(), "ElementInternals already attached"_string);
+
+    // 6. If this's custom element state is not "precustomized" or "custom", then throw a "NotSupportedError" DOMException.
+    if (!first_is_one_of(custom_element_state(), DOM::CustomElementState::Precustomized, DOM::CustomElementState::Custom))
+        return WebIDL::NotSupportedError::create(realm(), "Custom element is in an invalid state to attach ElementInternals"_string);
+
+    // 7. Set this's attached internals to a new ElementInternals instance whose target element is this.
+    auto internals = ElementInternals::create(realm(), *this);
+
+    m_attached_internals = internals;
+
+    // 8. Return this's attached internals.
+    return { internals };
+}
+
+// https://html.spec.whatwg.org/multipage/popover.html#dom-popover
+Optional<String> HTMLElement::popover() const
+{
+    // FIXME: This should probably be `Reflect` in the IDL.
+    // The popover IDL attribute must reflect the popover attribute, limited to only known values.
+    auto value = get_attribute(HTML::AttributeNames::popover);
+
+    if (!value.has_value())
+        return {};
+
+    if (value.value().is_empty() || value.value().equals_ignoring_ascii_case("auto"sv))
+        return "auto"_string;
+
+    return "manual"_string;
+}
+
+// https://html.spec.whatwg.org/multipage/popover.html#dom-popover
+WebIDL::ExceptionOr<void> HTMLElement::set_popover(Optional<String> value)
+{
+    // FIXME: This should probably be `Reflect` in the IDL.
+    // The popover IDL attribute must reflect the popover attribute, limited to only known values.
+    if (value.has_value())
+        return set_attribute(HTML::AttributeNames::popover, value.release_value());
+
+    remove_attribute(HTML::AttributeNames::popover);
+    return {};
+}
+
 void HTMLElement::did_receive_focus()
 {
     if (m_content_editable_state != ContentEditableState::True)
         return;
-    auto* browsing_context = document().browsing_context();
-    if (!browsing_context)
+
+    DOM::Text* text = nullptr;
+    for_each_in_inclusive_subtree_of_type<DOM::Text>([&](auto& node) {
+        text = &node;
+        return TraversalDecision::Continue;
+    });
+
+    if (!text) {
+        document().set_cursor_position(DOM::Position::create(realm(), *this, 0));
         return;
-    browsing_context->set_cursor_position(DOM::Position::create(realm(), *this, 0));
+    }
+    document().set_cursor_position(DOM::Position::create(realm(), *text, text->length()));
+}
+
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-accesskeylabel
+String HTMLElement::access_key_label() const
+{
+    dbgln("FIXME: Implement HTMLElement::access_key_label()");
+    return String {};
 }
 
 }

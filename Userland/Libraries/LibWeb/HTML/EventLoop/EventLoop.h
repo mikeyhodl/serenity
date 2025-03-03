@@ -15,7 +15,10 @@
 
 namespace Web::HTML {
 
-class EventLoop {
+class EventLoop : public JS::Cell {
+    JS_CELL(EventLoop, JS::Cell);
+    JS_DECLARE_ALLOCATOR(EventLoop);
+
 public:
     enum class Type {
         // https://html.spec.whatwg.org/multipage/webappapis.html#window-event-loop
@@ -26,18 +29,18 @@ public:
         Worklet,
     };
 
-    EventLoop();
-    ~EventLoop();
+    virtual ~EventLoop() override;
 
     Type type() const { return m_type; }
 
-    TaskQueue& task_queue() { return m_task_queue; }
-    TaskQueue const& task_queue() const { return m_task_queue; }
+    TaskQueue& task_queue() { return *m_task_queue; }
+    TaskQueue const& task_queue() const { return *m_task_queue; }
 
-    TaskQueue& microtask_queue() { return m_microtask_queue; }
-    TaskQueue const& microtask_queue() const { return m_microtask_queue; }
+    TaskQueue& microtask_queue() { return *m_microtask_queue; }
+    TaskQueue const& microtask_queue() const { return *m_microtask_queue; }
 
     void spin_until(JS::SafeFunction<bool()> goal_condition);
+    void spin_processing_tasks_with_source_until(Task::Source, JS::SafeFunction<bool()> goal_condition);
     void process();
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#termination-nesting-level
@@ -46,11 +49,6 @@ public:
     void decrement_termination_nesting_level() { --m_termination_nesting_level; }
 
     Task const* currently_running_task() const { return m_currently_running_task; }
-
-    JS::VM& vm() { return *m_vm; }
-    JS::VM const& vm() const { return *m_vm; }
-
-    void set_vm(JS::VM&);
 
     void schedule();
 
@@ -78,20 +76,22 @@ public:
     bool execution_paused() const { return m_execution_paused; }
 
 private:
+    explicit EventLoop(Type);
+
+    virtual void visit_edges(Visitor&) override;
+
     Type m_type { Type::Window };
 
-    TaskQueue m_task_queue;
-    TaskQueue m_microtask_queue;
+    JS::GCPtr<TaskQueue> m_task_queue;
+    JS::GCPtr<TaskQueue> m_microtask_queue;
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#currently-running-task
-    Task* m_currently_running_task { nullptr };
+    JS::GCPtr<Task> m_currently_running_task { nullptr };
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#last-render-opportunity-time
     double m_last_render_opportunity_time { 0 };
     // https://html.spec.whatwg.org/multipage/webappapis.html#last-idle-period-start-time
     double m_last_idle_period_start_time { 0 };
-
-    JS::VM* m_vm { nullptr };
 
     RefPtr<Platform::Timer> m_system_event_loop_timer;
 
@@ -101,7 +101,8 @@ private:
     Vector<WeakPtr<DOM::Document>> m_documents;
 
     // Used to implement step 4 of "perform a microtask checkpoint".
-    Vector<JS::NonnullGCPtr<EnvironmentSettingsObject>> m_related_environment_settings_objects;
+    // NOTE: These are weak references! ESO registers and unregisters itself from the event loop manually.
+    Vector<RawPtr<EnvironmentSettingsObject>> m_related_environment_settings_objects;
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#backup-incumbent-settings-object-stack
     Vector<JS::NonnullGCPtr<EnvironmentSettingsObject>> m_backup_incumbent_settings_object_stack;
@@ -110,11 +111,16 @@ private:
     size_t m_termination_nesting_level { 0 };
 
     bool m_execution_paused { false };
+
+    bool m_skip_event_loop_processing_steps { false };
+
+    bool m_is_running_reflow_steps { false };
 };
 
 EventLoop& main_thread_event_loop();
-void queue_global_task(HTML::Task::Source, JS::Object&, JS::SafeFunction<void()> steps);
-void queue_a_microtask(DOM::Document const*, JS::SafeFunction<void()> steps);
+TaskID queue_a_task(HTML::Task::Source, JS::GCPtr<EventLoop>, JS::GCPtr<DOM::Document>, JS::NonnullGCPtr<JS::HeapFunction<void()>> steps);
+TaskID queue_global_task(HTML::Task::Source, JS::Object&, JS::NonnullGCPtr<JS::HeapFunction<void()>> steps);
+void queue_a_microtask(DOM::Document const*, JS::NonnullGCPtr<JS::HeapFunction<void()>> steps);
 void perform_a_microtask_checkpoint();
 
 }

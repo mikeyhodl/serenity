@@ -8,29 +8,30 @@
 
 #include <AK/IntrusiveList.h>
 #include <AK/Types.h>
+#include <Kernel/API/MajorNumberAllocation.h>
 #include <Kernel/Devices/Storage/SD/SDHostController.h>
 #include <Kernel/Devices/Storage/StorageController.h>
 #include <Kernel/Devices/Storage/StorageDevice.h>
 #include <Kernel/Devices/Storage/StorageDevicePartition.h>
 #include <Kernel/FileSystem/FileSystem.h>
+#include <Kernel/Firmware/DeviceTree/DeviceRecipe.h>
 #include <Kernel/Library/NonnullLockRefPtr.h>
 #include <LibPartition/PartitionTable.h>
 
 namespace Kernel {
 
-class ATAController;
+class AHCIController;
 class NVMeController;
 class StorageManagement {
 
 public:
     StorageManagement();
-    void initialize(bool force_pio, bool nvme_poll);
+    void initialize(bool nvme_poll);
     static StorageManagement& the();
 
     bool determine_boot_device(StringView boot_argument);
-    NonnullRefPtr<FileSystem> root_filesystem() const;
+    ErrorOr<NonnullRefPtr<VFSRootContext>> create_first_vfs_root_context() const;
 
-    static MajorNumber storage_type_major_number();
     static MinorNumber generate_storage_minor_number();
 
     static MinorNumber generate_partition_minor_number();
@@ -38,14 +39,16 @@ public:
     static u32 generate_controller_id();
 
     static u32 generate_relative_nvme_controller_id(Badge<NVMeController>);
-    static u32 generate_relative_ata_controller_id(Badge<ATAController>);
+    static u32 generate_relative_ahci_controller_id(Badge<AHCIController>);
     static u32 generate_relative_sd_controller_id(Badge<SDHostController>);
 
     void add_device(StorageDevice&);
     void remove_device(StorageDevice&);
 
+    static void add_recipe(DeviceTree::DeviceRecipe<NonnullRefPtr<StorageController>>);
+
 private:
-    void enumerate_pci_controllers(bool force_pio, bool nvme_poll);
+    void enumerate_pci_controllers(bool nvme_poll);
     void enumerate_storage_devices();
     ErrorOr<void> enumerate_device_partitions(StorageDevice&);
     void enumerate_disk_partitions();
@@ -66,7 +69,7 @@ private:
 
     ErrorOr<NonnullOwnPtr<Partition::PartitionTable>> try_to_initialize_partition_table(StorageDevice&) const;
 
-    LockRefPtr<BlockDevice> boot_block_device() const;
+    RefPtr<BlockDevice> boot_block_device() const;
 
     StringView m_boot_argument;
     LockWeakPtr<BlockDevice> m_boot_block_device;

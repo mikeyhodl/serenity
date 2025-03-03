@@ -117,7 +117,9 @@ JS::ThrowCompletionOr<Optional<JS::PropertyDescriptor>> WindowProxy::internal_ge
 
     // 6. If property is undefined and P is in W's document-tree child navigable target name property set, then:
     auto navigable_property_set = m_window->document_tree_child_navigable_target_name_property_set();
-    if (auto navigable = navigable_property_set.get(property_key.to_string().view()); navigable.has_value()) {
+    auto property_key_string = property_key.to_string();
+
+    if (auto navigable = navigable_property_set.get(property_key_string.view()); navigable.has_value()) {
         // 1. Let value be the active WindowProxy of the named object of W with the name P.
         auto value = navigable.value()->active_window_proxy();
 
@@ -131,7 +133,7 @@ JS::ThrowCompletionOr<Optional<JS::PropertyDescriptor>> WindowProxy::internal_ge
 }
 
 // 7.4.6 [[DefineOwnProperty]] ( P, Desc ), https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-defineownproperty
-JS::ThrowCompletionOr<bool> WindowProxy::internal_define_own_property(JS::PropertyKey const& property_key, JS::PropertyDescriptor const& descriptor)
+JS::ThrowCompletionOr<bool> WindowProxy::internal_define_own_property(JS::PropertyKey const& property_key, JS::PropertyDescriptor const& descriptor, Optional<JS::PropertyDescriptor>*)
 {
     // 1. Let W be the value of the [[Window]] internal slot of this.
 
@@ -151,7 +153,7 @@ JS::ThrowCompletionOr<bool> WindowProxy::internal_define_own_property(JS::Proper
 }
 
 // 7.4.7 [[Get]] ( P, Receiver ), https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
-JS::ThrowCompletionOr<JS::Value> WindowProxy::internal_get(JS::PropertyKey const& property_key, JS::Value receiver, JS::CacheablePropertyMetadata*) const
+JS::ThrowCompletionOr<JS::Value> WindowProxy::internal_get(JS::PropertyKey const& property_key, JS::Value receiver, JS::CacheablePropertyMetadata*, PropertyLookupPhase) const
 {
     auto& vm = this->vm();
 

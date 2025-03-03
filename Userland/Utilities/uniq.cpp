@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020, Matthew L. Curry <matthew.curry@gmail.com>
+ * Copyright (c) 2024, Daniel Gaston <tfd@tuta.io>.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -18,9 +19,9 @@ static ErrorOr<void> write_line_content(StringView line, size_t count, bool dupl
         return {};
 
     if (print_count)
-        TRY(outfile.write_until_depleted(ByteString::formatted("{} {}\n", count, line).bytes()));
+        TRY(outfile.write_until_depleted(ByteString::formatted("{} {}\n", count, line)));
     else
-        TRY(outfile.write_until_depleted(ByteString::formatted("{}\n", line).bytes()));
+        TRY(outfile.write_until_depleted(ByteString::formatted("{}\n", line)));
     return {};
 }
 
@@ -36,7 +37,7 @@ static StringView skip(StringView line, unsigned char_skip_count, unsigned field
             if (is_ascii_space(c)) {
                 in_field = false;
                 field_index = i;
-                if (++current_field > field_skip_count)
+                if (++current_field >= field_skip_count)
                     break;
             } else if (!in_field) {
                 in_field = true;
@@ -82,33 +83,41 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto infile = TRY(Core::InputBufferedFile::create(TRY(Core::File::open_file_or_standard_stream(inpath, Core::File::OpenMode::Read))));
     auto outfile = TRY(Core::File::open_file_or_standard_stream(outpath, Core::File::OpenMode::Write));
 
-    size_t count = 0;
+    // The count starts at 1 since each line appears at least once.
+    // Otherwise the -d and -c flags are off by one.
+    size_t count = 1;
     ByteBuffer previous_buf = TRY(ByteBuffer::create_uninitialized(1024));
     ByteBuffer current_buf = TRY(ByteBuffer::create_uninitialized(1024));
 
-    StringView previous = TRY(infile->read_line(previous_buf));
+    StringView previous = TRY(infile->read_line_with_resize(previous_buf));
     StringView previous_to_compare = skip(previous, skip_chars, skip_fields);
 
-    while (TRY(infile->can_read_line())) {
-        // FIXME: The buffer does not automatically resize,
-        // and this will return EMSGSIZE if the read line
-        // is more than 1024 bytes.
-        StringView current = TRY(infile->read_line(current_buf));
+    while (!infile->is_eof()) {
+        StringView current = TRY(infile->read_line_with_resize(current_buf));
 
         StringView current_to_compare = skip(current, skip_chars, skip_fields);
         bool lines_equal = ignore_case ? current_to_compare.equals_ignoring_ascii_case(previous_to_compare) : current_to_compare == previous_to_compare;
-        if (!lines_equal) {
-            TRY(write_line_content(previous, count, duplicates_only, print_count, *outfile));
-            count = 1;
-        } else {
+
+        while (lines_equal && current.length() > 0) {
+            // The docs say "The second and succeeding copies of repeated adjacent input
+            // lines shall not be written", therefore  keep reading lines while they match previous.
+            // See https://pubs.opengroup.org/onlinepubs/9699919799/utilities/uniq.html
+            current = TRY(infile->read_line_with_resize(current_buf));
+            current_to_compare = skip(current, skip_chars, skip_fields);
+            lines_equal = ignore_case ? current_to_compare.equals_ignoring_ascii_case(previous_to_compare) : current_to_compare == previous_to_compare;
             count++;
         }
-        swap(current_to_compare, previous_to_compare);
-        swap(current_buf, previous_buf);
-        swap(current, previous);
-    }
 
-    TRY(write_line_content(previous, count, duplicates_only, print_count, *outfile));
+        TRY(write_line_content(previous, count, duplicates_only, print_count, *outfile));
+        count = 1;
+
+        swap(current_buf, previous_buf);
+        // The StringViews can't be swapped since read_line_with_resize
+        // potentially changes the location of the buffers due to reallocation.
+        // Instead create a new StringView of what was most recently read in.
+        previous = StringView { previous_buf.span().trim(current.length()) };
+        previous_to_compare = skip(previous, skip_chars, skip_fields);
+    }
 
     return 0;
 }

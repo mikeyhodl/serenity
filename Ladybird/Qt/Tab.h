@@ -9,7 +9,8 @@
 
 #include "LocationEdit.h"
 #include "WebContentView.h"
-#include <LibWebView/History.h>
+#include <Ladybird/Qt/FindInPageWidget.h>
+#include <LibWeb/HTML/AudioPlayState.h>
 #include <QBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -23,6 +24,25 @@ namespace Ladybird {
 
 class BrowserWindow;
 class InspectorWidget;
+
+class HyperlinkLabel final : public QLabel {
+    Q_OBJECT
+
+public:
+    explicit HyperlinkLabel(QWidget* parent = nullptr)
+        : QLabel(parent)
+    {
+        setMouseTracking(true);
+    }
+
+    virtual void enterEvent(QEnterEvent* event) override
+    {
+        emit mouse_entered(event);
+    }
+
+signals:
+    void mouse_entered(QEnterEvent*);
+};
 
 class Tab final : public QWidget {
     Q_OBJECT
@@ -40,7 +60,7 @@ public:
     void forward();
     void reload();
 
-    void debug_request(ByteString const& request, ByteString const& argument);
+    void debug_request(ByteString const& request, ByteString const& argument = "");
 
     void open_file();
     void update_reset_zoom_button();
@@ -51,23 +71,50 @@ public:
     };
     void show_inspector_window(InspectorTarget = InspectorTarget::Document);
 
+    void show_find_in_page();
+    void find_previous();
+    void find_next();
+
+    QIcon const& favicon() const { return m_favicon; }
+    QString const& title() const { return m_title; }
+
+    QMenu* context_menu() const { return m_context_menu; }
+
+    void update_navigation_buttons_state();
+
+    QToolButton* hamburger_button() const { return m_hamburger_button; }
+
+    void update_hover_label();
+
+    void set_block_popups(bool);
+    void set_line_box_borders(bool);
+    void set_same_origin_policy(bool);
+    void set_scripting(bool);
+    void set_user_agent_string(ByteString const&);
+    void set_navigator_compatibility_mode(ByteString const&);
+
+    void set_preferred_languages(Vector<String> const& preferred_languages);
+
+    void set_enable_do_not_track(bool);
+
+    bool url_is_hidden() const { return m_location_edit->url_is_hidden(); }
+    void set_url_is_hidden(bool url_is_hidden) { m_location_edit->set_url_is_hidden(url_is_hidden); }
+
 public slots:
     void focus_location_editor();
     void location_edit_return_pressed();
-    void select_dropdown_action();
 
 signals:
-    void title_changed(int id, QString);
-    void favicon_changed(int id, QIcon);
+    void title_changed(int id, QString const&);
+    void favicon_changed(int id, QIcon const&);
+    void audio_play_state_changed(int id, Web::HTML::AudioPlayState);
+    void navigation_buttons_state_changed(int id);
 
 private:
-    void select_dropdown_add_item(QMenu* menu, Web::HTML::SelectItem const& item);
-
     virtual void resizeEvent(QResizeEvent*) override;
     virtual bool event(QEvent*) override;
 
     void recreate_toolbar_icons();
-    void update_hover_label();
 
     void open_link(URL::URL const&);
     void open_link_in_new_tab(URL::URL const&);
@@ -77,14 +124,19 @@ private:
 
     QBoxLayout* m_layout { nullptr };
     QToolBar* m_toolbar { nullptr };
+    QToolButton* m_hamburger_button { nullptr };
+    QAction* m_hamburger_button_action { nullptr };
     QToolButton* m_reset_zoom_button { nullptr };
     QAction* m_reset_zoom_button_action { nullptr };
     LocationEdit* m_location_edit { nullptr };
     WebContentView* m_view { nullptr };
+    FindInPageWidget* m_find_in_page { nullptr };
     BrowserWindow* m_window { nullptr };
-    WebView::History m_history;
     QString m_title;
-    QLabel* m_hover_label { nullptr };
+    HyperlinkLabel* m_hover_label { nullptr };
+    QIcon m_favicon;
+
+    QMenu* m_context_menu { nullptr };
 
     QMenu* m_page_context_menu { nullptr };
     Optional<String> m_page_context_menu_search_text;
@@ -113,11 +165,12 @@ private:
 
     int tab_index();
 
-    bool m_is_history_navigation { false };
-
     Ladybird::InspectorWidget* m_inspector_widget { nullptr };
 
     QPointer<QDialog> m_dialog;
+
+    bool m_can_navigate_back { false };
+    bool m_can_navigate_forward { false };
 };
 
 }

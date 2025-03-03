@@ -9,6 +9,7 @@
 
 #include <AK/Variant.h>
 #include <LibJS/Bytecode/Interpreter.h>
+#include <LibJS/Runtime/AsyncGeneratorRequest.h>
 #include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/Object.h>
 
@@ -28,9 +29,9 @@ public:
         Completed,
     };
 
-    static ThrowCompletionOr<NonnullGCPtr<AsyncGenerator>> create(Realm&, Value, ECMAScriptFunctionObject*, NonnullOwnPtr<ExecutionContext>, NonnullOwnPtr<Bytecode::CallFrame>);
+    static ThrowCompletionOr<NonnullGCPtr<AsyncGenerator>> create(Realm&, Value, ECMAScriptFunctionObject*, NonnullOwnPtr<ExecutionContext>);
 
-    virtual ~AsyncGenerator() override = default;
+    virtual ~AsyncGenerator() override;
 
     void async_generator_enqueue(Completion, NonnullGCPtr<PromiseCapability>);
     ThrowCompletionOr<void> resume(VM&, Completion completion);
@@ -60,7 +61,6 @@ private:
 
     GCPtr<ECMAScriptFunctionObject> m_generating_function;
     Value m_previous_value;
-    OwnPtr<Bytecode::CallFrame> m_frame;
     GCPtr<Promise> m_current_promise;
 };
 

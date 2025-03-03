@@ -12,12 +12,16 @@
 #include <LibWeb/DOM/HTMLCollection.h>
 #include <LibWeb/DOM/NodeOperations.h>
 #include <LibWeb/DOM/ParentNode.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/DOM/StaticNodeList.h>
 #include <LibWeb/Dump.h>
+#include <LibWeb/Infra/CharacterTypes.h>
 #include <LibWeb/Infra/Strings.h>
 #include <LibWeb/Namespace.h>
 
 namespace Web::DOM {
+
+JS_DEFINE_ALLOCATOR(ParentNode);
 
 // https://dom.spec.whatwg.org/#dom-parentnode-queryselector
 WebIDL::ExceptionOr<JS::GCPtr<Element>> ParentNode::query_selector(StringView selector_text)
@@ -32,7 +36,7 @@ WebIDL::ExceptionOr<JS::GCPtr<Element>> ParentNode::query_selector(StringView se
 
     // 2. If s is failure, then throw a "SyntaxError" DOMException.
     if (!maybe_selectors.has_value())
-        return WebIDL::SyntaxError::create(realm(), "Failed to parse selector"_fly_string);
+        return WebIDL::SyntaxError::create(realm(), "Failed to parse selector"_string);
 
     auto selectors = maybe_selectors.value();
 
@@ -41,12 +45,12 @@ WebIDL::ExceptionOr<JS::GCPtr<Element>> ParentNode::query_selector(StringView se
     // FIXME: This should be shadow-including. https://drafts.csswg.org/selectors-4/#match-a-selector-against-a-tree
     for_each_in_subtree_of_type<Element>([&](auto& element) {
         for (auto& selector : selectors) {
-            if (SelectorEngine::matches(selector, {}, element, {}, this)) {
+            if (SelectorEngine::matches(selector, {}, element, nullptr, {}, this)) {
                 result = &element;
-                return IterationDecision::Break;
+                return TraversalDecision::Break;
             }
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     return result;
@@ -64,7 +68,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<NodeList>> ParentNode::query_selector_all(S
 
     // 2. If s is failure, then throw a "SyntaxError" DOMException.
     if (!maybe_selectors.has_value())
-        return WebIDL::SyntaxError::create(realm(), "Failed to parse selector"_fly_string);
+        return WebIDL::SyntaxError::create(realm(), "Failed to parse selector"_string);
 
     auto selectors = maybe_selectors.value();
 
@@ -73,11 +77,11 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<NodeList>> ParentNode::query_selector_all(S
     // FIXME: This should be shadow-including. https://drafts.csswg.org/selectors-4/#match-a-selector-against-a-tree
     for_each_in_subtree_of_type<Element>([&](auto& element) {
         for (auto& selector : selectors) {
-            if (SelectorEngine::matches(selector, {}, element, {}, this)) {
+            if (SelectorEngine::matches(selector, {}, element, nullptr, {}, this)) {
                 elements.append(&element);
             }
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     return StaticNodeList::create(realm(), move(elements));
@@ -135,7 +139,7 @@ JS::NonnullGCPtr<HTMLCollection> ParentNode::get_elements_by_tag_name(FlyString 
 
     // 2. Otherwise, if root’s node document is an HTML document, return a HTMLCollection rooted at root, whose filter matches the following descendant elements:
     if (root().document().document_type() == Document::Type::HTML) {
-        FlyString qualified_name_in_ascii_lowercase = MUST(Infra::to_ascii_lowercase(qualified_name));
+        FlyString qualified_name_in_ascii_lowercase = qualified_name.to_ascii_lowercase();
         return HTMLCollection::create(*this, HTMLCollection::Scope::Descendants, [qualified_name, qualified_name_in_ascii_lowercase](Element const& element) {
             // - Whose namespace is the HTML namespace and whose qualified name is qualifiedName, in ASCII lowercase.
             if (element.namespace_uri() == Namespace::HTML)
@@ -154,12 +158,11 @@ JS::NonnullGCPtr<HTMLCollection> ParentNode::get_elements_by_tag_name(FlyString 
 
 // https://dom.spec.whatwg.org/#concept-getelementsbytagnamens
 // NOTE: This method is only exposed on Document and Element, but is in ParentNode to prevent code duplication.
-JS::NonnullGCPtr<HTMLCollection> ParentNode::get_elements_by_tag_name_ns(Optional<String> const& nullable_namespace, FlyString const& local_name)
+JS::NonnullGCPtr<HTMLCollection> ParentNode::get_elements_by_tag_name_ns(Optional<FlyString> namespace_, FlyString const& local_name)
 {
     // 1. If namespace is the empty string, set it to null.
-    Optional<FlyString> namespace_;
-    if (nullable_namespace.has_value() && !nullable_namespace->is_empty())
-        namespace_ = nullable_namespace.value();
+    if (namespace_ == FlyString {})
+        namespace_ = OptionalNone {};
 
     // 2. If both namespace and localName are "*" (U+002A), return a HTMLCollection rooted at root, whose filter matches descendant elements.
     if (namespace_ == "*" && local_name == "*") {
@@ -222,6 +225,22 @@ WebIDL::ExceptionOr<void> ParentNode::replace_children(Vector<Variant<JS::Handle
     // 3. Replace all with node within this.
     replace_all(*node);
     return {};
+}
+
+// https://dom.spec.whatwg.org/#dom-document-getelementsbyclassname
+JS::NonnullGCPtr<HTMLCollection> ParentNode::get_elements_by_class_name(StringView class_names)
+{
+    Vector<FlyString> list_of_class_names;
+    for (auto& name : class_names.split_view_if(Infra::is_ascii_whitespace)) {
+        list_of_class_names.append(FlyString::from_utf8(name).release_value_but_fixme_should_propagate_errors());
+    }
+    return HTMLCollection::create(*this, HTMLCollection::Scope::Descendants, [list_of_class_names = move(list_of_class_names), quirks_mode = document().in_quirks_mode()](Element const& element) {
+        for (auto& name : list_of_class_names) {
+            if (!element.has_class(name, quirks_mode ? CaseSensitivity::CaseInsensitive : CaseSensitivity::CaseSensitive))
+                return false;
+        }
+        return !list_of_class_names.is_empty();
+    });
 }
 
 }

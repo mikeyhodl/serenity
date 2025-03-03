@@ -5,7 +5,8 @@
 ```console
 sudo dnf install texinfo binutils-devel curl cmake mpfr-devel libmpc-devel gmp-devel e2fsprogs ninja-build patch ccache rsync @"C Development Tools and Libraries" @Virtualization
 ```
-Optional: `fuse2fs` for [building images without root](https://github.com/SerenityOS/serenity/pull/11224).
+
+Optional: `e2fsprogs` package for [building images without root](https://github.com/SerenityOS/serenity/pull/11224).
 
 ## openSUSE
 
@@ -27,35 +28,19 @@ apt-get install curl cmake libmpc-devel gmp-devel e2fsprogs libmpfr-devel ninja-
 
 ## NixOS
 
-You can use the `nix-shell` script [`Toolchain/serenity.nix`](../Toolchain/serenity.nix) to set up the environment (using your host nixpkgs):
+You can use the flake in the root directory to enter a devShell that has all the required packages and tools to build SerenityOS:
 
 ```console
-nix-shell Toolchain/serenity.nix
-
-# With a custom entrypoint, for example your favorite shell
-nix-shell --command bash Toolchain/serenity.nix
+nix develop
 ```
 
-or you can use the nix flake [`Toolchain/flake.nix`](../Toolchain/flake.nix) instead:
+Or you can use the legacy `nix-shell` tool to enter the devShell:
 
 ```console
-nix develop ./Toolchain#
-
-# With a custom entrypoint, for example your favorite shell
-nix develop ./Toolchain# --command bash
+nix-shell Toolchain
 ```
 
-You can also save this environment to a profile:
-
-```
-nix develop Toolchain --profile Toolchain/nix-profiles/dev 
-```
-
-and resume later with:
-
-```
-nix develop Toolchain/nix-profiles/dev
-```
+This will use the `Toolchain/default.nix` file and your host `nixpkgs`.
 
 ## Alpine Linux
 
@@ -77,6 +62,7 @@ apk add qemu qemu-system-x86_64 qemu-img qemu-ui-gtk qemu-audio-pa
 # build tools (samurai is a drop-in replacement for ninja)
 apk add cmake e2fsprogs grub-bios samurai mpc1-dev mpfr-dev gmp-dev ccache rsync texinfo
 ```
+
 Optional: `fuse2fs` for [building images without root](https://github.com/SerenityOS/serenity/pull/11224).
 
 ## OpenBSD prerequisites
@@ -90,4 +76,5 @@ doas pkg_add bash cmake g++ gcc git gmake gmp ninja ccache rsync coreutils qemu 
 ```console
 pkg install qemu bash cmake coreutils e2fsprogs fusefs-ext2 gcc11 git gmake ninja sudo gmp mpc mpfr ccache rsync
 ```
+
 Optional: `fusefs-ext2` for [building images without root](https://github.com/SerenityOS/serenity/pull/11224).

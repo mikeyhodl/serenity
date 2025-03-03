@@ -717,9 +717,9 @@ static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> render_thumbnail(StringView path)
         }
 
         auto mime_type = Core::guess_mime_type_based_on_filename(path);
-        auto decoded_image = maybe_client->decode_image(file->bytes(), thumbnail_size, mime_type);
-        if (!decoded_image.has_value())
-            return Error::from_string_literal("Unable to decode the image.");
+
+        // FIXME: Refactor thumbnail rendering to be more async-aware. Possibly return this promise to the caller.
+        auto decoded_image = TRY(maybe_client->decode_image(file->bytes(), {}, {}, thumbnail_size, mime_type)->await());
 
         return decoded_image;
     }));
@@ -732,7 +732,7 @@ static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> render_thumbnail(StringView path)
     auto destination = Gfx::IntRect(0, 0, (int)(bitmap->width() * scale), (int)(bitmap->height() * scale)).centered_within(thumbnail->rect());
 
     Painter painter(thumbnail);
-    painter.draw_scaled_bitmap(destination, *bitmap, bitmap->rect(), 1.f, Painter::ScalingMode::BoxSampling);
+    painter.draw_scaled_bitmap(destination, *bitmap, bitmap->rect(), 1.f, Gfx::ScalingMode::BoxSampling);
     return thumbnail;
 }
 
@@ -855,9 +855,9 @@ ErrorOr<String> FileSystemModel::column_name(int column) const
     VERIFY_NOT_REACHED();
 }
 
-bool FileSystemModel::accepts_drag(ModelIndex const& index, Vector<String> const& mime_types) const
+bool FileSystemModel::accepts_drag(ModelIndex const& index, Core::MimeData const& mime_data) const
 {
-    if (!mime_types.contains_slow("text/uri-list"sv))
+    if (!mime_data.has_urls())
         return false;
 
     if (!index.is_valid())

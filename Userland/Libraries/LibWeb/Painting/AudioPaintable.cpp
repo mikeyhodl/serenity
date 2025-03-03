@@ -6,7 +6,6 @@
 
 #include <AK/Array.h>
 #include <AK/NumberFormat.h>
-#include <LibGUI/Event.h>
 #include <LibGfx/AntiAliasingPainter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/AudioTrackList.h>
@@ -17,6 +16,8 @@
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
 
 namespace Web::Painting {
+
+JS_DEFINE_ALLOCATOR(AudioPaintable);
 
 JS::NonnullGCPtr<AudioPaintable> AudioPaintable::create(Layout::AudioBox const& layout_box)
 {
@@ -48,10 +49,10 @@ void AudioPaintable::paint(PaintContext& context, PaintPhase phase) const
     if (phase != PaintPhase::Foreground)
         return;
 
-    RecordingPainterStateSaver saver { context.recording_painter() };
+    DisplayListRecorderStateSaver saver { context.display_list_recorder() };
 
     auto audio_rect = context.rounded_device_rect(absolute_rect());
-    context.recording_painter().add_clip_rect(audio_rect.to_type<int>());
+    context.display_list_recorder().add_clip_rect(audio_rect.to_type<int>());
 
     ScopedCornerRadiusClip corner_clip { context, audio_rect, normalized_border_radii_data(ShrinkRadiiForBorders::Yes) };
 

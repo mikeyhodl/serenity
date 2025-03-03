@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <DevTools/SQLStudio/SQLStudioGML.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/StandardPaths.h>
 #include <LibDesktop/Launcher.h>
@@ -60,17 +59,7 @@ static Vector<ByteString> lookup_database_names()
     return database_names;
 }
 
-ErrorOr<NonnullRefPtr<MainWidget>> MainWidget::create()
-{
-    auto widget = TRY(try_make_ref_counted<MainWidget>());
-
-    TRY(widget->load_from_gml(sql_studio_gml));
-    TRY(widget->setup());
-
-    return widget;
-}
-
-ErrorOr<void> MainWidget::setup()
+ErrorOr<void> MainWidget::initialize()
 {
     m_new_action = GUI::Action::create("&New", { Mod_Ctrl, Key_N }, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/new.png"sv)), [this](auto&) {
         open_new_script();
@@ -474,8 +463,7 @@ void MainWidget::update_editor_actions(ScriptEditor* editor)
 
 void MainWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -494,7 +482,7 @@ void MainWidget::drop_event(GUI::DropEvent& drop_event)
             if (!scheme.bytes_as_string_view().equals_ignoring_ascii_case("file"sv))
                 continue;
 
-            auto lexical_path = LexicalPath(url.serialize_path());
+            auto lexical_path = LexicalPath(URL::percent_decode(url.serialize_path()));
             open_script_from_file(lexical_path);
         }
     }

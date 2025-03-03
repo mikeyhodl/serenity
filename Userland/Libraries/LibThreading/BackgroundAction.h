@@ -30,12 +30,13 @@ class BackgroundActionBase {
 private:
     BackgroundActionBase() = default;
 
-    static void enqueue_work(Function<void()>);
+    static void enqueue_work(ESCAPING Function<void()>);
     static Thread& background_thread();
 };
 
 template<typename Result>
-class BackgroundAction final : public Core::EventReceiver
+class BackgroundAction final
+    : public Core::EventReceiver
     , private BackgroundActionBase {
     C_OBJECT(BackgroundAction);
 
@@ -54,38 +55,42 @@ public:
     bool is_canceled() const { return m_canceled; }
 
 private:
-    BackgroundAction(Function<ErrorOr<Result>(BackgroundAction&)> action, Function<ErrorOr<void>(Result)> on_complete, Optional<Function<void(Error)>> on_error = {})
-        : m_promise(Promise::try_create().release_value_but_fixme_should_propagate_errors())
-        , m_action(move(action))
+    BackgroundAction(ESCAPING Function<ErrorOr<Result>(BackgroundAction&)> action, ESCAPING Function<ErrorOr<void>(Result)> on_complete, ESCAPING Optional<Function<void(Error)>> on_error = {})
+        : m_action(move(action))
         , m_on_complete(move(on_complete))
     {
+        auto promise = Promise::construct();
+
         if (m_on_complete) {
-            m_promise->on_resolution = [](NonnullRefPtr<Core::EventReceiver>& object) -> ErrorOr<void> {
+            promise->on_resolution = [](NonnullRefPtr<Core::EventReceiver>& object) -> ErrorOr<void> {
                 auto self = static_ptr_cast<BackgroundAction<Result>>(object);
                 VERIFY(self->m_result.has_value());
-                if (auto maybe_error = self->m_on_complete(self->m_result.value()); maybe_error.is_error())
+                if (auto maybe_error = self->m_on_complete(self->m_result.release_value()); maybe_error.is_error())
                     self->m_on_error(maybe_error.release_error());
 
                 return {};
             };
-            Core::EventLoop::current().add_job(m_promise);
+            Core::EventLoop::current().add_job(promise);
         }
 
         if (on_error.has_value())
             m_on_error = on_error.release_value();
 
-        enqueue_work([self = NonnullRefPtr(*this), origin_event_loop = &Core::EventLoop::current()]() {
+        enqueue_work([self = NonnullRefPtr(*this), promise = move(promise), origin_event_loop = &Core::EventLoop::current()]() mutable {
             auto result = self->m_action(*self);
+
             // The event loop cancels the promise when it exits.
-            self->m_canceled |= self->m_promise->is_rejected();
+            self->m_canceled |= promise->is_rejected();
+
             // All of our work was successful and we weren't cancelled; resolve the event loop's promise.
             if (!self->m_canceled && !result.is_error()) {
                 self->m_result = result.release_value();
+
                 // If there is no completion callback, we don't rely on the user keeping around the event loop.
                 if (self->m_on_complete) {
-                    origin_event_loop->deferred_invoke([self] {
+                    origin_event_loop->deferred_invoke([self, promise = move(promise)] {
                         // Our promise's resolution function will never error.
-                        (void)self->m_promise->resolve(*self);
+                        (void)promise->resolve(*self);
                     });
                     origin_event_loop->wake();
                 }
@@ -95,7 +100,8 @@ private:
                 if (result.is_error())
                     error = result.release_error();
 
-                self->m_promise->reject(Error::from_errno(ECANCELED));
+                promise->reject(Error::from_errno(ECANCELED));
+
                 if (!self->m_canceled && self->m_on_error) {
                     origin_event_loop->deferred_invoke([self, error = move(error)]() mutable {
                         self->m_on_error(move(error));
@@ -108,7 +114,6 @@ private:
         });
     }
 
-    NonnullRefPtr<Promise> m_promise;
     Function<ErrorOr<Result>(BackgroundAction&)> m_action;
     Function<ErrorOr<void>(Result)> m_on_complete;
     Function<void(Error)> m_on_error = [](Error error) {
@@ -117,5 +122,7 @@ private:
     Optional<Result> m_result;
     bool m_canceled { false };
 };
+
+void quit_background_thread();
 
 }
