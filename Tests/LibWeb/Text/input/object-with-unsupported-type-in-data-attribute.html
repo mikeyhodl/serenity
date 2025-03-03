@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<object id="object" data="data:application/x-unknown,ERROR">
+<div id="fallback">Fallback</div>
+</object>
+<script>
+test(() => {
+    println(document.body.innerText);
+});
+</script>

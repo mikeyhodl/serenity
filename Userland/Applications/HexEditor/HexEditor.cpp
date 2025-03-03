@@ -34,6 +34,15 @@
 
 namespace HexEditor {
 
+HexEditor::OffsetFormat HexEditor::offset_format_from_string(StringView string)
+{
+    if (string.equals_ignoring_ascii_case("decimal"sv)) {
+        return OffsetFormat::Decimal;
+    }
+    // Default to hex if invalid
+    return OffsetFormat::Hexadecimal;
+}
+
 HexEditor::HexEditor()
     : m_document(make<HexDocumentMemory>(ByteBuffer::create_zeroed(0).release_value_but_fixme_should_propagate_errors()))
 {
@@ -240,6 +249,24 @@ void HexEditor::update_content_size()
     update();
 }
 
+void HexEditor::set_show_offsets_column(bool value)
+{
+    if (value == m_show_offsets_column)
+        return;
+
+    m_show_offsets_column = value;
+    update_content_size();
+}
+
+void HexEditor::set_offset_format(OffsetFormat format)
+{
+    if (format == m_offset_format)
+        return;
+
+    m_offset_format = format;
+    update_content_size();
+}
+
 void HexEditor::set_bytes_per_row(size_t bytes_per_row)
 {
     if (bytes_per_row == this->bytes_per_row())
@@ -419,6 +446,64 @@ void HexEditor::scroll_position_into_view(size_t position)
         static_cast<int>(line_height() - m_line_spacing)
     };
     scroll_into_view(rect, true, true);
+}
+
+size_t HexEditor::total_rows() const
+{
+    return ceil_div(m_content_length, bytes_per_row());
+}
+
+size_t HexEditor::line_height() const
+{
+    return font().pixel_size_rounded_up() + m_line_spacing;
+}
+
+size_t HexEditor::character_width() const
+{
+    return font().glyph_fixed_width();
+}
+
+size_t HexEditor::cell_gap() const
+{
+    return character_width() / 2;
+}
+
+size_t HexEditor::cell_width() const
+{
+    return character_width() * 2 + cell_gap();
+}
+
+size_t HexEditor::group_gap() const
+{
+    return character_width() * 1.5;
+}
+
+size_t HexEditor::group_width() const
+{
+    return (character_width() * 2 * bytes_per_group())
+        + (cell_gap() * (bytes_per_group() - 1))
+        + group_gap();
+}
+
+int HexEditor::offset_area_width() const
+{
+    if (!m_show_offsets_column)
+        return 0;
+    // By a fun coincidence, decimal and hexadecimal are both 10 characters for the 32-bit range.
+    // (decimal is up to 10 digits; hex is 8 digits with a 2-character prefix)
+    return m_padding + font().width_rounded_up("0X12345678"sv) + m_padding;
+}
+
+int HexEditor::hex_area_width() const
+{
+    return m_padding
+        + groups_per_row() * group_width() - group_gap()
+        + m_padding;
+}
+
+int HexEditor::text_area_width() const
+{
+    return m_padding + bytes_per_row() * character_width() + m_padding;
 }
 
 void HexEditor::keydown_event(GUI::KeyEvent& event)
@@ -623,14 +708,16 @@ void HexEditor::paint_event(GUI::PaintEvent& event)
     int text_area_start_x = hex_area_start_x + hex_area_width();
     int text_area_text_start_x = text_area_start_x + m_padding;
 
-    Gfx::IntRect offset_clip_rect {
-        0,
-        vertical_scrollbar().value(),
-        offset_area_width(),
-        height() - height_occupied_by_horizontal_scrollbar() //(total_rows() * line_height()) + 5
-    };
-    painter.fill_rect(offset_clip_rect, palette().ruler());
-    painter.draw_line(offset_clip_rect.top_right(), offset_clip_rect.bottom_right(), palette().ruler_border());
+    if (m_show_offsets_column) {
+        Gfx::IntRect offset_clip_rect {
+            0,
+            vertical_scrollbar().value(),
+            offset_area_width(),
+            height() - height_occupied_by_horizontal_scrollbar()
+        };
+        painter.fill_rect(offset_clip_rect, palette().ruler());
+        painter.draw_line(offset_clip_rect.top_right(), offset_clip_rect.bottom_right(), palette().ruler_border());
+    }
 
     painter.draw_line({ text_area_start_x, 0 },
         { text_area_start_x, vertical_scrollbar().value() + (height() - height_occupied_by_horizontal_scrollbar()) },
@@ -645,21 +732,31 @@ void HexEditor::paint_event(GUI::PaintEvent& event)
         int row_background_y = row_text_y - m_line_spacing / 2;
 
         // Paint offsets
-        Gfx::IntRect side_offset_rect {
-            offset_area_text_start_x,
-            row_text_y,
-            width() - width_occupied_by_vertical_scrollbar(),
-            height() - height_occupied_by_horizontal_scrollbar()
-        };
+        if (m_show_offsets_column) {
+            Gfx::IntRect side_offset_rect {
+                offset_area_text_start_x,
+                row_text_y,
+                width() - width_occupied_by_vertical_scrollbar(),
+                height() - height_occupied_by_horizontal_scrollbar()
+            };
 
-        bool is_current_line = (m_position / bytes_per_row()) == row;
-        auto offset_text = String::formatted("{:#08X}", row * bytes_per_row()).release_value_but_fixme_should_propagate_errors();
-        painter.draw_text(
-            side_offset_rect,
-            offset_text,
-            is_current_line ? font().bold_variant() : font(),
-            Gfx::TextAlignment::TopLeft,
-            is_current_line ? palette().ruler_active_text() : palette().ruler_inactive_text());
+            bool is_current_line = (m_position / bytes_per_row()) == row;
+            String offset_text;
+            switch (m_offset_format) {
+            case OffsetFormat::Decimal:
+                offset_text = MUST(String::formatted("{:010d}", row * bytes_per_row()));
+                break;
+            case OffsetFormat::Hexadecimal:
+                offset_text = MUST(String::formatted("{:#08X}", row * bytes_per_row()));
+                break;
+            }
+            painter.draw_text(
+                side_offset_rect,
+                offset_text,
+                is_current_line ? font().bold_variant() : font(),
+                Gfx::TextAlignment::TopLeft,
+                is_current_line ? palette().ruler_active_text() : palette().ruler_inactive_text());
+        }
 
         // Paint bytes
         for (size_t column = 0; column < bytes_per_row(); column++) {

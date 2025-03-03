@@ -94,7 +94,7 @@ public:
 
     void set_startup_process_id(pid_t pid) { m_startup_process_id = pid; }
 
-    const StringView color_scheme_name() const { return m_color_scheme_name; }
+    StringView const color_scheme_name() const { return m_color_scheme_name; }
 
     Function<void(StringView)> on_title_change;
     Function<void(Gfx::IntSize)> on_terminal_size_change;
@@ -195,7 +195,7 @@ private:
     // Snapshot of m_hovered_href when opening a context menu for a hyperlink.
     ByteString m_context_menu_href;
 
-    Gfx::Color m_colors[256];
+    Array<Gfx::Color, 256> m_colors;
     Gfx::Color m_default_foreground_color;
     Gfx::Color m_default_background_color;
     bool m_show_bold_text_as_bright { true };

@@ -100,7 +100,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         window->move_to_front();
 
-        auto path = urls.first().serialize_path();
+        auto path = URL::percent_decode(urls.first().serialize_path());
         auto result = FileSystemAccessClient::Client::the().request_file_read_only_approved(window, path);
         if (result.is_error())
             return;
@@ -109,7 +109,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         widget.open_file(MUST(String::from_byte_string(value.filename())), value.stream());
 
         for (size_t i = 1; i < urls.size(); ++i) {
-            Desktop::Launcher::open(URL::create_with_file_scheme(urls[i].serialize_path().characters()), "/bin/ImageViewer");
+            Desktop::Launcher::open(URL::create_with_file_scheme(URL::percent_decode(urls[i].serialize_path()).characters()), "/bin/ImageViewer");
         }
     };
     widget.on_doubleclick = [&] {
@@ -254,21 +254,21 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     });
 
     auto nearest_neighbor_action = GUI::Action::create_checkable("&Nearest Neighbor", [&](auto&) {
-        widget.set_scaling_mode(Gfx::Painter::ScalingMode::NearestNeighbor);
+        widget.set_scaling_mode(Gfx::ScalingMode::NearestNeighbor);
     });
-    nearest_neighbor_action->set_checked(true);
 
     auto smooth_pixels_action = GUI::Action::create_checkable("&Smooth Pixels", [&](auto&) {
-        widget.set_scaling_mode(Gfx::Painter::ScalingMode::SmoothPixels);
+        widget.set_scaling_mode(Gfx::ScalingMode::SmoothPixels);
     });
 
     auto bilinear_action = GUI::Action::create_checkable("&Bilinear", [&](auto&) {
-        widget.set_scaling_mode(Gfx::Painter::ScalingMode::BilinearBlend);
+        widget.set_scaling_mode(Gfx::ScalingMode::BilinearBlend);
     });
 
     auto box_sampling_action = GUI::Action::create_checkable("B&ox Sampling", [&](auto&) {
-        widget.set_scaling_mode(Gfx::Painter::ScalingMode::BoxSampling);
+        widget.set_scaling_mode(Gfx::ScalingMode::BoxSampling);
     });
+    box_sampling_action->set_checked(true);
 
     widget.on_image_change = [&](Image const* image) {
         bool should_enable_image_actions = (image != nullptr);

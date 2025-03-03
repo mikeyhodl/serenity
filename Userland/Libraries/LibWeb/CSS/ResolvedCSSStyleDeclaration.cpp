@@ -15,13 +15,12 @@
 #include <LibWeb/CSS/StyleValues/BackgroundRepeatStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BackgroundSizeStyleValue.h>
 #include <LibWeb/CSS/StyleValues/BorderRadiusStyleValue.h>
-#include <LibWeb/CSS/StyleValues/CalculatedStyleValue.h>
-#include <LibWeb/CSS/StyleValues/ColorStyleValue.h>
+#include <LibWeb/CSS/StyleValues/CSSColorValue.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
+#include <LibWeb/CSS/StyleValues/CSSMathValue.h>
 #include <LibWeb/CSS/StyleValues/EdgeStyleValue.h>
 #include <LibWeb/CSS/StyleValues/GridTrackPlacementStyleValue.h>
 #include <LibWeb/CSS/StyleValues/GridTrackSizeListStyleValue.h>
-#include <LibWeb/CSS/StyleValues/IdentifierStyleValue.h>
-#include <LibWeb/CSS/StyleValues/InitialStyleValue.h>
 #include <LibWeb/CSS/StyleValues/IntegerStyleValue.h>
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
@@ -46,14 +45,15 @@ namespace Web::CSS {
 
 JS_DEFINE_ALLOCATOR(ResolvedCSSStyleDeclaration);
 
-JS::NonnullGCPtr<ResolvedCSSStyleDeclaration> ResolvedCSSStyleDeclaration::create(DOM::Element& element)
+JS::NonnullGCPtr<ResolvedCSSStyleDeclaration> ResolvedCSSStyleDeclaration::create(DOM::Element& element, Optional<Selector::PseudoElement::Type> pseudo_element)
 {
-    return element.realm().heap().allocate<ResolvedCSSStyleDeclaration>(element.realm(), element);
+    return element.realm().heap().allocate<ResolvedCSSStyleDeclaration>(element.realm(), element, move(pseudo_element));
 }
 
-ResolvedCSSStyleDeclaration::ResolvedCSSStyleDeclaration(DOM::Element& element)
+ResolvedCSSStyleDeclaration::ResolvedCSSStyleDeclaration(DOM::Element& element, Optional<CSS::Selector::PseudoElement::Type> pseudo_element)
     : CSSStyleDeclaration(element.realm())
     , m_element(element)
+    , m_pseudo_element(move(pseudo_element))
 {
 }
 
@@ -76,13 +76,13 @@ String ResolvedCSSStyleDeclaration::item(size_t index) const
 {
     // The item(index) method must return the property name of the CSS declaration at position index.
     // FIXME: Return custom properties if index > last_longhand_property_id.
-    if (index > length())
+    if (index >= length())
         return {};
     auto property_id = static_cast<PropertyID>(index + to_underlying(first_longhand_property_id));
     return string_from_property_id(property_id).to_string();
 }
 
-static NonnullRefPtr<StyleValue const> style_value_for_background_property(Layout::NodeWithStyle const& layout_node, Function<NonnullRefPtr<StyleValue const>(BackgroundLayerData const&)> callback, Function<NonnullRefPtr<StyleValue const>()> default_value)
+static NonnullRefPtr<CSSStyleValue const> style_value_for_background_property(Layout::NodeWithStyle const& layout_node, Function<NonnullRefPtr<CSSStyleValue const>(BackgroundLayerData const&)> callback, Function<NonnullRefPtr<CSSStyleValue const>()> default_value)
 {
     auto const& background_layers = layout_node.background_layers();
     if (background_layers.is_empty())
@@ -96,10 +96,10 @@ static NonnullRefPtr<StyleValue const> style_value_for_background_property(Layou
     return StyleValueList::create(move(values), StyleValueList::Separator::Comma);
 }
 
-static NonnullRefPtr<StyleValue const> style_value_for_length_percentage(LengthPercentage const& length_percentage)
+static NonnullRefPtr<CSSStyleValue const> style_value_for_length_percentage(LengthPercentage const& length_percentage)
 {
     if (length_percentage.is_auto())
-        return IdentifierStyleValue::create(ValueID::Auto);
+        return CSSKeywordValue::create(Keyword::Auto);
     if (length_percentage.is_percentage())
         return PercentageStyleValue::create(length_percentage.percentage());
     if (length_percentage.is_length())
@@ -107,29 +107,29 @@ static NonnullRefPtr<StyleValue const> style_value_for_length_percentage(LengthP
     return length_percentage.calculated();
 }
 
-static NonnullRefPtr<StyleValue const> style_value_for_size(Size const& size)
+static NonnullRefPtr<CSSStyleValue const> style_value_for_size(Size const& size)
 {
     if (size.is_none())
-        return IdentifierStyleValue::create(ValueID::None);
+        return CSSKeywordValue::create(Keyword::None);
     if (size.is_percentage())
         return PercentageStyleValue::create(size.percentage());
     if (size.is_length())
         return LengthStyleValue::create(size.length());
     if (size.is_auto())
-        return IdentifierStyleValue::create(ValueID::Auto);
+        return CSSKeywordValue::create(Keyword::Auto);
     if (size.is_calculated())
         return size.calculated();
     if (size.is_min_content())
-        return IdentifierStyleValue::create(ValueID::MinContent);
+        return CSSKeywordValue::create(Keyword::MinContent);
     if (size.is_max_content())
-        return IdentifierStyleValue::create(ValueID::MaxContent);
+        return CSSKeywordValue::create(Keyword::MaxContent);
     // FIXME: Support fit-content(<length>)
     if (size.is_fit_content())
-        return IdentifierStyleValue::create(ValueID::FitContent);
+        return CSSKeywordValue::create(Keyword::FitContent);
     TODO();
 }
 
-static NonnullRefPtr<StyleValue const> style_value_for_sided_shorthand(ValueComparingNonnullRefPtr<StyleValue const> top, ValueComparingNonnullRefPtr<StyleValue const> right, ValueComparingNonnullRefPtr<StyleValue const> bottom, ValueComparingNonnullRefPtr<StyleValue const> left)
+static NonnullRefPtr<CSSStyleValue const> style_value_for_sided_shorthand(ValueComparingNonnullRefPtr<CSSStyleValue const> top, ValueComparingNonnullRefPtr<CSSStyleValue const> right, ValueComparingNonnullRefPtr<CSSStyleValue const> bottom, ValueComparingNonnullRefPtr<CSSStyleValue const> left)
 {
     bool top_and_bottom_same = top == bottom;
     bool left_and_right_same = left == right;
@@ -152,7 +152,7 @@ enum class LogicalSide {
     InlineStart,
     InlineEnd,
 };
-static RefPtr<StyleValue const> style_value_for_length_box_logical_side(Layout::NodeWithStyle const&, LengthBox const& box, LogicalSide logical_side)
+static RefPtr<CSSStyleValue const> style_value_for_length_box_logical_side(Layout::NodeWithStyle const&, LengthBox const& box, LogicalSide logical_side)
 {
     // FIXME: Actually determine the logical sides based on layout_node's writing-mode and direction.
     switch (logical_side) {
@@ -168,14 +168,14 @@ static RefPtr<StyleValue const> style_value_for_length_box_logical_side(Layout::
     VERIFY_NOT_REACHED();
 }
 
-static RefPtr<StyleValue const> style_value_for_shadow(Vector<ShadowData> const& shadow_data)
+static RefPtr<CSSStyleValue const> style_value_for_shadow(Vector<ShadowData> const& shadow_data)
 {
     if (shadow_data.is_empty())
-        return IdentifierStyleValue::create(ValueID::None);
+        return CSSKeywordValue::create(Keyword::None);
 
     auto make_shadow_style_value = [](ShadowData const& shadow) {
         return ShadowStyleValue::create(
-            shadow.color,
+            CSSColorValue::create_from_color(shadow.color),
             style_value_for_length_percentage(shadow.offset_x),
             style_value_for_length_percentage(shadow.offset_y),
             style_value_for_length_percentage(shadow.blur_radius),
@@ -194,8 +194,26 @@ static RefPtr<StyleValue const> style_value_for_shadow(Vector<ShadowData> const&
     return StyleValueList::create(move(style_values), StyleValueList::Separator::Comma);
 }
 
-RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(Layout::NodeWithStyle const& layout_node, PropertyID property_id) const
+RefPtr<CSSStyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(Layout::NodeWithStyle const& layout_node, PropertyID property_id) const
 {
+    auto used_value_for_property = [&layout_node, property_id](Function<CSSPixels(Painting::PaintableBox const&)>&& used_value_getter) -> Optional<CSSPixels> {
+        auto const& display = layout_node.computed_values().display();
+        if (!display.is_none() && !display.is_contents() && layout_node.paintable()) {
+            if (layout_node.paintable()->is_paintable_box()) {
+                auto const& paintable_box = static_cast<Painting::PaintableBox const&>(*layout_node.paintable());
+                return used_value_getter(paintable_box);
+            }
+            dbgln("FIXME: Support getting used value for property `{}` on {}", string_from_property_id(property_id), layout_node.debug_description());
+        }
+        return {};
+    };
+
+    auto get_computed_value = [this](PropertyID property_id) {
+        if (m_pseudo_element.has_value())
+            return m_element->pseudo_element_computed_css_values(m_pseudo_element.value())->property(property_id);
+        return m_element->computed_css_values()->property(property_id);
+    };
+
     // A limited number of properties have special rules for producing their "resolved value".
     // We also have to manually construct shorthands from their longhands here.
     // Everything else uses the computed value.
@@ -219,23 +237,23 @@ RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(L
         // -> A resolved value special case property like color defined in another specification
         //    The resolved value is the used value.
     case PropertyID::BackgroundColor:
-        return ColorStyleValue::create(layout_node.computed_values().background_color());
+        return CSSColorValue::create_from_color(layout_node.computed_values().background_color());
     case PropertyID::BorderBottomColor:
-        return ColorStyleValue::create(layout_node.computed_values().border_bottom().color);
+        return CSSColorValue::create_from_color(layout_node.computed_values().border_bottom().color);
     case PropertyID::BorderLeftColor:
-        return ColorStyleValue::create(layout_node.computed_values().border_left().color);
+        return CSSColorValue::create_from_color(layout_node.computed_values().border_left().color);
     case PropertyID::BorderRightColor:
-        return ColorStyleValue::create(layout_node.computed_values().border_right().color);
+        return CSSColorValue::create_from_color(layout_node.computed_values().border_right().color);
     case PropertyID::BorderTopColor:
-        return ColorStyleValue::create(layout_node.computed_values().border_top().color);
+        return CSSColorValue::create_from_color(layout_node.computed_values().border_top().color);
     case PropertyID::BoxShadow:
         return style_value_for_shadow(layout_node.computed_values().box_shadow());
     case PropertyID::Color:
-        return ColorStyleValue::create(layout_node.computed_values().color());
+        return CSSColorValue::create_from_color(layout_node.computed_values().color());
     case PropertyID::OutlineColor:
-        return ColorStyleValue::create(layout_node.computed_values().outline_color());
+        return CSSColorValue::create_from_color(layout_node.computed_values().outline_color());
     case PropertyID::TextDecorationColor:
-        return ColorStyleValue::create(layout_node.computed_values().text_decoration_color());
+        return CSSColorValue::create_from_color(layout_node.computed_values().text_decoration_color());
         // NOTE: text-shadow isn't listed, but is computed the same as box-shadow.
     case PropertyID::TextShadow:
         return style_value_for_shadow(layout_node.computed_values().text_shadow());
@@ -243,8 +261,8 @@ RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(L
         // -> line-height
         //    The resolved value is normal if the computed value is normal, or the used value otherwise.
     case PropertyID::LineHeight: {
-        auto line_height = static_cast<DOM::Element const&>(*layout_node.dom_node()).computed_css_values()->property(property_id);
-        if (line_height->is_identifier() && line_height->to_identifier() == ValueID::Normal)
+        auto line_height = get_computed_value(property_id);
+        if (line_height->is_keyword() && line_height->to_keyword() == Keyword::Normal)
             return line_height;
         return LengthStyleValue::create(Length::make_px(layout_node.computed_values().line_height()));
     }
@@ -269,20 +287,13 @@ RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(L
         // -> padding-right
         // -> padding-top
         // -> width
-        // -> A resolved value special case property like height defined in another specification
-    case PropertyID::Height: {
         // If the property applies to the element or pseudo-element and the resolved value of the
         // display property is not none or contents, then the resolved value is the used value.
         // Otherwise the resolved value is the computed value.
-        auto const& display = layout_node.computed_values().display();
-        if (!display.is_none() && !display.is_contents() && layout_node.paintable()) {
-            if (layout_node.paintable()->is_paintable_box()) {
-                auto const& paintable_box = static_cast<Painting::PaintableBox const&>(*layout_node.paintable());
-                auto const used_height = paintable_box.content_height();
-                return style_value_for_size(Size::make_px(used_height));
-            }
-            dbgln("FIXME: Support getting used height for ({})", layout_node.debug_description());
-        }
+    case PropertyID::Height: {
+        auto maybe_used_height = used_value_for_property([](auto const& paintable_box) { return paintable_box.content_height(); });
+        if (maybe_used_height.has_value())
+            return style_value_for_size(Size::make_px(maybe_used_height.release_value()));
         return style_value_for_size(layout_node.computed_values().height());
     }
     case PropertyID::MarginBlockEnd:
@@ -317,8 +328,12 @@ RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(L
         return style_value_for_length_percentage(layout_node.computed_values().padding().right());
     case PropertyID::PaddingTop:
         return style_value_for_length_percentage(layout_node.computed_values().padding().top());
-    case PropertyID::Width:
+    case PropertyID::Width: {
+        auto maybe_used_width = used_value_for_property([](auto const& paintable_box) { return paintable_box.content_width(); });
+        if (maybe_used_width.has_value())
+            return style_value_for_size(Size::make_px(maybe_used_width.release_value()));
         return style_value_for_size(layout_node.computed_values().width());
+    }
 
         // -> bottom
         // -> left
@@ -354,7 +369,7 @@ RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(L
     case PropertyID::Transform: {
         auto transformations = layout_node.computed_values().transformations();
         if (transformations.is_empty())
-            return IdentifierStyleValue::create(ValueID::None);
+            return CSSKeywordValue::create(Keyword::None);
 
         // https://drafts.csswg.org/css-transforms-2/#serialization-of-the-computed-value
         // The transform property is a resolved value special case property. [CSSOM]
@@ -441,12 +456,12 @@ RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(L
     case PropertyID::BackgroundPosition:
         return style_value_for_background_property(
             layout_node,
-            [](auto& layer) -> NonnullRefPtr<StyleValue> {
+            [](auto& layer) -> NonnullRefPtr<CSSStyleValue> {
                 return PositionStyleValue::create(
                     EdgeStyleValue::create(layer.position_edge_x, layer.position_offset_x),
                     EdgeStyleValue::create(layer.position_edge_y, layer.position_offset_y));
             },
-            []() -> NonnullRefPtr<StyleValue> {
+            []() -> NonnullRefPtr<CSSStyleValue> {
                 return PositionStyleValue::create(
                     EdgeStyleValue::create(PositionEdge::Left, Percentage(0)),
                     EdgeStyleValue::create(PositionEdge::Top, Percentage(0)));
@@ -497,14 +512,16 @@ RefPtr<StyleValue const> ResolvedCSSStyleDeclaration::style_value_for_property(L
         auto left = style_value_for_property(layout_node, PropertyID::PaddingLeft);
         return style_value_for_sided_shorthand(top.release_nonnull(), right.release_nonnull(), bottom.release_nonnull(), left.release_nonnull());
     }
+    case PropertyID::WebkitTextFillColor:
+        return CSSColorValue::create_from_color(layout_node.computed_values().webkit_text_fill_color());
     case PropertyID::Invalid:
-        return IdentifierStyleValue::create(ValueID::Invalid);
+        return CSSKeywordValue::create(Keyword::Invalid);
     case PropertyID::Custom:
         dbgln_if(LIBWEB_CSS_DEBUG, "Computed style for custom properties was requested (?)");
         return nullptr;
     default:
         if (!property_is_shorthand(property_id))
-            return static_cast<DOM::Element const&>(*layout_node.dom_node()).computed_css_values()->property(property_id);
+            return get_computed_value(property_id);
 
         // Handle shorthands in a generic way
         auto longhand_ids = longhands_for_shorthand(property_id);
@@ -523,18 +540,27 @@ Optional<StyleProperty> ResolvedCSSStyleDeclaration::property(PropertyID propert
     if (!m_element->is_connected())
         return {};
 
+    auto get_layout_node = [&]() {
+        if (m_pseudo_element.has_value())
+            return m_element->get_pseudo_element_node(m_pseudo_element.value());
+        return m_element->layout_node();
+    };
+
+    Layout::NodeWithStyle* layout_node = get_layout_node();
+
     // FIXME: Be smarter about updating layout if there's no layout node.
     //        We may legitimately have no layout node if we're not visible, but this protects against situations
     //        where we're requesting the computed style before layout has happened.
-    if (!m_element->layout_node() || property_affects_layout(property_id)) {
+    if (!layout_node || property_affects_layout(property_id)) {
         const_cast<DOM::Document&>(m_element->document()).update_layout();
+        layout_node = get_layout_node();
     } else {
         // FIXME: If we had a way to update style for a single element, this would be a good place to use it.
         const_cast<DOM::Document&>(m_element->document()).update_style();
     }
 
-    if (!m_element->layout_node()) {
-        auto style = m_element->document().style_computer().compute_style(const_cast<DOM::Element&>(*m_element));
+    if (!layout_node) {
+        auto style = m_element->document().style_computer().compute_style(const_cast<DOM::Element&>(*m_element), m_pseudo_element);
 
         // FIXME: This is a stopgap until we implement shorthand -> longhand conversion.
         auto value = style->maybe_null_property(property_id);
@@ -548,8 +574,7 @@ Optional<StyleProperty> ResolvedCSSStyleDeclaration::property(PropertyID propert
         };
     }
 
-    auto& layout_node = *m_element->layout_node();
-    auto value = style_value_for_property(layout_node, property_id);
+    auto value = style_value_for_property(*layout_node, property_id);
     if (!value)
         return {};
     return StyleProperty {
@@ -558,18 +583,42 @@ Optional<StyleProperty> ResolvedCSSStyleDeclaration::property(PropertyID propert
     };
 }
 
+static WebIDL::ExceptionOr<void> cannot_modify_computed_property_error(JS::Realm& realm)
+{
+    return WebIDL::NoModificationAllowedError::create(realm, "Cannot modify properties in result of getComputedStyle()"_string);
+}
+
 // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-setproperty
 WebIDL::ExceptionOr<void> ResolvedCSSStyleDeclaration::set_property(PropertyID, StringView, StringView)
 {
     // 1. If the computed flag is set, then throw a NoModificationAllowedError exception.
-    return WebIDL::NoModificationAllowedError::create(realm(), "Cannot modify properties in result of getComputedStyle()"_fly_string);
+    return cannot_modify_computed_property_error(realm());
+}
+
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-setproperty
+WebIDL::ExceptionOr<void> ResolvedCSSStyleDeclaration::set_property(StringView, StringView, StringView)
+{
+    // 1. If the computed flag is set, then throw a NoModificationAllowedError exception.
+    return cannot_modify_computed_property_error(realm());
+}
+
+static WebIDL::ExceptionOr<String> cannot_remove_computed_property_error(JS::Realm& realm)
+{
+    return WebIDL::NoModificationAllowedError::create(realm, "Cannot remove properties from result of getComputedStyle()"_string);
 }
 
 // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty
 WebIDL::ExceptionOr<String> ResolvedCSSStyleDeclaration::remove_property(PropertyID)
 {
     // 1. If the computed flag is set, then throw a NoModificationAllowedError exception.
-    return WebIDL::NoModificationAllowedError::create(realm(), "Cannot remove properties from result of getComputedStyle()"_fly_string);
+    return cannot_remove_computed_property_error(realm());
+}
+
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty
+WebIDL::ExceptionOr<String> ResolvedCSSStyleDeclaration::remove_property(StringView)
+{
+    // 1. If the computed flag is set, then throw a NoModificationAllowedError exception.
+    return cannot_remove_computed_property_error(realm());
 }
 
 String ResolvedCSSStyleDeclaration::serialized() const
@@ -586,7 +635,7 @@ String ResolvedCSSStyleDeclaration::serialized() const
 WebIDL::ExceptionOr<void> ResolvedCSSStyleDeclaration::set_css_text(StringView)
 {
     // 1. If the computed flag is set, then throw a NoModificationAllowedError exception.
-    return WebIDL::NoModificationAllowedError::create(realm(), "Cannot modify properties in result of getComputedStyle()"_fly_string);
+    return WebIDL::NoModificationAllowedError::create(realm(), "Cannot modify properties in result of getComputedStyle()"_string);
 }
 
 }

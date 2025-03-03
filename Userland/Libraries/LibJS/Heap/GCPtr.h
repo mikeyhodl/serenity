@@ -177,7 +177,7 @@ public:
 
     T* ptr() const { return m_ptr; }
 
-    operator bool() const { return !!m_ptr; }
+    explicit operator bool() const { return !!m_ptr; }
     bool operator!() const { return !m_ptr; }
 
     operator T*() const { return m_ptr; }
@@ -185,6 +185,14 @@ public:
 private:
     T* m_ptr { nullptr };
 };
+
+// Non-Owning GCPtr
+template<typename T>
+using RawGCPtr = GCPtr<T>;
+
+// Non-Owning NonnullGCPtr
+template<typename T>
+using RawNonnullGCPtr = NonnullGCPtr<T>;
 
 template<typename T, typename U>
 inline bool operator==(GCPtr<T> const& a, GCPtr<U> const& b)

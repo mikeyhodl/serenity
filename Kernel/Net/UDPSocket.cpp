@@ -6,6 +6,7 @@
 
 #include <AK/Singleton.h>
 #include <Kernel/Devices/Generic/RandomDevice.h>
+#include <Kernel/Net/IP/IP.h>
 #include <Kernel/Net/NetworkAdapter.h>
 #include <Kernel/Net/Routing.h>
 #include <Kernel/Net/UDP.h>
@@ -91,7 +92,7 @@ ErrorOr<size_t> UDPSocket::protocol_send(UserOrKernelBuffer const& data, size_t 
         return set_so_error(EHOSTUNREACH);
     auto ipv4_payload_offset = routing_decision.adapter->ipv4_payload_offset();
     data_length = min(data_length, routing_decision.adapter->mtu() - ipv4_payload_offset - sizeof(UDPPacket));
-    const size_t udp_buffer_size = sizeof(UDPPacket) + data_length;
+    size_t const udp_buffer_size = sizeof(UDPPacket) + data_length;
     auto packet = routing_decision.adapter->acquire_packet_buffer(ipv4_payload_offset + udp_buffer_size);
     if (!packet)
         return set_so_error(ENOMEM);
@@ -102,7 +103,7 @@ ErrorOr<size_t> UDPSocket::protocol_send(UserOrKernelBuffer const& data, size_t 
     udp_packet.set_length(udp_buffer_size);
     SOCKET_TRY(data.read(udp_packet.payload(), data_length));
     routing_decision.adapter->fill_in_ipv4_header(*packet, local_address(), routing_decision.next_hop,
-        peer_address(), IPv4Protocol::UDP, udp_buffer_size, type_of_service(), ttl());
+        peer_address(), TransportProtocol::UDP, udp_buffer_size, type_of_service(), ttl());
     routing_decision.adapter->send_packet(packet->bytes());
     return data_length;
 }

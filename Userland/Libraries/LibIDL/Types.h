@@ -125,7 +125,7 @@ public:
     bool is_integer() const { return is_plain() && m_name.is_one_of("byte", "octet", "short", "unsigned short", "long", "unsigned long", "long long", "unsigned long long"); }
 
     // https://webidl.spec.whatwg.org/#dfn-numeric-type
-    bool is_numeric() const { return is_plain() && (is_integer() || m_name.is_one_of("float", "unrestricted float", "double", "unrestricted double")); }
+    bool is_numeric() const { return is_plain() && (is_integer() || is_floating_point()); }
 
     // https://webidl.spec.whatwg.org/#dfn-primitive-type
     bool is_primitive() const { return is_plain() && (is_numeric() || is_boolean() || m_name == "bigint"); }
@@ -137,6 +137,10 @@ public:
     bool is_distinguishable_from(Interface const&, Type const& other) const;
 
     bool is_json(Interface const&) const;
+
+    bool is_restricted_floating_point() const { return m_name.is_one_of("float", "double"); }
+    bool is_unrestricted_floating_point() const { return m_name.is_one_of("unrestricted float", "unrestricted double"); }
+    bool is_floating_point() const { return is_restricted_floating_point() || is_unrestricted_floating_point(); }
 
 private:
     Kind m_kind;
@@ -169,6 +173,8 @@ struct Constructor {
     ByteString name;
     Vector<Parameter> parameters;
     HashMap<ByteString, ByteString> extended_attributes;
+    size_t overload_index { 0 };
+    bool is_overloaded { false };
 
     size_t shortest_length() const { return get_function_shortest_length(*this); }
 };
@@ -268,6 +274,7 @@ public:
     HashMap<ByteString, ByteString> extended_attributes;
 
     Vector<Attribute> attributes;
+    Vector<Attribute> static_attributes;
     Vector<Constant> constants;
     Vector<Constructor> constructors;
     Vector<Function> functions;
@@ -278,6 +285,8 @@ public:
 
     Optional<NonnullRefPtr<Type const>> value_iterator_type;
     Optional<Tuple<NonnullRefPtr<Type const>, NonnullRefPtr<Type const>>> pair_iterator_types;
+    Optional<NonnullRefPtr<Type const>> set_entry_type;
+    bool is_set_readonly { false };
 
     Optional<Function> named_property_getter;
     Optional<Function> named_property_setter;
@@ -303,11 +312,11 @@ public:
     HashMap<ByteString, HashTable<ByteString>> included_mixins;
 
     ByteString module_own_path;
-    HashTable<ByteString> required_imported_paths;
     Vector<Interface&> imported_modules;
 
     HashMap<ByteString, Vector<Function&>> overload_sets;
     HashMap<ByteString, Vector<Function&>> static_overload_sets;
+    HashMap<ByteString, Vector<Constructor&>> constructor_overload_sets;
 
     // https://webidl.spec.whatwg.org/#dfn-support-indexed-properties
     bool supports_indexed_properties() const { return indexed_property_getter.has_value(); }

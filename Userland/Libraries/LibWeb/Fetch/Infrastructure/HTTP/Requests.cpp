@@ -28,14 +28,11 @@ void Request::visit_edges(JS::Cell::Visitor& visitor)
     m_body.visit(
         [&](JS::NonnullGCPtr<Body>& body) { visitor.visit(body); },
         [](auto&) {});
-    m_reserved_client.visit(
-        [&](JS::GCPtr<HTML::EnvironmentSettingsObject> const& value) { visitor.visit(value); },
-        [](auto const&) {});
+    visitor.visit(m_reserved_client);
     m_window.visit(
         [&](JS::GCPtr<HTML::EnvironmentSettingsObject> const& value) { visitor.visit(value); },
         [](auto const&) {});
-    for (auto const& pending_response : m_pending_responses)
-        visitor.visit(pending_response);
+    visitor.visit(m_pending_responses);
 }
 
 JS::NonnullGCPtr<Request> Request::create(JS::VM& vm)
@@ -102,12 +99,13 @@ bool Request::destination_is_script_like() const
 // https://fetch.spec.whatwg.org/#subresource-request
 bool Request::is_subresource_request() const
 {
-    // A subresource request is a request whose destination is "audio", "audioworklet", "font", "image", "manifest", "paintworklet", "script", "style", "track", "video", "xslt", or the empty string.
+    // A subresource request is a request whose destination is "audio", "audioworklet", "font", "image", "json", "manifest", "paintworklet", "script", "style", "track", "video", "xslt", or the empty string.
     static constexpr Array subresource_request_destinations = {
         Destination::Audio,
         Destination::AudioWorklet,
         Destination::Font,
         Destination::Image,
+        Destination::JSON,
         Destination::Manifest,
         Destination::PaintWorklet,
         Destination::Script,
@@ -174,9 +172,9 @@ bool Request::has_redirect_tainted_origin() const
         }
 
         // 2. If url’s origin is not same origin with lastURL’s origin and request’s origin is not same origin with lastURL’s origin, then return true.
-        auto const* request_origin = m_origin.get_pointer<HTML::Origin>();
-        if (!DOMURL::url_origin(url).is_same_origin(DOMURL::url_origin(*last_url))
-            && (request_origin == nullptr || !request_origin->is_same_origin(DOMURL::url_origin(*last_url)))) {
+        auto const* request_origin = m_origin.get_pointer<URL::Origin>();
+        if (!url.origin().is_same_origin(last_url->origin())
+            && (request_origin == nullptr || !request_origin->is_same_origin(last_url->origin()))) {
             return true;
         }
 
@@ -189,21 +187,21 @@ bool Request::has_redirect_tainted_origin() const
 }
 
 // https://fetch.spec.whatwg.org/#serializing-a-request-origin
-ErrorOr<String> Request::serialize_origin() const
+String Request::serialize_origin() const
 {
     // 1. If request has a redirect-tainted origin, then return "null".
     if (has_redirect_tainted_origin())
         return "null"_string;
 
     // 2. Return request’s origin, serialized.
-    return String::from_byte_string(m_origin.get<HTML::Origin>().serialize());
+    return MUST(String::from_byte_string(m_origin.get<URL::Origin>().serialize()));
 }
 
 // https://fetch.spec.whatwg.org/#byte-serializing-a-request-origin
-ErrorOr<ByteBuffer> Request::byte_serialize_origin() const
+ByteBuffer Request::byte_serialize_origin() const
 {
     // Byte-serializing a request origin, given a request request, is to return the result of serializing a request origin with request, isomorphic encoded.
-    return ByteBuffer::copy(TRY(serialize_origin()).bytes());
+    return MUST(ByteBuffer::copy(serialize_origin().bytes()));
 }
 
 // https://fetch.spec.whatwg.org/#concept-request-clone
@@ -217,7 +215,7 @@ JS::NonnullGCPtr<Request> Request::clone(JS::Realm& realm) const
     new_request->set_method(m_method);
     new_request->set_local_urls_only(m_local_urls_only);
     for (auto const& header : *m_header_list)
-        MUST(new_request->header_list()->append(header));
+        new_request->header_list()->append(header);
     new_request->set_unsafe_request(m_unsafe_request);
     new_request->set_client(m_client);
     new_request->set_reserved_client(m_reserved_client);
@@ -252,6 +250,7 @@ JS::NonnullGCPtr<Request> Request::clone(JS::Realm& realm) const
     new_request->set_prevent_no_cache_cache_control_header_modification(m_prevent_no_cache_cache_control_header_modification);
     new_request->set_done(m_done);
     new_request->set_timing_allow_failed(m_timing_allow_failed);
+    new_request->set_buffer_policy(m_buffer_policy);
 
     // 2. If request’s body is non-null, set newRequest’s body to the result of cloning request’s body.
     if (auto const* body = m_body.get_pointer<JS::NonnullGCPtr<Body>>())
@@ -262,7 +261,7 @@ JS::NonnullGCPtr<Request> Request::clone(JS::Realm& realm) const
 }
 
 // https://fetch.spec.whatwg.org/#concept-request-add-range-header
-ErrorOr<void> Request::add_range_header(u64 first, Optional<u64> const& last)
+void Request::add_range_header(u64 first, Optional<u64> const& last)
 {
     // To add a range header to a request request, with an integer first, and an optional integer last, run these steps:
 
@@ -273,30 +272,28 @@ ErrorOr<void> Request::add_range_header(u64 first, Optional<u64> const& last)
     auto range_value = MUST(ByteBuffer::copy("bytes"sv.bytes()));
 
     // 3. Serialize and isomorphic encode first, and append the result to rangeValue.
-    TRY(range_value.try_append(TRY(String::number(first)).bytes()));
+    range_value.append(String::number(first).bytes());
 
     // 4. Append 0x2D (-) to rangeValue.
-    TRY(range_value.try_append('-'));
+    range_value.append('-');
 
     // 5. If last is given, then serialize and isomorphic encode it, and append the result to rangeValue.
     if (last.has_value())
-        TRY(range_value.try_append(TRY(String::number(*last)).bytes()));
+        range_value.append(String::number(*last).bytes());
 
     // 6. Append (`Range`, rangeValue) to request’s header list.
     auto header = Header {
         .name = MUST(ByteBuffer::copy("Range"sv.bytes())),
         .value = move(range_value),
     };
-    TRY(m_header_list->append(move(header)));
-
-    return {};
+    m_header_list->append(move(header));
 }
 
 // https://fetch.spec.whatwg.org/#append-a-request-origin-header
-ErrorOr<void> Request::add_origin_header()
+void Request::add_origin_header()
 {
     // 1. Let serializedOrigin be the result of byte-serializing a request origin with request.
-    auto serialized_origin = TRY(byte_serialize_origin());
+    auto serialized_origin = byte_serialize_origin();
 
     // 2. If request’s response tainting is "cors" or request’s mode is "websocket", then append (`Origin`, serializedOrigin) to request’s header list.
     if (m_response_tainting == ResponseTainting::CORS || m_mode == Mode::WebSocket) {
@@ -304,7 +301,7 @@ ErrorOr<void> Request::add_origin_header()
             .name = MUST(ByteBuffer::copy("Origin"sv.bytes())),
             .value = move(serialized_origin),
         };
-        TRY(m_header_list->append(move(header)));
+        m_header_list->append(move(header));
     }
     // 3. Otherwise, if request’s method is neither `GET` nor `HEAD`, then:
     else if (!StringView { m_method }.is_one_of("GET"sv, "HEAD"sv)) {
@@ -324,14 +321,14 @@ ErrorOr<void> Request::add_origin_header()
             case ReferrerPolicy::ReferrerPolicy::StrictOriginWhenCrossOrigin:
                 // If request’s origin is a tuple origin, its scheme is "https", and request’s current URL’s scheme is
                 // not "https", then set serializedOrigin to `null`.
-                if (m_origin.has<HTML::Origin>() && m_origin.get<HTML::Origin>().scheme() == "https"sv && current_url().scheme() != "https"sv)
+                if (m_origin.has<URL::Origin>() && m_origin.get<URL::Origin>().scheme() == "https"sv && current_url().scheme() != "https"sv)
                     serialized_origin = MUST(ByteBuffer::copy("null"sv.bytes()));
                 break;
             // -> "same-origin"
             case ReferrerPolicy::ReferrerPolicy::SameOrigin:
                 // If request’s origin is not same origin with request’s current URL’s origin, then set serializedOrigin
                 // to `null`.
-                if (m_origin.has<HTML::Origin>() && !m_origin.get<HTML::Origin>().is_same_origin(DOMURL::url_origin(current_url())))
+                if (m_origin.has<URL::Origin>() && !m_origin.get<URL::Origin>().is_same_origin(current_url().origin()))
                     serialized_origin = MUST(ByteBuffer::copy("null"sv.bytes()));
                 break;
             // -> Otherwise
@@ -346,10 +343,8 @@ ErrorOr<void> Request::add_origin_header()
             .name = MUST(ByteBuffer::copy("Origin"sv.bytes())),
             .value = move(serialized_origin),
         };
-        TRY(m_header_list->append(move(header)));
+        m_header_list->append(move(header));
     }
-
-    return {};
 }
 
 // https://fetch.spec.whatwg.org/#cross-origin-embedder-policy-allows-credentials
@@ -363,15 +358,96 @@ bool Request::cross_origin_embedder_policy_allows_credentials() const
     if (m_client == nullptr)
         return true;
 
-    // FIXME: 3. If request’s client’s policy container’s embedder policy’s value is not "credentialless", then return true.
+    // 3. If request’s client’s policy container’s embedder policy’s value is not "credentialless", then return true.
+    if (m_policy_container.has<HTML::PolicyContainer>() && m_policy_container.get<HTML::PolicyContainer>().embedder_policy.value != HTML::EmbedderPolicyValue::Credentialless)
+        return true;
 
     // 4. If request’s origin is same origin with request’s current URL’s origin and request does not have a redirect-tainted origin, then return true.
     // 5. Return false.
-    auto const* request_origin = m_origin.get_pointer<HTML::Origin>();
+    auto const* request_origin = m_origin.get_pointer<URL::Origin>();
     if (request_origin == nullptr)
         return false;
 
-    return request_origin->is_same_origin(DOMURL::url_origin(current_url())) && !has_redirect_tainted_origin();
+    return request_origin->is_same_origin(current_url().origin()) && !has_redirect_tainted_origin();
+}
+
+StringView request_destination_to_string(Request::Destination destination)
+{
+    switch (destination) {
+    case Request::Destination::Audio:
+        return "audio"sv;
+    case Request::Destination::AudioWorklet:
+        return "audioworklet"sv;
+    case Request::Destination::Document:
+        return "document"sv;
+    case Request::Destination::Embed:
+        return "embed"sv;
+    case Request::Destination::Font:
+        return "font"sv;
+    case Request::Destination::Frame:
+        return "frame"sv;
+    case Request::Destination::IFrame:
+        return "iframe"sv;
+    case Request::Destination::Image:
+        return "image"sv;
+    case Request::Destination::JSON:
+        return "json"sv;
+    case Request::Destination::Manifest:
+        return "manifest"sv;
+    case Request::Destination::Object:
+        return "object"sv;
+    case Request::Destination::PaintWorklet:
+        return "paintworklet"sv;
+    case Request::Destination::Report:
+        return "report"sv;
+    case Request::Destination::Script:
+        return "script"sv;
+    case Request::Destination::ServiceWorker:
+        return "serviceworker"sv;
+    case Request::Destination::SharedWorker:
+        return "sharedworker"sv;
+    case Request::Destination::Style:
+        return "style"sv;
+    case Request::Destination::Track:
+        return "track"sv;
+    case Request::Destination::Video:
+        return "video"sv;
+    case Request::Destination::WebIdentity:
+        return "webidentity"sv;
+    case Request::Destination::Worker:
+        return "worker"sv;
+    case Request::Destination::XSLT:
+        return "xslt"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+StringView request_mode_to_string(Request::Mode mode)
+{
+    switch (mode) {
+    case Request::Mode::SameOrigin:
+        return "same-origin"sv;
+    case Request::Mode::CORS:
+        return "cors"sv;
+    case Request::Mode::NoCORS:
+        return "no-cors"sv;
+    case Request::Mode::Navigate:
+        return "navigate"sv;
+    case Request::Mode::WebSocket:
+        return "websocket"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+Optional<Request::Priority> request_priority_from_string(StringView string)
+{
+    if (string.equals_ignoring_ascii_case("high"sv))
+        return Request::Priority::High;
+    if (string.equals_ignoring_ascii_case("low"sv))
+        return Request::Priority::Low;
+    if (string.equals_ignoring_ascii_case("auto"sv))
+        return Request::Priority::Auto;
+    return {};
 }
 
 }

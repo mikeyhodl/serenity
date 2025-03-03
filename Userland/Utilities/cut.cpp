@@ -130,7 +130,7 @@ static bool expand_list(ByteString& list, Vector<Range>& ranges)
 static void process_line_bytes(StringView line, Vector<Range> const& ranges)
 {
     for (auto& i : ranges) {
-        if (i.m_from >= line.length())
+        if (i.m_from > line.length())
             continue;
 
         auto to = min(i.m_to, line.length());
@@ -140,13 +140,13 @@ static void process_line_bytes(StringView line, Vector<Range> const& ranges)
     outln();
 }
 
-static void process_line_characters(StringView line, Vector<Range> const& ranges)
+static ErrorOr<void> process_line_characters(StringView line, Vector<Range> const& ranges)
 {
     for (auto const& range : ranges) {
-        if (range.m_from >= line.length())
+        if (range.m_from > line.length())
             continue;
 
-        auto s = String::from_utf8(line).release_value_but_fixme_should_propagate_errors();
+        auto s = TRY(String::from_utf8(line));
         size_t i = 1;
         for (auto c : s.code_points()) {
             if (range.contains(i++))
@@ -154,6 +154,7 @@ static void process_line_characters(StringView line, Vector<Range> const& ranges
         }
     }
     outln();
+    return {};
 }
 
 static void process_line_fields(StringView line, Vector<Range> const& ranges, char delimiter, bool only_print_delimited_lines)
@@ -271,16 +272,16 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         }
         auto file = TRY(Core::InputBufferedFile::create(maybe_file.release_value()));
 
-        Array<u8, PAGE_SIZE> buffer;
-        while (TRY(file->can_read_line())) {
-            auto line = TRY(file->read_line(buffer));
-            if (line == "\n" && TRY(file->can_read_line()))
+        auto buffer = TRY(ByteBuffer::create_uninitialized(PAGE_SIZE));
+        while (!file->is_eof()) {
+            auto line = TRY(file->read_line_with_resize(buffer));
+            if (line.is_empty() && file->is_eof())
                 break;
 
             if (selected_bytes) {
                 process_line_bytes(line, disjoint_ranges);
             } else if (selected_characters) {
-                process_line_characters(line, disjoint_ranges);
+                TRY(process_line_characters(line, disjoint_ranges));
             } else if (selected_fields) {
                 process_line_fields(line, disjoint_ranges, delimiter[0], only_print_delimited_lines);
             } else {

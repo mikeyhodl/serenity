@@ -10,8 +10,8 @@
 #include <AK/Optional.h>
 #include <AK/TemporaryChange.h>
 #include <LibWeb/CSS/StyleComputer.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
 #include <LibWeb/CSS/StyleValues/DisplayStyleValue.h>
-#include <LibWeb/CSS/StyleValues/IdentifierStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
@@ -26,6 +26,7 @@
 #include <LibWeb/Layout/ListItemBox.h>
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/Node.h>
+#include <LibWeb/Layout/SVGClipBox.h>
 #include <LibWeb/Layout/SVGMaskBox.h>
 #include <LibWeb/Layout/TableGrid.h>
 #include <LibWeb/Layout/TableWrapper.h>
@@ -41,9 +42,7 @@ TreeBuilder::TreeBuilder() = default;
 static bool has_inline_or_in_flow_block_children(Layout::Node const& layout_node)
 {
     for (auto child = layout_node.first_child(); child; child = child->next_sibling()) {
-        if (child->is_inline())
-            return true;
-        if (!child->is_floating() && !child->is_absolutely_positioned())
+        if (child->is_inline() || child->is_in_flow())
             return true;
     }
     return false;
@@ -56,7 +55,7 @@ static bool has_in_flow_block_children(Layout::Node const& layout_node)
     for (auto child = layout_node.first_child(); child; child = child->next_sibling()) {
         if (child->is_inline())
             continue;
-        if (!child->is_floating() && !child->is_absolutely_positioned())
+        if (child->is_in_flow())
             return true;
     }
     return false;
@@ -97,11 +96,10 @@ static Layout::Node& insertion_parent_for_block_node(Layout::NodeWithStyle& layo
         return layout_parent;
     }
 
-    bool is_out_of_flow = layout_node.is_absolutely_positioned() || layout_node.is_floating();
-
-    if (is_out_of_flow
+    if (layout_node.is_out_of_flow()
         && !layout_parent.display().is_flex_inside()
         && !layout_parent.display().is_grid_inside()
+        && !layout_parent.last_child()->is_generated()
         && layout_parent.last_child()->is_anonymous()
         && layout_parent.last_child()->children_are_inline()) {
         // Block is out-of-flow & previous sibling was wrapped in an anonymous block.
@@ -114,7 +112,7 @@ static Layout::Node& insertion_parent_for_block_node(Layout::NodeWithStyle& layo
         return layout_parent;
     }
 
-    if (is_out_of_flow) {
+    if (layout_node.is_out_of_flow()) {
         // Block is out-of-flow, it can have inline siblings if necessary.
         return layout_parent;
     }
@@ -127,7 +125,7 @@ static Layout::Node& insertion_parent_for_block_node(Layout::NodeWithStyle& layo
         for (JS::GCPtr<Layout::Node> child = layout_parent.first_child(); child; child = next) {
             next = child->next_sibling();
             // NOTE: We let out-of-flow children stay in the parent, to preserve tree structure.
-            if (child->is_floating() || child->is_absolutely_positioned())
+            if (child->is_out_of_flow())
                 continue;
             layout_parent.remove_child(*child);
             children.append(*child);
@@ -193,14 +191,13 @@ void TreeBuilder::insert_node_into_inline_or_block_ancestor(Layout::Node& node, 
 void TreeBuilder::create_pseudo_element_if_needed(DOM::Element& element, CSS::Selector::PseudoElement::Type pseudo_element, AppendOrPrepend mode)
 {
     auto& document = element.document();
-    auto& style_computer = document.style_computer();
 
-    auto pseudo_element_style = style_computer.compute_pseudo_element_style_if_needed(element, pseudo_element);
+    auto pseudo_element_style = element.pseudo_element_computed_css_values(pseudo_element);
     if (!pseudo_element_style)
         return;
 
     auto initial_quote_nesting_level = m_quote_nesting_level;
-    auto [pseudo_element_content, final_quote_nesting_level] = pseudo_element_style->content(initial_quote_nesting_level);
+    auto [pseudo_element_content, final_quote_nesting_level] = pseudo_element_style->content(element, initial_quote_nesting_level);
     m_quote_nesting_level = final_quote_nesting_level;
     auto pseudo_element_display = pseudo_element_style->display();
     // ::before and ::after only exist if they have content. `content: normal` computes to `none` for them.
@@ -213,6 +210,22 @@ void TreeBuilder::create_pseudo_element_if_needed(DOM::Element& element, CSS::Se
     auto pseudo_element_node = DOM::Element::create_layout_node_for_display_type(document, pseudo_element_display, *pseudo_element_style, nullptr);
     if (!pseudo_element_node)
         return;
+
+    auto& style_computer = document.style_computer();
+
+    // FIXME: This code actually computes style for element::marker, and shouldn't for element::pseudo::marker
+    if (is<ListItemBox>(*pseudo_element_node)) {
+        auto marker_style = style_computer.compute_style(element, CSS::Selector::PseudoElement::Type::Marker);
+        auto list_item_marker = document.heap().allocate_without_realm<ListItemMarkerBox>(
+            document,
+            pseudo_element_node->computed_values().list_style_type(),
+            pseudo_element_node->computed_values().list_style_position(),
+            0,
+            *marker_style);
+        static_cast<ListItemBox&>(*pseudo_element_node).set_marker(list_item_marker);
+        element.set_pseudo_element_node({}, CSS::Selector::PseudoElement::Type::Marker, list_item_marker);
+        pseudo_element_node->append_child(*list_item_marker);
+    }
 
     auto generated_for = Node::GeneratedFor::NotGenerated;
     if (pseudo_element == CSS::Selector::PseudoElement::Type::Before) {
@@ -232,7 +245,7 @@ void TreeBuilder::create_pseudo_element_if_needed(DOM::Element& element, CSS::Se
         auto text_node = document.heap().allocate_without_realm<Layout::TextNode>(document, *text);
         text_node->set_generated_for(generated_for, element);
 
-        push_parent(verify_cast<NodeWithStyle>(*pseudo_element_node));
+        push_parent(*pseudo_element_node);
         insert_node_into_inline_or_block_ancestor(*text_node, text_node->display(), AppendOrPrepend::Append);
         pop_parent();
     } else {
@@ -253,9 +266,9 @@ static bool is_ignorable_whitespace(Layout::Node const& node)
         node.for_each_in_inclusive_subtree_of_type<TextNode>([&contains_only_white_space](auto& text_node) {
             if (!text_node.text_for_rendering().bytes_as_string_view().is_whitespace()) {
                 contains_only_white_space = false;
-                return IterationDecision::Break;
+                return TraversalDecision::Break;
             }
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         });
         if (contains_only_white_space)
             return true;
@@ -290,6 +303,19 @@ i32 TreeBuilder::calculate_list_item_index(DOM::Node& dom_node)
 
 void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& context)
 {
+    if (dom_node.is_element()) {
+        auto& element = static_cast<DOM::Element&>(dom_node);
+        if (element.in_top_layer() && !context.layout_top_layer)
+            return;
+    }
+    if (dom_node.is_element())
+        dom_node.document().style_computer().push_ancestor(static_cast<DOM::Element const&>(dom_node));
+
+    ScopeGuard pop_ancestor_guard = [&] {
+        if (dom_node.is_element())
+            dom_node.document().style_computer().pop_ancestor(static_cast<DOM::Element const&>(dom_node));
+    };
+
     JS::GCPtr<Layout::Node> layout_node;
     Optional<TemporaryChange<bool>> has_svg_root_change;
 
@@ -302,7 +328,7 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
                 node.set_paintable(nullptr);
                 if (is<DOM::Element>(node))
                     static_cast<DOM::Element&>(node).clear_pseudo_element_nodes({});
-                return IterationDecision::Continue;
+                return TraversalDecision::Continue;
             });
         }
     };
@@ -323,10 +349,23 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
         element.clear_pseudo_element_nodes({});
         VERIFY(!element.needs_style_update());
         style = element.computed_css_values();
+        element.resolve_counters(*style);
         display = style->display();
         if (display.is_none())
             return;
-        layout_node = element.create_layout_node(*style);
+        // TODO: Implement changing element contents with the `content` property.
+        if (context.layout_svg_mask_or_clip_path) {
+            if (is<SVG::SVGMaskElement>(dom_node))
+                layout_node = document.heap().allocate_without_realm<Layout::SVGMaskBox>(document, static_cast<SVG::SVGMaskElement&>(dom_node), *style);
+            else if (is<SVG::SVGClipPathElement>(dom_node))
+                layout_node = document.heap().allocate_without_realm<Layout::SVGClipBox>(document, static_cast<SVG::SVGClipPathElement&>(dom_node), *style);
+            else
+                VERIFY_NOT_REACHED();
+            // Only layout direct uses of SVG masks/clipPaths.
+            context.layout_svg_mask_or_clip_path = false;
+        } else {
+            layout_node = element.create_layout_node(*style);
+        }
     } else if (is<DOM::Document>(dom_node)) {
         style = style_computer.create_document_style();
         display = style->display();
@@ -334,12 +373,6 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
     } else if (is<DOM::Text>(dom_node)) {
         layout_node = document.heap().allocate_without_realm<Layout::TextNode>(document, static_cast<DOM::Text&>(dom_node));
         display = CSS::Display(CSS::DisplayOutside::Inline, CSS::DisplayInside::Flow);
-    }
-
-    if (context.layout_svg_mask && is<SVG::SVGMaskElement>(dom_node)) {
-        layout_node = document.heap().allocate_without_realm<Layout::SVGMaskBox>(document, static_cast<SVG::SVGMaskElement&>(dom_node), *style);
-        // We're here if our parent is a use of an SVG mask, but we don't want to lay out any <mask> elements that could be a child of this mask.
-        context.layout_svg_mask = false;
     }
 
     if (!layout_node)
@@ -353,17 +386,25 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
         insert_node_into_inline_or_block_ancestor(*layout_node, display, AppendOrPrepend::Append);
     }
 
-    auto* shadow_root = is<DOM::Element>(dom_node) ? verify_cast<DOM::Element>(dom_node).shadow_root_internal() : nullptr;
+    auto shadow_root = is<DOM::Element>(dom_node) ? verify_cast<DOM::Element>(dom_node).shadow_root() : nullptr;
+
+    auto element_has_content_visibility_hidden = [&dom_node]() {
+        if (is<DOM::Element>(dom_node)) {
+            auto& element = static_cast<DOM::Element&>(dom_node);
+            return element.computed_css_values()->content_visibility() == CSS::ContentVisibility::Hidden;
+        }
+        return false;
+    }();
 
     // Add node for the ::before pseudo-element.
-    if (is<DOM::Element>(dom_node) && layout_node->can_have_children()) {
+    if (is<DOM::Element>(dom_node) && layout_node->can_have_children() && !element_has_content_visibility_hidden) {
         auto& element = static_cast<DOM::Element&>(dom_node);
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
         create_pseudo_element_if_needed(element, CSS::Selector::PseudoElement::Type::Before, AppendOrPrepend::Prepend);
         pop_parent();
     }
 
-    if ((dom_node.has_children() || shadow_root) && layout_node->can_have_children()) {
+    if ((dom_node.has_children() || shadow_root) && layout_node->can_have_children() && !element_has_content_visibility_hidden) {
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
         if (shadow_root) {
             for (auto* node = shadow_root->first_child(); node; node = node->next_sibling()) {
@@ -373,6 +414,14 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
             // This is the same as verify_cast<DOM::ParentNode>(dom_node).for_each_child
             for (auto* node = verify_cast<DOM::ParentNode>(dom_node).first_child(); node; node = node->next_sibling())
                 create_layout_tree(*node, context);
+        }
+
+        if (dom_node.is_document()) {
+            // Elements in the top layer do not lay out normally based on their position in the document; instead they
+            // generate boxes as if they were siblings of the root element.
+            TemporaryChange<bool> layout_mask(context.layout_top_layer, true);
+            for (auto const& top_layer_element : document.top_layer_elements())
+                create_layout_tree(top_layer_element, context);
         }
         pop_parent();
     }
@@ -387,7 +436,12 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
     }
 
     if (is<HTML::HTMLSlotElement>(dom_node)) {
-        auto slottables = static_cast<HTML::HTMLSlotElement&>(dom_node).assigned_nodes_internal();
+        auto& slot_element = static_cast<HTML::HTMLSlotElement&>(dom_node);
+
+        if (slot_element.computed_css_values()->content_visibility() == CSS::ContentVisibility::Hidden)
+            return;
+
+        auto slottables = slot_element.assigned_nodes_internal();
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
 
         for (auto const& slottable : slottables)
@@ -398,20 +452,38 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
 
     if (is<SVG::SVGGraphicsElement>(dom_node)) {
         auto& graphics_element = static_cast<SVG::SVGGraphicsElement&>(dom_node);
-        // Create the layout tree for the SVG mask as a child of the masked element. Note: This will create
-        // a new subtree for each use of the mask (so there's  not a 1-to-1 mapping from DOM node to mask
-        // layout node). Each use of a mask may be laid out differently so this duplication is necessary.
-        if (auto mask = graphics_element.mask()) {
-            TemporaryChange<bool> layout_mask(context.layout_svg_mask, true);
+        // Create the layout tree for the SVG mask/clip paths as a child of the masked element.
+        // Note: This will create a new subtree for each use of the mask (so there's  not a 1-to-1 mapping
+        // from DOM node to mask layout node). Each use of a mask may be laid out differently so this
+        // duplication is necessary.
+        auto layout_mask_or_clip_path = [&](JS::GCPtr<SVG::SVGElement const> mask_or_clip_path) {
+            TemporaryChange<bool> layout_mask(context.layout_svg_mask_or_clip_path, true);
             push_parent(verify_cast<NodeWithStyle>(*layout_node));
-            create_layout_tree(const_cast<SVG::SVGMaskElement&>(*mask), context);
+            create_layout_tree(const_cast<SVG::SVGElement&>(*mask_or_clip_path), context);
             pop_parent();
-        }
+        };
+        if (auto mask = graphics_element.mask())
+            layout_mask_or_clip_path(mask);
+        if (auto clip_path = graphics_element.clip_path())
+            layout_mask_or_clip_path(clip_path);
     }
+
+    auto is_button_layout = [&] {
+        if (dom_node.is_html_button_element())
+            return true;
+        if (!dom_node.is_html_input_element())
+            return false;
+        // https://html.spec.whatwg.org/multipage/rendering.html#the-input-element-as-a-button
+        // An input element whose type attribute is in the Submit Button, Reset Button, or Button state, when it generates a CSS box, is expected to depict a button and use button layout
+        auto const& input_element = static_cast<HTML::HTMLInputElement const&>(dom_node);
+        if (input_element.is_button())
+            return true;
+        return false;
+    }();
 
     // https://html.spec.whatwg.org/multipage/rendering.html#button-layout
     // If the computed value of 'inline-size' is 'auto', then the used value is the fit-content inline size.
-    if (dom_node.is_html_button_element() && dom_node.layout_node()->computed_values().width().is_auto()) {
+    if (is_button_layout && dom_node.layout_node()->computed_values().width().is_auto()) {
         auto& computed_values = verify_cast<NodeWithStyle>(*dom_node.layout_node()).mutable_computed_values();
         computed_values.set_width(CSS::Size::make_fit_content());
     }
@@ -420,7 +492,7 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
     // If the element is an input element, or if it is a button element and its computed value for
     // 'display' is not 'inline-grid', 'grid', 'inline-flex', or 'flex', then the element's box has
     // a child anonymous button content box with the following behaviors:
-    if (dom_node.is_html_button_element() && !display.is_grid_inside() && !display.is_flex_inside()) {
+    if (is_button_layout && !display.is_grid_inside() && !display.is_flex_inside()) {
         auto& parent = *dom_node.layout_node();
 
         // If the box does not overflow in the vertical axis, then it is centered vertically.
@@ -457,7 +529,7 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
     }
 
     // Add nodes for the ::after pseudo-element.
-    if (is<DOM::Element>(dom_node) && layout_node->can_have_children()) {
+    if (is<DOM::Element>(dom_node) && layout_node->can_have_children() && !element_has_content_visibility_hidden) {
         auto& element = static_cast<DOM::Element&>(dom_node);
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
         create_pseudo_element_if_needed(element, CSS::Selector::PseudoElement::Type::After, AppendOrPrepend::Append);
@@ -468,6 +540,8 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
 JS::GCPtr<Layout::Node> TreeBuilder::build(DOM::Node& dom_node)
 {
     VERIFY(dom_node.is_document());
+
+    dom_node.document().style_computer().reset_ancestor_filter();
 
     Context context;
     m_quote_nesting_level = 0;
@@ -486,7 +560,7 @@ void TreeBuilder::for_each_in_tree_with_internal_display(NodeWithStyle& root, Ca
         auto const display = box.display();
         if (display.is_internal() && display.internal() == internal)
             callback(box);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 }
 
@@ -497,7 +571,7 @@ void TreeBuilder::for_each_in_tree_with_inside_display(NodeWithStyle& root, Call
         auto const display = box.display();
         if (display.is_outside_and_inside() && display.inside() == inside)
             callback(box);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 }
 
@@ -519,6 +593,7 @@ void TreeBuilder::remove_irrelevant_boxes(NodeWithStyle& root)
     for_each_in_tree_with_internal_display<CSS::DisplayInternal::TableColumn>(root, [&](Box& table_column) {
         table_column.for_each_child([&](auto& child) {
             to_remove.append(child);
+            return IterationDecision::Continue;
         });
     });
 
@@ -527,6 +602,7 @@ void TreeBuilder::remove_irrelevant_boxes(NodeWithStyle& root)
         table_column_group.for_each_child([&](auto& child) {
             if (!child.display().is_table_column())
                 to_remove.append(child);
+            return IterationDecision::Continue;
         });
     });
 
@@ -706,7 +782,7 @@ Vector<JS::Handle<Box>> TreeBuilder::generate_missing_parents(NodeWithStyle& roo
             table_roots_to_wrap.append(parent);
         }
 
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     for (auto& table_box : table_roots_to_wrap) {
@@ -736,6 +812,7 @@ static void for_each_child_box_matching(Box& parent, Matcher matcher, Callback c
     parent.for_each_child_of_type<Box>([&](Box& child_box) {
         if (matcher(child_box))
             callback(child_box);
+        return IterationDecision::Continue;
     });
 }
 

@@ -8,13 +8,18 @@
 
 #include <AK/StringView.h>
 #include <AK/Types.h>
+#include <Kernel/Memory/TypedMapping.h>
 
 namespace Kernel::RPi {
+
+struct MailboxRegisters;
 
 // Can exchange mailbox messages with the Raspberry Pi's VideoCore chip.
 // https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface
 class Mailbox {
 public:
+    Mailbox();
+
     // Base class for Mailbox messages. Implemented in subsystems that use Mailbox.
     class Message {
     protected:
@@ -46,24 +51,20 @@ public:
         u32 m_empty_tag = 0;
     };
 
+    static void initialize();
+    static bool is_initialized();
     static Mailbox& the();
 
     // Sends message queue to VideoCore
-    bool send_queue(void* queue, u32 queue_size) const;
+    bool send_queue(void* queue, u32 queue_size);
 
     u32 query_firmware_version();
 
-    // Returns the kernel command line as a StringView into the given buffer.
-    StringView query_kernel_command_line(Bytes buffer);
+    Memory::TypedMapping<MailboxRegisters volatile> m_registers;
 
-    struct MemoryRange {
-        u32 base;
-        u32 size;
-    };
-    // Returns the RAM available to the CPU in the first 1GB of the physical address space.
-    // FIXME: Remove in favor of parsing the device tree.
-    MemoryRange query_lower_arm_memory_range();
-    MemoryRange query_videocore_memory_range();
+private:
+    void wait_until_we_can_write() const;
+    void wait_for_reply() const;
 };
 
 }

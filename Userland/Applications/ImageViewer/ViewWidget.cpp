@@ -45,7 +45,7 @@ void VectorImage::rotate(Gfx::RotationDirection rotation_direction)
     m_size = { m_size.height(), m_size.width() };
 }
 
-void VectorImage::draw_into(Gfx::Painter& painter, Gfx::IntRect const& dest, Gfx::Painter::ScalingMode) const
+void VectorImage::draw_into(Gfx::Painter& painter, Gfx::IntRect const& dest, Gfx::ScalingMode) const
 {
     m_vector->draw_into(painter, dest, m_transform);
 }
@@ -65,7 +65,7 @@ void BitmapImage::rotate(Gfx::RotationDirection rotation)
     m_bitmap = m_bitmap->rotated(rotation).release_value_but_fixme_should_propagate_errors();
 }
 
-void BitmapImage::draw_into(Gfx::Painter& painter, Gfx::IntRect const& dest, Gfx::Painter::ScalingMode scaling_mode) const
+void BitmapImage::draw_into(Gfx::Painter& painter, Gfx::IntRect const& dest, Gfx::ScalingMode scaling_mode) const
 {
     painter.draw_scaled_bitmap(dest, *m_bitmap, m_bitmap->rect(), 1.0f, scaling_mode);
 }
@@ -237,18 +237,19 @@ ErrorOr<void> ViewWidget::try_open_file(String const& path, Core::File& file)
         // Use out-of-process decoding for raster formats.
         auto client = TRY(ImageDecoderClient::Client::try_create());
         auto mime_type = Core::guess_mime_type_based_on_filename(path);
-        auto decoded_image = client->decode_image(file_data, OptionalNone {}, mime_type);
-        if (!decoded_image.has_value()) {
-            return Error::from_string_literal("Failed to decode image");
-        }
-        is_animated = decoded_image->is_animated;
-        loop_count = decoded_image->loop_count;
-        frames.ensure_capacity(decoded_image->frames.size());
-        for (u32 i = 0; i < decoded_image->frames.size(); i++) {
-            auto& frame_data = decoded_image->frames[i];
-            frames.unchecked_append({ BitmapImage::create(frame_data.bitmap, decoded_image->scale), int(frame_data.duration) });
+
+        // FIXME: Refactor file opening to be more async-aware, and don't await this promise
+        auto decoded_image = TRY(client->decode_image(file_data, {}, {}, OptionalNone {}, mime_type)->await());
+        is_animated = decoded_image.is_animated;
+        loop_count = decoded_image.loop_count;
+        frames.ensure_capacity(decoded_image.frames.size());
+        for (u32 i = 0; i < decoded_image.frames.size(); i++) {
+            auto& frame_data = decoded_image.frames[i];
+            frames.unchecked_append({ BitmapImage::create(frame_data.bitmap, decoded_image.scale), int(frame_data.duration) });
         }
     }
+
+    clear();
 
     m_image = frames[0].image;
     if (is_animated && frames.size() > 1) {
@@ -282,8 +283,7 @@ ErrorOr<void> ViewWidget::try_open_file(String const& path, Core::File& file)
 
 void ViewWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -369,7 +369,7 @@ void ViewWidget::animate()
     }
 }
 
-void ViewWidget::set_scaling_mode(Gfx::Painter::ScalingMode scaling_mode)
+void ViewWidget::set_scaling_mode(Gfx::ScalingMode scaling_mode)
 {
     m_scaling_mode = scaling_mode;
     update();

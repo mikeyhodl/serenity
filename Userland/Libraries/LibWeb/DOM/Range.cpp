@@ -7,6 +7,7 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/RangePrototype.h>
 #include <LibWeb/DOM/Comment.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentFragment.h>
@@ -17,14 +18,13 @@
 #include <LibWeb/DOM/ProcessingInstruction.h>
 #include <LibWeb/DOM/Range.h>
 #include <LibWeb/DOM/Text.h>
-#include <LibWeb/DOMParsing/InnerHTML.h>
 #include <LibWeb/Geometry/DOMRect.h>
 #include <LibWeb/Geometry/DOMRectList.h>
 #include <LibWeb/HTML/HTMLHtmlElement.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Namespace.h>
-#include <LibWeb/Painting/Paintable.h>
+#include <LibWeb/Painting/InlinePaintable.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
 
 namespace Web::DOM {
@@ -96,12 +96,14 @@ void Range::set_associated_selection(Badge<Selection::Selection>, JS::GCPtr<Sele
 
 void Range::update_associated_selection()
 {
-    if (!m_associated_selection)
-        return;
-    if (auto* viewport = m_associated_selection->document()->paintable()) {
-        viewport->recompute_selection_states();
+    if (auto* viewport = m_start_container->document().paintable()) {
+        viewport->recompute_selection_states(*this);
+        viewport->update_selection();
         viewport->set_needs_display();
     }
+
+    if (!m_associated_selection)
+        return;
 
     // https://w3c.github.io/selection-api/#selectionchange-event
     // When the selection is dissociated with its range, associated with a new range or the associated range's boundary
@@ -109,13 +111,13 @@ void Range::update_associated_selection()
     // task source to fire an event named selectionchange, which does not bubble and is not cancelable, at the document
     // associated with the selection.
     auto document = m_associated_selection->document();
-    queue_global_task(HTML::Task::Source::UserInteraction, relevant_global_object(*document), [document] {
+    queue_global_task(HTML::Task::Source::UserInteraction, relevant_global_object(*document), JS::create_heap_function(document->heap(), [document] {
         EventInit event_init;
         event_init.bubbles = false;
         event_init.cancelable = false;
         auto event = DOM::Event::create(document->realm(), HTML::EventNames::selectionchange, event_init);
         document->dispatch_event(event);
-    });
+    }));
 }
 
 // https://dom.spec.whatwg.org/#concept-range-root
@@ -185,7 +187,7 @@ WebIDL::ExceptionOr<void> Range::set_start_or_end(Node& node, u32 offset, StartO
 
     // 1. If node is a doctype, then throw an "InvalidNodeTypeError" DOMException.
     if (is<DocumentType>(node))
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_string);
 
     // 2. If offset is greater than node’s length, then throw an "IndexSizeError" DOMException.
     if (offset > node.length())
@@ -245,7 +247,7 @@ WebIDL::ExceptionOr<void> Range::set_start_before(Node& node)
 
     // 2. If parent is null, then throw an "InvalidNodeTypeError" DOMException.
     if (!parent)
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_string);
 
     // 3. Set the start of this to boundary point (parent, node’s index).
     return set_start_or_end(*parent, node.index(), StartOrEnd::Start);
@@ -259,7 +261,7 @@ WebIDL::ExceptionOr<void> Range::set_start_after(Node& node)
 
     // 2. If parent is null, then throw an "InvalidNodeTypeError" DOMException.
     if (!parent)
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_string);
 
     // 3. Set the start of this to boundary point (parent, node’s index plus 1).
     return set_start_or_end(*parent, node.index() + 1, StartOrEnd::Start);
@@ -273,7 +275,7 @@ WebIDL::ExceptionOr<void> Range::set_end_before(Node& node)
 
     // 2. If parent is null, then throw an "InvalidNodeTypeError" DOMException.
     if (!parent)
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_string);
 
     // 3. Set the end of this to boundary point (parent, node’s index).
     return set_start_or_end(*parent, node.index(), StartOrEnd::End);
@@ -287,7 +289,7 @@ WebIDL::ExceptionOr<void> Range::set_end_after(Node& node)
 
     // 2. If parent is null, then throw an "InvalidNodeTypeError" DOMException.
     if (!parent)
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_string);
 
     // 3. Set the end of this to boundary point (parent, node’s index plus 1).
     return set_start_or_end(*parent, node.index() + 1, StartOrEnd::End);
@@ -307,7 +309,7 @@ WebIDL::ExceptionOr<WebIDL::Short> Range::compare_boundary_points(WebIDL::Unsign
 
     // 2. If this’s root is not the same as sourceRange’s root, then throw a "WrongDocumentError" DOMException.
     if (&root() != &source_range.root())
-        return WebIDL::WrongDocumentError::create(realm(), "This range is not in the same tree as the source range."_fly_string);
+        return WebIDL::WrongDocumentError::create(realm(), "This range is not in the same tree as the source range."_string);
 
     JS::GCPtr<Node> this_point_node;
     u32 this_point_offset = 0;
@@ -388,7 +390,7 @@ WebIDL::ExceptionOr<void> Range::select(Node& node)
 
     // 2. If parent is null, then throw an "InvalidNodeTypeError" DOMException.
     if (!parent)
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Given node has no parent."_string);
 
     // 3. Let index be node’s index.
     auto index = node.index();
@@ -431,7 +433,7 @@ WebIDL::ExceptionOr<void> Range::select_node_contents(Node& node)
 {
     // 1. If node is a doctype, throw an "InvalidNodeTypeError" DOMException.
     if (is<DocumentType>(node))
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_string);
 
     // 2. Let length be the length of node.
     auto length = node.length();
@@ -525,7 +527,7 @@ WebIDL::ExceptionOr<bool> Range::is_point_in_range(Node const& node, WebIDL::Uns
 
     // 2. If node is a doctype, then throw an "InvalidNodeTypeError" DOMException.
     if (is<DocumentType>(node))
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_string);
 
     // 3. If offset is greater than node’s length, then throw an "IndexSizeError" DOMException.
     if (offset > node.length())
@@ -546,11 +548,11 @@ WebIDL::ExceptionOr<WebIDL::Short> Range::compare_point(Node const& node, WebIDL
 {
     // 1. If node’s root is different from this’s root, then throw a "WrongDocumentError" DOMException.
     if (&node.root() != &root())
-        return WebIDL::WrongDocumentError::create(realm(), "Given node is not in the same document as the range."_fly_string);
+        return WebIDL::WrongDocumentError::create(realm(), "Given node is not in the same document as the range."_string);
 
     // 2. If node is a doctype, then throw an "InvalidNodeTypeError" DOMException.
     if (is<DocumentType>(node))
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_string);
 
     // 3. If offset is greater than node’s length, then throw an "IndexSizeError" DOMException.
     if (offset > node.length())
@@ -631,7 +633,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::extract()
     // 4. If original start node is original end node and it is a CharacterData node, then:
     if (original_start_node.ptr() == original_end_node.ptr() && is<CharacterData>(*original_start_node)) {
         // 1. Let clone be a clone of original start node.
-        auto clone = original_start_node->clone_node();
+        auto clone = TRY(original_start_node->clone_node());
 
         // 2. Set the data of clone to the result of substringing data with node original start node,
         //    offset original start offset, and count original end offset minus original start offset.
@@ -693,7 +695,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::extract()
     // 12. If any member of contained children is a doctype, then throw a "HierarchyRequestError" DOMException.
     for (auto const& child : contained_children) {
         if (is<DocumentType>(*child))
-            return WebIDL::HierarchyRequestError::create(realm(), "Contained child is a DocumentType"_fly_string);
+            return WebIDL::HierarchyRequestError::create(realm(), "Contained child is a DocumentType"_string);
     }
 
     JS::GCPtr<Node> new_node;
@@ -721,7 +723,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::extract()
     // 15. If first partially contained child is a CharacterData node, then:
     if (first_partially_contained_child && is<CharacterData>(*first_partially_contained_child)) {
         // 1. Let clone be a clone of original start node.
-        auto clone = original_start_node->clone_node();
+        auto clone = TRY(original_start_node->clone_node());
 
         // 2. Set the data of clone to the result of substringing data with node original start node, offset original start offset,
         //    and count original start node’s length minus original start offset.
@@ -737,7 +739,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::extract()
     // 16. Otherwise, if first partially contained child is not null:
     else if (first_partially_contained_child) {
         // 1. Let clone be a clone of first partially contained child.
-        auto clone = first_partially_contained_child->clone_node();
+        auto clone = TRY(first_partially_contained_child->clone_node());
 
         // 2. Append clone to fragment.
         TRY(fragment->append_child(clone));
@@ -760,7 +762,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::extract()
     // 18. If last partially contained child is a CharacterData node, then:
     if (last_partially_contained_child && is<CharacterData>(*last_partially_contained_child)) {
         // 1. Let clone be a clone of original end node.
-        auto clone = original_end_node->clone_node();
+        auto clone = TRY(original_end_node->clone_node());
 
         // 2. Set the data of clone to the result of substringing data with node original end node, offset 0, and count original end offset.
         auto result = TRY(static_cast<CharacterData const&>(*original_end_node).substring_data(0, original_end_offset));
@@ -775,7 +777,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::extract()
     // 19. Otherwise, if last partially contained child is not null:
     else if (last_partially_contained_child) {
         // 1. Let clone be a clone of last partially contained child.
-        auto clone = last_partially_contained_child->clone_node();
+        auto clone = TRY(last_partially_contained_child->clone_node());
 
         // 2. Append clone to fragment.
         TRY(fragment->append_child(clone));
@@ -840,7 +842,7 @@ WebIDL::ExceptionOr<void> Range::insert(JS::NonnullGCPtr<Node> node)
     if ((is<ProcessingInstruction>(*m_start_container) || is<Comment>(*m_start_container))
         || (is<Text>(*m_start_container) && !m_start_container->parent_node())
         || m_start_container.ptr() == node.ptr()) {
-        return WebIDL::HierarchyRequestError::create(realm(), "Range has inappropriate start node for insertion"_fly_string);
+        return WebIDL::HierarchyRequestError::create(realm(), "Range has inappropriate start node for insertion"_string);
     }
 
     // 2. Let referenceNode be null.
@@ -911,11 +913,11 @@ WebIDL::ExceptionOr<void> Range::surround_contents(JS::NonnullGCPtr<Node> new_pa
     if (is<Text>(*end_non_text_node))
         end_non_text_node = end_non_text_node->parent_node();
     if (start_non_text_node != end_non_text_node)
-        return WebIDL::InvalidStateError::create(realm(), "Non-Text node is partially contained in range."_fly_string);
+        return WebIDL::InvalidStateError::create(realm(), "Non-Text node is partially contained in range."_string);
 
     // 2. If newParent is a Document, DocumentType, or DocumentFragment node, then throw an "InvalidNodeTypeError" DOMException.
     if (is<Document>(*new_parent) || is<DocumentType>(*new_parent) || is<DocumentFragment>(*new_parent))
-        return WebIDL::InvalidNodeTypeError::create(realm(), "Invalid parent node type"_fly_string);
+        return WebIDL::InvalidNodeTypeError::create(realm(), "Invalid parent node type"_string);
 
     // 3. Let fragment be the result of extracting this.
     auto fragment = TRY(extract());
@@ -960,7 +962,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::clone_the_content
     // 4. If original start node is original end node and it is a CharacterData node, then:
     if (original_start_node.ptr() == original_end_node.ptr() && is<CharacterData>(*original_start_node)) {
         // 1. Let clone be a clone of original start node.
-        auto clone = original_start_node->clone_node();
+        auto clone = TRY(original_start_node->clone_node());
 
         // 2. Set the data of clone to the result of substringing data with node original start node,
         //    offset original start offset, and count original end offset minus original start offset.
@@ -1019,13 +1021,13 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::clone_the_content
     // 12. If any member of contained children is a doctype, then throw a "HierarchyRequestError" DOMException.
     for (auto const& child : contained_children) {
         if (is<DocumentType>(*child))
-            return WebIDL::HierarchyRequestError::create(realm(), "Contained child is a DocumentType"_fly_string);
+            return WebIDL::HierarchyRequestError::create(realm(), "Contained child is a DocumentType"_string);
     }
 
     // 13. If first partially contained child is a CharacterData node, then:
     if (first_partially_contained_child && is<CharacterData>(*first_partially_contained_child)) {
         // 1. Let clone be a clone of original start node.
-        auto clone = original_start_node->clone_node();
+        auto clone = TRY(original_start_node->clone_node());
 
         // 2. Set the data of clone to the result of substringing data with node original start node, offset original start offset,
         //    and count original start node’s length minus original start offset.
@@ -1038,7 +1040,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::clone_the_content
     // 14. Otherwise, if first partially contained child is not null:
     else if (first_partially_contained_child) {
         // 1. Let clone be a clone of first partially contained child.
-        auto clone = first_partially_contained_child->clone_node();
+        auto clone = TRY(first_partially_contained_child->clone_node());
 
         // 2. Append clone to fragment.
         TRY(fragment->append_child(clone));
@@ -1056,7 +1058,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::clone_the_content
     // 15. For each contained child in contained children.
     for (auto& contained_child : contained_children) {
         // 1. Let clone be a clone of contained child with the clone children flag set.
-        auto clone = contained_child->clone_node(nullptr, true);
+        auto clone = TRY(contained_child->clone_node(nullptr, true));
 
         // 2. Append clone to fragment.
         TRY(fragment->append_child(move(clone)));
@@ -1065,7 +1067,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::clone_the_content
     // 16. If last partially contained child is a CharacterData node, then:
     if (last_partially_contained_child && is<CharacterData>(*last_partially_contained_child)) {
         // 1. Let clone be a clone of original end node.
-        auto clone = original_end_node->clone_node();
+        auto clone = TRY(original_end_node->clone_node());
 
         // 2. Set the data of clone to the result of substringing data with node original end node, offset 0, and count original end offset.
         auto result = TRY(static_cast<CharacterData const&>(*original_end_node).substring_data(0, original_end_offset));
@@ -1077,7 +1079,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::clone_the_content
     // 17. Otherwise, if last partially contained child is not null:
     else if (last_partially_contained_child) {
         // 1. Let clone be a clone of last partially contained child.
-        auto clone = last_partially_contained_child->clone_node();
+        auto clone = TRY(last_partially_contained_child->clone_node());
 
         // 2. Append clone to fragment.
         TRY(fragment->append_child(clone));
@@ -1118,7 +1120,7 @@ WebIDL::ExceptionOr<void> Range::delete_contents()
 
     // 4. Let nodes to remove be a list of all the nodes that are contained in this, in tree order, omitting any node whose parent is also contained in this.
     JS::MarkedVector<Node*> nodes_to_remove(heap());
-    for (Node const* node = start_container(); node != end_container()->next_in_pre_order(); node = node->next_in_pre_order()) {
+    for (Node const* node = start_container(); node != end_container()->next_sibling(); node = node->next_in_pre_order()) {
         if (contains_node(*node) && (!node->parent_node() || !contains_node(*node->parent_node())))
             nodes_to_remove.append(const_cast<Node*>(node));
     }
@@ -1164,70 +1166,147 @@ WebIDL::ExceptionOr<void> Range::delete_contents()
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-element-getclientrects
-JS::NonnullGCPtr<Geometry::DOMRectList> Range::get_client_rects() const
+// https://drafts.csswg.org/cssom-view/#extensions-to-the-range-interface
+JS::NonnullGCPtr<Geometry::DOMRectList> Range::get_client_rects()
 {
-    dbgln("(STUBBED) Range::get_client_rects()");
-    return Geometry::DOMRectList::create(realm(), {});
+    // 1. return an empty DOMRectList object if the range is not in the document
+    if (!start_container()->document().navigable())
+        return Geometry::DOMRectList::create(realm(), {});
+
+    start_container()->document().update_layout();
+    update_associated_selection();
+    Vector<JS::Handle<Geometry::DOMRect>> rects;
+    // FIXME: take Range collapsed into consideration
+    // 2. Iterate the node included in Range
+    auto start_node = start_container();
+    auto end_node = end_container();
+    if (!is<DOM::Text>(start_node)) {
+        start_node = start_node->child_at_index(m_start_offset);
+    }
+    if (!is<DOM::Text>(end_node)) {
+        // end offset shouldn't be 0
+        if (m_end_offset == 0)
+            return Geometry::DOMRectList::create(realm(), {});
+        end_node = end_node->child_at_index(m_end_offset - 1);
+    }
+    for (Node const* node = start_node; node && node != end_node->next_in_pre_order(); node = node->next_in_pre_order()) {
+        auto node_type = static_cast<NodeType>(node->node_type());
+        if (node_type == NodeType::ELEMENT_NODE) {
+            // 1. For each element selected by the range, whose parent is not selected by the range, include the border
+            // areas returned by invoking getClientRects() on the element.
+            if (contains_node(*node) && !contains_node(*node->parent())) {
+                auto const& element = static_cast<DOM::Element const&>(*node);
+                JS::NonnullGCPtr<Geometry::DOMRectList> const element_rects = element.get_client_rects();
+                for (u32 i = 0; i < element_rects->length(); i++) {
+                    auto rect = element_rects->item(i);
+                    rects.append(Geometry::DOMRect::create(realm(),
+                        Gfx::FloatRect(rect->x(), rect->y(), rect->width(), rect->height())));
+                }
+            }
+        } else if (node_type == NodeType::TEXT_NODE) {
+            // 2. For each Text node selected or partially selected by the range (including when the boundary-points
+            // are identical), include scaled DOMRect object (for the part that is selected, not the whole line box).
+            auto const& text = static_cast<DOM::Text const&>(*node);
+            auto const* paintable = text.paintable();
+            if (paintable) {
+                auto const* containing_block = paintable->containing_block();
+                if (is<Painting::PaintableWithLines>(*containing_block)) {
+                    auto const& paintable_lines = static_cast<Painting::PaintableWithLines const&>(*containing_block);
+                    auto fragments = paintable_lines.fragments();
+                    auto const& font = paintable->layout_node().first_available_font();
+                    for (auto frag = fragments.begin(); frag != fragments.end(); frag++) {
+                        auto rect = frag->range_rect(font, *this);
+                        if (rect.is_empty())
+                            continue;
+                        rects.append(Geometry::DOMRect::create(realm(),
+                            Gfx::FloatRect(rect)));
+                    }
+                } else {
+                    dbgln("FIXME: Failed to get client rects for node {}", node->debug_description());
+                }
+            }
+        }
+    }
+    return Geometry::DOMRectList::create(realm(), move(rects));
 }
 
 // https://w3c.github.io/csswg-drafts/cssom-view/#dom-range-getboundingclientrect
-JS::NonnullGCPtr<Geometry::DOMRect> Range::get_bounding_client_rect() const
+JS::NonnullGCPtr<Geometry::DOMRect> Range::get_bounding_client_rect()
 {
-    dbgln("(STUBBED) Range::get_bounding_client_rect()");
-    return Geometry::DOMRect::construct_impl(realm(), 0, 0, 0, 0).release_value_but_fixme_should_propagate_errors();
+    // 1. Let list be the result of invoking getClientRects() on element.
+    auto list = get_client_rects();
+
+    // 2. If the list is empty return a DOMRect object whose x, y, width and height members are zero.
+    if (list->length() == 0)
+        return Geometry::DOMRect::construct_impl(realm(), 0, 0, 0, 0).release_value_but_fixme_should_propagate_errors();
+
+    // 3. If all rectangles in list have zero width or height, return the first rectangle in list.
+    auto all_rectangle_has_zero_width_or_height = true;
+    for (auto i = 0u; i < list->length(); ++i) {
+        auto const& rect = list->item(i);
+        if (rect->width() != 0 && rect->height() != 0) {
+            all_rectangle_has_zero_width_or_height = false;
+            break;
+        }
+    }
+    if (all_rectangle_has_zero_width_or_height)
+        return JS::NonnullGCPtr { *const_cast<Geometry::DOMRect*>(list->item(0)) };
+
+    // 4. Otherwise, return a DOMRect object describing the smallest rectangle that includes all of the rectangles in
+    //    list of which the height or width is not zero.
+    auto const* first_rect = list->item(0);
+    auto bounding_rect = Gfx::Rect { first_rect->x(), first_rect->y(), first_rect->width(), first_rect->height() };
+    for (auto i = 1u; i < list->length(); ++i) {
+        auto const& rect = list->item(i);
+        if (rect->width() == 0 || rect->height() == 0)
+            continue;
+        bounding_rect = bounding_rect.united({ rect->x(), rect->y(), rect->width(), rect->height() });
+    }
+    return Geometry::DOMRect::create(realm(), bounding_rect.to_type<float>());
 }
 
-// https://w3c.github.io/DOM-Parsing/#dom-range-createcontextualfragment
-WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::create_contextual_fragment(String const& fragment)
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-range-createcontextualfragment
+WebIDL::ExceptionOr<JS::NonnullGCPtr<DocumentFragment>> Range::create_contextual_fragment(String const& string)
 {
-    // 1. Let node be the context object's start node.
+    // FIXME: 1. Let compliantString be the result of invoking the Get Trusted Type compliant string algorithm with TrustedHTML, this's relevant global object, string, "Range createContextualFragment", and "script".
+
+    // 2. Let node be this's start node.
     JS::NonnullGCPtr<Node> node = *start_container();
 
-    // Let element be as follows, depending on node's interface:
-    JS::GCPtr<Element> element;
-    switch (static_cast<NodeType>(node->node_type())) {
-    case NodeType::DOCUMENT_NODE:
-    case NodeType::DOCUMENT_FRAGMENT_NODE:
-        element = nullptr;
-        break;
-    case NodeType::ELEMENT_NODE:
-        element = static_cast<DOM::Element&>(*node);
-        break;
-    case NodeType::TEXT_NODE:
-    case NodeType::COMMENT_NODE:
-        element = node->parent_element();
-        break;
-    case NodeType::DOCUMENT_TYPE_NODE:
-    case NodeType::PROCESSING_INSTRUCTION_NODE:
-        // [DOM4] prevents this case.
-        VERIFY_NOT_REACHED();
-    default:
-        VERIFY_NOT_REACHED();
-    }
+    // 3. Let element be null.
+    JS::GCPtr<Element> element = nullptr;
 
-    // 2. If either element is null or the following are all true:
+    auto node_type = static_cast<NodeType>(node->node_type());
+    // 4. If node implements Element, set element to node.
+    if (node_type == NodeType::ELEMENT_NODE)
+        element = static_cast<DOM::Element&>(*node);
+    // 5. Otherwise, if node implements Text or Comment node, set element to node's parent element.
+    else if (first_is_one_of(node_type, NodeType::TEXT_NODE, NodeType::COMMENT_NODE))
+        element = node->parent_element();
+
+    // 6. If either element is null or all of the following are true:
     //    - element's node document is an HTML document,
-    //    - element's local name is "html", and
+    //    - element's local name is "html"; and
     //    - element's namespace is the HTML namespace;
     if (!element || is<HTML::HTMLHtmlElement>(*element)) {
-        // let element be a new Element with
-        // - "body" as its local name,
-        // - The HTML namespace as its namespace, and
-        // - The context object's node document as its node document.
+        // then set element to the result of creating an element given this's node document,
+        // body, and the HTML namespace.
         element = TRY(DOM::create_element(node->document(), HTML::TagNames::body, Namespace::HTML));
     }
 
-    // 3. Let fragment node be the result of invoking the fragment parsing algorithm with fragment as markup, and element as the context element.
-    auto fragment_node = TRY(DOMParsing::parse_fragment(fragment.to_byte_string(), *element));
+    // 7. Let fragment node be the result of invoking the fragment parsing algorithm steps with element and compliantString. FIXME: Use compliantString.
+    auto fragment_node = TRY(element->parse_fragment(string));
 
-    // 4. Unmark all scripts in fragment node as "already started" and as "parser-inserted".
+    // 8. For each script of fragment node's script element descendants:
     fragment_node->for_each_in_subtree_of_type<HTML::HTMLScriptElement>([&](HTML::HTMLScriptElement& script_element) {
+        // 8.1 Set scripts already started to false.
         script_element.unmark_as_already_started({});
+        // 8.2 Set scripts parser document to null.
         script_element.unmark_as_parser_inserted({});
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
-    // 5. Return the value of fragment node.
+    // 5. Return fragment node.
     return fragment_node;
 }
 

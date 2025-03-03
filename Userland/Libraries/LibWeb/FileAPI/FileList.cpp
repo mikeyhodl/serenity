@@ -5,6 +5,7 @@
  */
 
 #include <LibJS/Runtime/Realm.h>
+#include <LibWeb/Bindings/FileListPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/FileAPI/FileList.h>
@@ -13,21 +14,9 @@ namespace Web::FileAPI {
 
 JS_DEFINE_ALLOCATOR(FileList);
 
-JS::NonnullGCPtr<FileList> FileList::create(JS::Realm& realm, Vector<JS::NonnullGCPtr<File>>&& files)
-{
-    return realm.heap().allocate<FileList>(realm, realm, move(files));
-}
-
 JS::NonnullGCPtr<FileList> FileList::create(JS::Realm& realm)
 {
     return realm.heap().allocate<FileList>(realm, realm);
-}
-
-FileList::FileList(JS::Realm& realm, Vector<JS::NonnullGCPtr<File>>&& files)
-    : Bindings::PlatformObject(realm)
-    , m_files(move(files))
-{
-    m_legacy_platform_object_flags = LegacyPlatformObjectFlags { .supports_indexed_properties = 1 };
 }
 
 FileList::FileList(JS::Realm& realm)
@@ -44,21 +33,10 @@ void FileList::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(FileList);
 }
 
-// https://w3c.github.io/FileAPI/#dfn-item
-bool FileList::is_supported_property_index(u32 index) const
-{
-    // Supported property indices are the numbers in the range zero to one less than the number of File objects represented by the FileList object.
-    // If there are no such File objects, then there are no supported property indices.
-    if (m_files.is_empty())
-        return false;
-
-    return index < m_files.size();
-}
-
-WebIDL::ExceptionOr<JS::Value> FileList::item_value(size_t index) const
+Optional<JS::Value> FileList::item_value(size_t index) const
 {
     if (index >= m_files.size())
-        return JS::js_undefined();
+        return {};
 
     return m_files[index].ptr();
 }
@@ -66,8 +44,7 @@ WebIDL::ExceptionOr<JS::Value> FileList::item_value(size_t index) const
 void FileList::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    for (auto file : m_files)
-        visitor.visit(file);
+    visitor.visit(m_files);
 }
 
 WebIDL::ExceptionOr<void> FileList::serialization_steps(HTML::SerializationRecord& serialized, bool for_storage, HTML::SerializationMemory& memory)

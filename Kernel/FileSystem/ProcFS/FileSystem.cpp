@@ -12,7 +12,7 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullRefPtr<FileSystem>> ProcFS::try_create(ReadonlyBytes)
+ErrorOr<NonnullRefPtr<FileSystem>> ProcFS::try_create(FileSystemSpecificOptions const&)
 {
     return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ProcFS));
 }
@@ -41,6 +41,11 @@ u8 ProcFS::internal_file_type_to_directory_entry_type(DirectoryEntryView const& 
 Inode& ProcFS::root_inode()
 {
     return *m_root_inode;
+}
+
+ErrorOr<void> ProcFS::rename(Inode&, StringView, Inode&, StringView)
+{
+    return EROFS;
 }
 
 }

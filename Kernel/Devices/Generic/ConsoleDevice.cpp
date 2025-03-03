@@ -8,7 +8,8 @@
 #if ARCH(X86_64)
 #    include <Kernel/Arch/x86_64/BochsDebugOutput.h>
 #endif
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/API/MajorNumberAllocation.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Generic/ConsoleDevice.h>
 #include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Sections.h>
@@ -18,15 +19,13 @@ namespace Kernel {
 
 Spinlock<LockRank::None> g_console_lock {};
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<ConsoleDevice> ConsoleDevice::must_create()
+UNMAP_AFTER_INIT NonnullRefPtr<ConsoleDevice> ConsoleDevice::must_create()
 {
-    auto device_or_error = DeviceManagement::try_create_device<ConsoleDevice>();
-    VERIFY(!device_or_error.is_error());
-    return device_or_error.release_value();
+    return MUST(Device::try_create_device<ConsoleDevice>());
 }
 
 UNMAP_AFTER_INIT ConsoleDevice::ConsoleDevice()
-    : CharacterDevice(5, 1)
+    : CharacterDevice(MajorAllocation::CharacterDeviceFamily::Console, 1)
 {
 }
 
@@ -50,7 +49,7 @@ ErrorOr<size_t> ConsoleDevice::write(OpenFileDescription&, u64, Kernel::UserOrKe
         return 0;
 
     return data.read_buffered<256>(size, [&](ReadonlyBytes readonly_bytes) {
-        for (const auto& byte : readonly_bytes)
+        for (auto const& byte : readonly_bytes)
             put_char(byte);
         return readonly_bytes.size();
     });

@@ -159,7 +159,8 @@ TEST_CASE(file_url_with_encoded_characters)
     URL::URL url("file:///my/file/test%23file.txt"sv);
     EXPECT(url.is_valid());
     EXPECT_EQ(url.scheme(), "file");
-    EXPECT_EQ(url.serialize_path(), "/my/file/test#file.txt");
+    EXPECT_EQ(url.serialize_path(), "/my/file/test%23file.txt");
+    EXPECT_EQ(URL::percent_decode(url.serialize_path()), "/my/file/test#file.txt");
     EXPECT(!url.query().has_value());
     EXPECT(!url.fragment().has_value());
 }
@@ -195,7 +196,9 @@ TEST_CASE(file_url_serialization)
 TEST_CASE(file_url_relative)
 {
     EXPECT_EQ(URL::URL("https://vkoskiv.com/index.html"sv).complete_url("/static/foo.js"sv).serialize(), "https://vkoskiv.com/static/foo.js");
-    EXPECT_EQ(URL::URL("file:///home/vkoskiv/test/index.html"sv).complete_url("/static/foo.js"sv).serialize(), "file:///home/vkoskiv/test/static/foo.js");
+    EXPECT_EQ(URL::URL("file:///home/vkoskiv/test/index.html"sv).complete_url("/static/foo.js"sv).serialize(), "file:///static/foo.js");
+    EXPECT_EQ(URL::URL("https://vkoskiv.com/index.html"sv).complete_url("static/foo.js"sv).serialize(), "https://vkoskiv.com/static/foo.js");
+    EXPECT_EQ(URL::URL("file:///home/vkoskiv/test/index.html"sv).complete_url("static/foo.js"sv).serialize(), "file:///home/vkoskiv/test/static/foo.js");
 }
 
 TEST_CASE(about_url)
@@ -236,109 +239,6 @@ TEST_CASE(mailto_url_with_subject)
     EXPECT_EQ(url.query(), "subject=test");
     EXPECT(!url.fragment().has_value());
     EXPECT_EQ(url.serialize(), "mailto:mail@example.com?subject=test");
-}
-
-TEST_CASE(data_url)
-{
-    URL::URL url("data:text/html,test"sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT(url.host().has<Empty>());
-    EXPECT_EQ(url.serialize(), "data:text/html,test");
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/html");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "test"sv);
-}
-
-TEST_CASE(data_url_default_mime_type)
-{
-    URL::URL url("data:,test"sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT(url.host().has<Empty>());
-    EXPECT_EQ(url.serialize(), "data:,test");
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/plain;charset=US-ASCII");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "test"sv);
-}
-
-TEST_CASE(data_url_encoded)
-{
-    URL::URL url("data:text/html,Hello%20friends%2C%0X%X0"sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT(url.host().has<Empty>());
-    EXPECT_EQ(url.serialize(), "data:text/html,Hello%20friends%2C%0X%X0");
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/html");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "Hello friends,%0X%X0"sv);
-}
-
-TEST_CASE(data_url_base64_encoded)
-{
-    URL::URL url("data:text/html;base64,dGVzdA=="sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT(url.host().has<Empty>());
-    EXPECT_EQ(url.serialize(), "data:text/html;base64,dGVzdA==");
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/html");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "test"sv);
-}
-
-TEST_CASE(data_url_base64_encoded_default_mime_type)
-{
-    URL::URL url("data:;base64,dGVzdA=="sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT(url.host().has<Empty>());
-    EXPECT_EQ(url.serialize(), "data:;base64,dGVzdA==");
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/plain;charset=US-ASCII");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "test"sv);
-}
-
-TEST_CASE(data_url_base64_encoded_with_whitespace)
-{
-    URL::URL url("data: text/html ;     bAsE64 , dGVz dA== "sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT(url.host().has<Empty>());
-    EXPECT_EQ(url.serialize(), "data: text/html ;     bAsE64 , dGVz dA==");
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/html");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "test");
-}
-
-TEST_CASE(data_url_base64_encoded_with_inline_whitespace)
-{
-    URL::URL url("data:text/javascript;base64,%20ZD%20Qg%0D%0APS%20An%20Zm91cic%0D%0A%207%20"sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT(url.host().has<Empty>());
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/javascript");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "d4 = 'four';"sv);
-}
-
-TEST_CASE(data_url_completed_with_fragment)
-{
-    auto url = URL::URL("data:text/plain,test"sv).complete_url("#a"sv);
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.scheme(), "data");
-    EXPECT_EQ(url.fragment(), "a");
-    EXPECT(url.host().has<Empty>());
-
-    auto data_url = TRY_OR_FAIL(url.process_data_url());
-    EXPECT_EQ(data_url.mime_type, "text/plain");
-    EXPECT_EQ(StringView(data_url.body.bytes()), "test"sv);
 }
 
 TEST_CASE(trailing_slash_with_complete_url)
@@ -433,18 +333,46 @@ TEST_CASE(unicode)
 {
     URL::URL url { "http://example.com/_ünicöde_téxt_©"sv };
     EXPECT(url.is_valid());
-    EXPECT_EQ(url.serialize_path(), "/_ünicöde_téxt_©");
+    EXPECT_EQ(url.serialize_path(), "/_%C3%BCnic%C3%B6de_t%C3%A9xt_%C2%A9");
+    EXPECT_EQ(URL::percent_decode(url.serialize_path()), "/_ünicöde_téxt_©");
     EXPECT(!url.query().has_value());
     EXPECT(!url.fragment().has_value());
 }
 
 TEST_CASE(query_with_non_ascii)
 {
-    URL::URL url { "http://example.com/?utf8=✓"sv };
-    EXPECT(url.is_valid());
-    EXPECT_EQ(url.serialize_path(), "/"sv);
-    EXPECT_EQ(url.query(), "utf8=%E2%9C%93");
-    EXPECT(!url.fragment().has_value());
+    {
+        URL::URL url = URL::Parser::basic_parse("http://example.com/?utf8=✓"sv);
+        EXPECT(url.is_valid());
+        EXPECT_EQ(url.serialize_path(), "/"sv);
+        EXPECT_EQ(url.query(), "utf8=%E2%9C%93");
+        EXPECT(!url.fragment().has_value());
+    }
+    {
+        URL::URL url = URL::Parser::basic_parse("http://example.com/?shift_jis=✓"sv, {}, nullptr, {}, "shift_jis"sv);
+        EXPECT(url.is_valid());
+        EXPECT_EQ(url.serialize_path(), "/"sv);
+        EXPECT_EQ(url.query(), "shift_jis=%26%2310003%3B");
+        EXPECT(!url.fragment().has_value());
+    }
+}
+
+TEST_CASE(fragment_with_non_ascii)
+{
+    {
+        URL::URL url = URL::Parser::basic_parse("http://example.com/#✓"sv);
+        EXPECT(url.is_valid());
+        EXPECT_EQ(url.serialize_path(), "/"sv);
+        EXPECT(!url.query().has_value());
+        EXPECT_EQ(url.fragment(), "%E2%9C%93");
+    }
+    {
+        URL::URL url = URL::Parser::basic_parse("http://example.com/#✓"sv, {}, nullptr, {}, "shift_jis"sv);
+        EXPECT(url.is_valid());
+        EXPECT_EQ(url.serialize_path(), "/"sv);
+        EXPECT(!url.query().has_value());
+        EXPECT_EQ(url.fragment(), "%E2%9C%93");
+    }
 }
 
 TEST_CASE(complete_file_url_with_base)
@@ -559,8 +487,8 @@ TEST_CASE(username_and_password)
         URL::URL url(url_with_username_and_password);
         EXPECT(url.is_valid());
         EXPECT_EQ(MUST(url.serialized_host()), "test.com"sv);
-        EXPECT_EQ(MUST(url.username()), "username"sv);
-        EXPECT_EQ(MUST(url.password()), "password"sv);
+        EXPECT_EQ(url.username(), "username"sv);
+        EXPECT_EQ(url.password(), "password"sv);
     }
 
     {
@@ -568,8 +496,10 @@ TEST_CASE(username_and_password)
         URL::URL url(url_with_percent_encoded_credentials);
         EXPECT(url.is_valid());
         EXPECT_EQ(MUST(url.serialized_host()), "test.com"sv);
-        EXPECT_EQ(MUST(url.username()), "username!$%"sv);
-        EXPECT_EQ(MUST(url.password()), "password!$%"sv);
+        EXPECT_EQ(url.username(), "username%21%24%25");
+        EXPECT_EQ(url.password(), "password%21%24%25");
+        EXPECT_EQ(URL::percent_decode(url.username()), "username!$%"sv);
+        EXPECT_EQ(URL::percent_decode(url.password()), "password!$%"sv);
     }
 
     {
@@ -578,8 +508,8 @@ TEST_CASE(username_and_password)
         URL::URL url(url_with_long_username);
         EXPECT(url.is_valid());
         EXPECT_EQ(MUST(url.serialized_host()), "test.com"sv);
-        EXPECT_EQ(MUST(url.username()), username);
-        EXPECT(MUST(url.password()).is_empty());
+        EXPECT_EQ(url.username(), username);
+        EXPECT(url.password().is_empty());
     }
 
     {
@@ -588,7 +518,43 @@ TEST_CASE(username_and_password)
         URL::URL url(url_with_long_password);
         EXPECT(url.is_valid());
         EXPECT_EQ(MUST(url.serialized_host()), "test.com"sv);
-        EXPECT(MUST(url.username()).is_empty());
-        EXPECT_EQ(MUST(url.password()), password);
+        EXPECT(url.username().is_empty());
+        EXPECT_EQ(url.password(), password);
+    }
+}
+
+TEST_CASE(ascii_only_url)
+{
+    {
+        constexpr auto upper_case_url = "HTTP://EXAMPLE.COM:80/INDEX.HTML#FRAGMENT"sv;
+        URL::URL url(upper_case_url);
+        EXPECT(url.is_valid());
+        EXPECT_EQ(url.scheme(), "http");
+        EXPECT_EQ(MUST(url.serialized_host()), "example.com"sv);
+        EXPECT_EQ(url.to_byte_string(), "http://example.com/INDEX.HTML#FRAGMENT");
+    }
+
+    {
+        constexpr auto mixed_case_url = "hTtP://eXaMpLe.CoM:80/iNdEx.HtMl#fRaGmEnT"sv;
+        URL::URL url(mixed_case_url);
+        EXPECT(url.is_valid());
+        EXPECT_EQ(url.scheme(), "http");
+        EXPECT_EQ(MUST(url.serialized_host()), "example.com"sv);
+        EXPECT_EQ(url.to_byte_string(), "http://example.com/iNdEx.HtMl#fRaGmEnT");
+    }
+}
+
+TEST_CASE(invalid_domain_code_points)
+{
+    {
+        constexpr auto upper_case_url = "http://example%25.com"sv;
+        URL::URL url(upper_case_url);
+        EXPECT(!url.is_valid());
+    }
+
+    {
+        constexpr auto mixed_case_url = "http://thing\u0007y/'"sv;
+        URL::URL url(mixed_case_url);
+        EXPECT(!url.is_valid());
     }
 }

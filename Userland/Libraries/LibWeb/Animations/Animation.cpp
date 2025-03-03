@@ -9,6 +9,7 @@
 #include <LibWeb/Animations/AnimationEffect.h>
 #include <LibWeb/Animations/AnimationPlaybackEvent.h>
 #include <LibWeb/Animations/DocumentTimeline.h>
+#include <LibWeb/Bindings/AnimationPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/CSSAnimation.h>
 #include <LibWeb/DOM/Document.h>
@@ -357,8 +358,6 @@ bool Animation::is_replaceable() const
 
 void Animation::set_replace_state(Bindings::AnimationReplaceState value)
 {
-    m_replace_state = value;
-
     if (value == Bindings::AnimationReplaceState::Removed) {
         // Remove the associated effect from its target, if applicable
         if (m_effect && m_effect->target())
@@ -366,7 +365,14 @@ void Animation::set_replace_state(Bindings::AnimationReplaceState value)
 
         // Remove this animation from its timeline
         m_timeline->disassociate_with_animation(*this);
+    } else if (value == Bindings::AnimationReplaceState::Persisted && m_replace_state == Bindings::AnimationReplaceState::Removed) {
+        // This animation was removed, but is now being "unremoved"; undo the effects from the if-statement above
+        if (m_effect && m_effect->target())
+            m_effect->target()->associate_with_animation(*this);
+        m_timeline->associate_with_animation(*this);
     }
+
+    m_replace_state = value;
 }
 
 // https://www.w3.org/TR/web-animations-1/#dom-animation-onfinish
@@ -424,7 +430,7 @@ void Animation::cancel(ShouldInvalidate should_invalidate)
         reset_an_animations_pending_tasks();
 
         // 2. Reject the current finished promise with a DOMException named "AbortError".
-        auto dom_exception = WebIDL::AbortError::create(realm, "Animation was cancelled"_fly_string);
+        auto dom_exception = WebIDL::AbortError::create(realm, "Animation was cancelled"_string);
         WebIDL::reject_promise(realm, current_finished_promise(), dom_exception);
 
         // 3. Set the [[PromiseIsHandled]] internal slot of the current finished promise to true.
@@ -455,11 +461,11 @@ void Animation::cancel(ShouldInvalidate should_invalidate)
             Optional<double> scheduled_event_time;
             if (m_timeline && !m_timeline->is_inactive() && m_timeline->can_convert_a_timeline_time_to_an_origin_relative_time())
                 scheduled_event_time = m_timeline->convert_a_timeline_time_to_an_origin_relative_time(m_timeline->current_time());
-            document->append_pending_animation_event({ cancel_event, *this, scheduled_event_time });
+            document->append_pending_animation_event({ cancel_event, *this, *this, scheduled_event_time });
         } else {
-            HTML::queue_global_task(HTML::Task::Source::DOMManipulation, realm.global_object(), [this, cancel_event]() {
+            HTML::queue_global_task(HTML::Task::Source::DOMManipulation, realm.global_object(), JS::create_heap_function(heap(), [this, cancel_event]() {
                 dispatch_event(cancel_event);
-            });
+            }));
         }
     }
 
@@ -468,6 +474,10 @@ void Animation::cancel(ShouldInvalidate should_invalidate)
 
     // 3. Make animation’s start time unresolved.
     m_start_time = {};
+
+    // This time is needed for dispatching the animationcancel DOM event
+    if (auto effect = m_effect)
+        m_saved_cancel_time = effect->active_time_using_fill(Bindings::FillMode::Both);
 
     if (should_invalidate == ShouldInvalidate::Yes)
         invalidate_effect();
@@ -480,9 +490,9 @@ WebIDL::ExceptionOr<void> Animation::finish()
     //    effect end is infinity, throw an "InvalidStateError" DOMException and abort these steps.
     auto effective_playback_rate = this->effective_playback_rate();
     if (effective_playback_rate == 0.0)
-        return WebIDL::InvalidStateError::create(realm(), "Animation with a playback rate of 0 cannot be finished"_fly_string);
+        return WebIDL::InvalidStateError::create(realm(), "Animation with a playback rate of 0 cannot be finished"_string);
     if (effective_playback_rate > 0.0 && isinf(associated_effect_end()))
-        return WebIDL::InvalidStateError::create(realm(), "Animation with no end cannot be finished"_fly_string);
+        return WebIDL::InvalidStateError::create(realm(), "Animation with no end cannot be finished"_string);
 
     // 2. Apply any pending playback rate to animation.
     apply_any_pending_playback_rate();
@@ -584,7 +594,7 @@ WebIDL::ExceptionOr<void> Animation::play_an_animation(AutoRewind auto_rewind)
             // -> If associated effect end is positive infinity,
             if (isinf(associated_effect_end) && associated_effect_end > 0.0) {
                 // throw an "InvalidStateError" DOMException and abort these steps.
-                return WebIDL::InvalidStateError::create(realm(), "Cannot rewind an animation with an infinite effect end"_fly_string);
+                return WebIDL::InvalidStateError::create(realm(), "Cannot rewind an animation with an infinite effect end"_string);
             }
             // -> Otherwise,
             //    Set seek time to animation’s associated effect end.
@@ -663,7 +673,8 @@ WebIDL::ExceptionOr<void> Animation::play_an_animation(AutoRewind auto_rewind)
     //     If a user agent determines that animation is immediately ready, it may schedule the above task as a microtask
     //     such that it runs at the next microtask checkpoint, but it must not perform the task synchronously.
     m_pending_play_task = TaskState::Scheduled;
-    m_saved_play_time = global_object().performance()->now();
+    if (m_timeline)
+        m_saved_play_time = m_timeline->current_time().value();
 
     // 13. Run the procedure to update an animation’s finished state for animation with the did seek flag set to false,
     //     and the synchronously notify flag set to false.
@@ -703,7 +714,7 @@ WebIDL::ExceptionOr<void> Animation::pause()
             auto associated_effect_end = this->associated_effect_end();
             if (isinf(associated_effect_end) && associated_effect_end > 0.0) {
                 // throw an "InvalidStateError" DOMException and abort these steps.
-                return WebIDL::InvalidStateError::create(realm(), "Cannot pause an animation with an infinite effect end"_fly_string);
+                return WebIDL::InvalidStateError::create(realm(), "Cannot pause an animation with an infinite effect end"_string);
             }
 
             // Otherwise,
@@ -747,7 +758,7 @@ WebIDL::ExceptionOr<void> Animation::pause()
     //
     // Note: This is run_pending_pause_task()
     m_pending_pause_task = TaskState::Scheduled;
-    m_saved_pause_time = global_object().performance()->now();
+    m_saved_pause_time = m_timeline->current_time().value();
 
     // 11. Run the procedure to update an animation’s finished state for animation with the did seek flag set to false,
     //     and the synchronously notify flag set to false.
@@ -829,7 +840,7 @@ WebIDL::ExceptionOr<void> Animation::reverse()
     // 1. If there is no timeline associated with animation, or the associated timeline is inactive throw an
     //    "InvalidStateError" DOMException and abort these steps.
     if (!m_timeline || m_timeline->is_inactive())
-        return WebIDL::InvalidStateError::create(realm, "Cannot reverse an animation with an inactive timeline"_fly_string);
+        return WebIDL::InvalidStateError::create(realm, "Cannot reverse an animation with an inactive timeline"_string);
 
     // 2. Let original pending playback rate be animation’s pending playback rate.
     auto original_pending_playback_rate = m_pending_playback_rate;
@@ -1097,7 +1108,7 @@ void Animation::update_finished_state(DidSeek did_seek, SynchronouslyNotify sync
     //    steps:
     if (current_finished_state && !m_is_finished) {
         // 1. Let finish notification steps refer to the following procedure:
-        JS::SafeFunction<void()> finish_notification_steps = [&]() {
+        auto finish_notification_steps = JS::create_heap_function(heap(), [this, &realm]() {
             // 1. If animation’s play state is not equal to finished, abort these steps.
             if (play_state() != Bindings::AnimationPlayState::Finished)
                 return;
@@ -1126,22 +1137,26 @@ void Animation::update_finished_state(DidSeek did_seek, SynchronouslyNotify sync
             //    animation event queue along with its target, animation. For the scheduled event time, use the result
             //    of converting animation’s associated effect end to an origin-relative time.
             if (auto document_for_timing = this->document_for_timing()) {
-                document_for_timing->append_pending_animation_event({ .event = finish_event,
+                document_for_timing->append_pending_animation_event({
+                    .event = finish_event,
+                    .animation = *this,
                     .target = *this,
-                    .scheduled_event_time = convert_a_timeline_time_to_an_origin_relative_time(associated_effect_end()) });
+                    .scheduled_event_time = convert_a_timeline_time_to_an_origin_relative_time(associated_effect_end()),
+                });
             }
             //    Otherwise, queue a task to dispatch finishEvent at animation. The task source for this task is the DOM
             //    manipulation task source.
             else {
                 // Manually create a task so its ID can be saved
                 auto& document = verify_cast<HTML::Window>(realm.global_object()).associated_document();
-                auto task = HTML::Task::create(HTML::Task::Source::DOMManipulation, &document, [this, finish_event]() {
-                    dispatch_event(finish_event);
-                });
+                auto task = HTML::Task::create(vm(), HTML::Task::Source::DOMManipulation, &document,
+                    JS::create_heap_function(heap(), [this, finish_event]() {
+                        dispatch_event(finish_event);
+                    }));
                 m_pending_finish_microtask_id = task->id();
-                HTML::main_thread_event_loop().task_queue().add(move(task));
+                HTML::main_thread_event_loop().task_queue().add(task);
             }
-        };
+        });
 
         // 2. If synchronously notify is true, cancel any queued microtask to run the finish notification steps for this
         //    animation, and run the finish notification steps immediately.
@@ -1151,13 +1166,13 @@ void Animation::update_finished_state(DidSeek did_seek, SynchronouslyNotify sync
                     return task.id() == id;
                 });
             }
-            finish_notification_steps();
+            finish_notification_steps->function()();
         }
         //    Otherwise, if synchronously notify is false, queue a microtask to run finish notification steps for
         //    animation unless there is already a microtask queued to run those steps for animation.
         else if (!m_pending_finish_microtask_id.has_value()) {
             auto& document = verify_cast<HTML::Window>(realm.global_object()).associated_document();
-            auto task = HTML::Task::create(HTML::Task::Source::DOMManipulation, &document, move(finish_notification_steps));
+            auto task = HTML::Task::create(vm(), HTML::Task::Source::DOMManipulation, &document, move(finish_notification_steps));
             m_pending_finish_microtask_id = task->id();
             HTML::main_thread_event_loop().task_queue().add(move(task));
         }
@@ -1193,7 +1208,7 @@ void Animation::reset_an_animations_pending_tasks()
     apply_any_pending_playback_rate();
 
     // 5. Reject animation’s current ready promise with a DOMException named "AbortError".
-    auto dom_exception = WebIDL::AbortError::create(realm, "Animation was cancelled"_fly_string);
+    auto dom_exception = WebIDL::AbortError::create(realm, "Animation was cancelled"_string);
     WebIDL::reject_promise(realm, current_ready_promise(), dom_exception);
 
     // 6. Set the [[PromiseIsHandled]] internal slot of animation’s current ready promise to true.
@@ -1316,8 +1331,10 @@ JS::NonnullGCPtr<WebIDL::Promise> Animation::current_finished_promise() const
 void Animation::invalidate_effect()
 {
     if (m_effect) {
-        if (auto target = m_effect->target(); target && target->paintable())
+        if (auto target = m_effect->target(); target && target->paintable()) {
+            target->document().set_needs_animated_style_update();
             target->paintable()->set_needs_display();
+        }
     }
 }
 
@@ -1341,6 +1358,7 @@ void Animation::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_timeline);
     visitor.visit(m_current_ready_promise);
     visitor.visit(m_current_finished_promise);
+    visitor.visit(m_owning_element);
 }
 
 }

@@ -11,8 +11,9 @@
 #include <LibGfx/ImageFormats/JPEGWriter.h>
 #include <LibGfx/ImageFormats/PNGWriter.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
+#include <LibWeb/Bindings/HTMLCanvasElementPrototype.h>
 #include <LibWeb/CSS/StyleComputer.h>
-#include <LibWeb/CSS/StyleValues/IdentifierStyleValue.h>
+#include <LibWeb/CSS/StyleValues/CSSKeywordValue.h>
 #include <LibWeb/CSS/StyleValues/RatioStyleValue.h>
 #include <LibWeb/CSS/StyleValues/StyleValueList.h>
 #include <LibWeb/DOM/Document.h>
@@ -73,7 +74,7 @@ void HTMLCanvasElement::apply_presentational_hints(CSS::StyleProperties& style) 
         // then the user agent is expected to use the parsed integers as a presentational hint for the 'aspect-ratio' property of the form auto w / h.
         style.set_property(CSS::PropertyID::AspectRatio,
             CSS::StyleValueList::create(CSS::StyleValueVector {
-                                            CSS::IdentifierStyleValue::create(CSS::ValueID::Auto),
+                                            CSS::CSSKeywordValue::create(CSS::Keyword::Auto),
                                             CSS::RatioStyleValue::create(CSS::Ratio { static_cast<double>(w.value()), static_cast<double>(h.value()) }) },
 
                 CSS::StyleValueList::Separator::Space));
@@ -113,7 +114,7 @@ void HTMLCanvasElement::reset_context_to_default_state()
 
 WebIDL::ExceptionOr<void> HTMLCanvasElement::set_width(unsigned value)
 {
-    TRY(set_attribute(HTML::AttributeNames::width, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::width, String::number(value)));
     m_bitmap = nullptr;
     reset_context_to_default_state();
     return {};
@@ -121,7 +122,7 @@ WebIDL::ExceptionOr<void> HTMLCanvasElement::set_width(unsigned value)
 
 WebIDL::ExceptionOr<void> HTMLCanvasElement::set_height(unsigned value)
 {
-    TRY(set_attribute(HTML::AttributeNames::height, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::height, String::number(value)));
     m_bitmap = nullptr;
     reset_context_to_default_state();
     return {};
@@ -228,7 +229,7 @@ struct SerializeBitmapResult {
 static ErrorOr<SerializeBitmapResult> serialize_bitmap(Gfx::Bitmap const& bitmap, StringView type, Optional<double> quality)
 {
     // If type is an image format that supports variable quality (such as "image/jpeg"), quality is given, and type is not "image/png", then,
-    // if Type(quality) is Number, and quality is in the range 0.0 to 1.0 inclusive, the user agent must treat quality as the desired quality level.
+    // if quality is a Number in the range 0.0 to 1.0 inclusive, the user agent must treat quality as the desired quality level.
     // Otherwise, the user agent must use its default quality value, as if the quality argument had not been given.
     if (quality.has_value() && !(*quality >= 0.0 && *quality <= 1.0))
         quality = OptionalNone {};

@@ -4,11 +4,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/ShadowRootPrototype.h>
 #include <LibWeb/DOM/AdoptedStyleSheets.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/ShadowRoot.h>
-#include <LibWeb/DOMParsing/InnerHTML.h>
+#include <LibWeb/HTML/HTMLTemplateElement.h>
+#include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/Layout/BlockContainer.h>
 
 namespace Web::DOM {
@@ -35,6 +37,18 @@ void ShadowRoot::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(ShadowRoot);
 }
 
+// https://dom.spec.whatwg.org/#dom-shadowroot-onslotchange
+void ShadowRoot::set_onslotchange(WebIDL::CallbackType* event_handler)
+{
+    set_event_handler_attribute(HTML::EventNames::slotchange, event_handler);
+}
+
+// https://dom.spec.whatwg.org/#dom-shadowroot-onslotchange
+WebIDL::CallbackType* ShadowRoot::onslotchange()
+{
+    return event_handler_attribute(HTML::EventNames::slotchange);
+}
+
 // https://dom.spec.whatwg.org/#ref-for-get-the-parent%E2%91%A6
 EventTarget* ShadowRoot::get_parent(Event const& event)
 {
@@ -47,25 +61,68 @@ EventTarget* ShadowRoot::get_parent(Event const& event)
     return host();
 }
 
-// https://w3c.github.io/DOM-Parsing/#dom-innerhtml-innerhtml
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml
 WebIDL::ExceptionOr<String> ShadowRoot::inner_html() const
 {
     return serialize_fragment(DOMParsing::RequireWellFormed::Yes);
 }
 
-// https://w3c.github.io/DOM-Parsing/#dom-innerhtml-innerhtml
-WebIDL::ExceptionOr<void> ShadowRoot::set_inner_html(StringView markup)
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml
+WebIDL::ExceptionOr<void> ShadowRoot::set_inner_html(StringView value)
 {
-    TRY(DOMParsing::inner_html_setter(*this, markup));
+    // FIXME: 1. Let compliantString be the result of invoking the Get Trusted Type compliant string algorithm with TrustedHTML, this's relevant global object, the given value, "ShadowRoot innerHTML", and "script".
+
+    // 2. Let context be this's host.
+    auto context = this->host();
+    VERIFY(context);
+
+    // 3. Let fragment be the result of invoking the fragment parsing algorithm steps with context and compliantString. FIXME: Use compliantString instead of markup.
+    auto fragment = TRY(context->parse_fragment(value));
+
+    // 4. Replace all with fragment within this.
+    this->replace_all(fragment);
+
+    // NOTE: We don't invalidate style & layout for <template> elements since they don't affect rendering.
+    if (!is<HTML::HTMLTemplateElement>(*this)) {
+        this->set_needs_style_update(true);
+
+        if (this->is_connected()) {
+            // NOTE: Since the DOM has changed, we have to rebuild the layout tree.
+            this->document().invalidate_layout_tree();
+        }
+    }
 
     set_needs_style_update(true);
+    return {};
+}
+
+// https://html.spec.whatwg.org/#dom-element-gethtml
+WebIDL::ExceptionOr<String> ShadowRoot::get_html(GetHTMLOptions const& options) const
+{
+    // ShadowRoot's getHTML(options) method steps are to return the result
+    // of HTML fragment serialization algorithm with this,
+    // options["serializableShadowRoots"], and options["shadowRoots"].
+    return HTML::HTMLParser::serialize_html_fragment(
+        *this,
+        options.serializable_shadow_roots ? HTML::HTMLParser::SerializableShadowRoots::Yes : HTML::HTMLParser::SerializableShadowRoots::No,
+        options.shadow_roots);
+}
+
+// https://html.spec.whatwg.org/#dom-shadowroot-sethtmlunsafe
+WebIDL::ExceptionOr<void> ShadowRoot::set_html_unsafe(StringView html)
+{
+    // FIXME: 1. Let compliantHTML be the result of invoking the Get Trusted Type compliant string algorithm with TrustedHTML, this's relevant global object, html, "ShadowRoot setHTMLUnsafe", and "script".
+
+    // 3. Unsafe set HTML given this, this's shadow host, and compliantHTML. FIXME: Use compliantHTML.
+    TRY(unsafely_set_html(*this->host(), html));
+
     return {};
 }
 
 CSS::StyleSheetList& ShadowRoot::style_sheets()
 {
     if (!m_style_sheets)
-        m_style_sheets = CSS::StyleSheetList::create(document());
+        m_style_sheets = CSS::StyleSheetList::create(*this);
     return *m_style_sheets;
 }
 
@@ -115,6 +172,16 @@ void ShadowRoot::for_each_css_style_sheet(Function<void(CSS::CSSStyleSheet&)>&& 
             callback(style_sheet);
         });
     }
+}
+
+Vector<JS::NonnullGCPtr<Animations::Animation>> ShadowRoot::get_animations()
+{
+    Vector<JS::NonnullGCPtr<Animations::Animation>> relevant_animations;
+    for_each_child_of_type<Element>([&](auto& child) {
+        relevant_animations.extend(child.get_animations({ .subtree = true }));
+        return IterationDecision::Continue;
+    });
+    return relevant_animations;
 }
 
 }

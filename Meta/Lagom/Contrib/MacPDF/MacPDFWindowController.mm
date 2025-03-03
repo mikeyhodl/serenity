@@ -136,7 +136,9 @@
 {
     if ([_pdfView validateMenuItem:item])
         return YES;
-    return [super validateMenuItem:item];
+    if (item.action == @selector(showGoToPageDialog:))
+        return _pdfDocument.pdf ? YES : NO;
+    return NO;
 }
 
 - (IBAction)toggleShowClippingPaths:(id)sender

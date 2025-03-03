@@ -1,12 +1,15 @@
 /*
  * Copyright (c) 2022, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2023-2024, Shannon Booth <shannon@serenityos.org>
+ * Copyright (c) 2024, Kenneth Myhra <kennethmyhra@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibJS/Runtime/PromiseCapability.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/ReadableStreamPrototype.h>
+#include <LibWeb/DOM/AbortSignal.h>
 #include <LibWeb/Streams/AbstractOperations.h>
 #include <LibWeb/Streams/ReadableByteStreamController.h>
 #include <LibWeb/Streams/ReadableStream.h>
@@ -65,6 +68,13 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<ReadableStream>> ReadableStream::construct_
     return readable_stream;
 }
 
+// https://streams.spec.whatwg.org/#rs-from
+WebIDL::ExceptionOr<JS::NonnullGCPtr<ReadableStream>> ReadableStream::from(JS::VM& vm, JS::Value async_iterable)
+{
+    // 1. Return ? ReadableStreamFromIterable(asyncIterable).
+    return TRY(readable_stream_from_iterable(vm, async_iterable));
+}
+
 ReadableStream::ReadableStream(JS::Realm& realm)
     : PlatformObject(realm)
 {
@@ -80,7 +90,7 @@ bool ReadableStream::locked() const
 }
 
 // https://streams.spec.whatwg.org/#rs-cancel
-WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> ReadableStream::cancel(JS::Value reason)
+JS::NonnullGCPtr<JS::Object> ReadableStream::cancel(JS::Value reason)
 {
     auto& realm = this->realm();
 
@@ -91,7 +101,7 @@ WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> ReadableStream::cancel(JS::Value reas
     }
 
     // 2. Return ! ReadableStreamCancel(this, reason).
-    return TRY(readable_stream_cancel(*this, reason))->promise();
+    return readable_stream_cancel(*this, reason)->promise();
 }
 
 // https://streams.spec.whatwg.org/#rs-get-reader
@@ -108,11 +118,95 @@ WebIDL::ExceptionOr<ReadableStreamReader> ReadableStream::get_reader(ReadableStr
     return ReadableStreamReader { TRY(acquire_readable_stream_byob_reader(*this)) };
 }
 
+WebIDL::ExceptionOr<JS::NonnullGCPtr<ReadableStream>> ReadableStream::pipe_through(ReadableWritablePair transform, StreamPipeOptions const& options)
+{
+    // 1. If ! IsReadableStreamLocked(this) is true, throw a TypeError exception.
+    if (is_readable_stream_locked(*this))
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Failed to execute 'pipeThrough' on 'ReadableStream': Cannot pipe a locked stream"sv };
+
+    // 2. If ! IsWritableStreamLocked(transform["writable"]) is true, throw a TypeError exception.
+    if (is_writable_stream_locked(*transform.writable))
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Failed to execute 'pipeThrough' on 'ReadableStream': parameter 1's 'writable' is locked"sv };
+
+    // 3. Let signal be options["signal"] if it exists, or undefined otherwise.
+    auto signal = options.signal ? JS::Value(options.signal) : JS::js_undefined();
+
+    // 4. Let promise be ! ReadableStreamPipeTo(this, transform["writable"], options["preventClose"], options["preventAbort"], options["preventCancel"], signal).
+    auto promise = readable_stream_pipe_to(*this, *transform.writable, options.prevent_close, options.prevent_abort, options.prevent_cancel, signal);
+
+    // 5. Set promise.[[PromiseIsHandled]] to true.
+    WebIDL::mark_promise_as_handled(*promise);
+
+    // 6. Return transform["readable"].
+    return JS::NonnullGCPtr { *transform.readable };
+}
+
+JS::NonnullGCPtr<JS::Object> ReadableStream::pipe_to(WritableStream& destination, StreamPipeOptions const& options)
+{
+    auto& realm = this->realm();
+
+    // 1. If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception.
+    if (is_readable_stream_locked(*this)) {
+        auto promise = WebIDL::create_promise(realm);
+        WebIDL::reject_promise(realm, promise, JS::TypeError::create(realm, "Failed to execute 'pipeTo' on 'ReadableStream': Cannot pipe a locked stream"sv));
+        return promise->promise();
+    }
+
+    // 2. If ! IsWritableStreamLocked(destination) is true, return a promise rejected with a TypeError exception.
+    if (is_writable_stream_locked(destination)) {
+        auto promise = WebIDL::create_promise(realm);
+        WebIDL::reject_promise(realm, promise, JS::TypeError::create(realm, "Failed to execute 'pipeTo' on 'ReadableStream':  Cannot pipe to a locked stream"sv));
+        return promise->promise();
+    }
+
+    // 3. Let signal be options["signal"] if it exists, or undefined otherwise.
+    auto signal = options.signal ? JS::Value(options.signal) : JS::js_undefined();
+
+    // 4. Return ! ReadableStreamPipeTo(this, destination, options["preventClose"], options["preventAbort"], options["preventCancel"], signal).
+    return readable_stream_pipe_to(*this, destination, options.prevent_close, options.prevent_abort, options.prevent_cancel, signal)->promise();
+}
+
 // https://streams.spec.whatwg.org/#readablestream-tee
 WebIDL::ExceptionOr<ReadableStreamPair> ReadableStream::tee()
 {
     // To tee a ReadableStream stream, return ? ReadableStreamTee(stream, true).
     return TRY(readable_stream_tee(realm(), *this, true));
+}
+
+// https://streams.spec.whatwg.org/#readablestream-close
+void ReadableStream::close()
+{
+    controller()->visit(
+        // 1. If stream.[[controller]] implements ReadableByteStreamController
+        [&](JS::NonnullGCPtr<ReadableByteStreamController> controller) {
+            // 1. Perform ! ReadableByteStreamControllerClose(stream.[[controller]]).
+            MUST(readable_byte_stream_controller_close(controller));
+
+            // 2. If stream.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(stream.[[controller]], 0).
+            if (!controller->pending_pull_intos().is_empty())
+                MUST(readable_byte_stream_controller_respond(controller, 0));
+        },
+
+        // 2. Otherwise, perform ! ReadableStreamDefaultControllerClose(stream.[[controller]]).
+        [&](JS::NonnullGCPtr<ReadableStreamDefaultController> controller) {
+            readable_stream_default_controller_close(*controller);
+        });
+}
+
+// https://streams.spec.whatwg.org/#readablestream-error
+void ReadableStream::error(JS::Value error)
+{
+    controller()->visit(
+        // 1. If stream.[[controller]] implements ReadableByteStreamController, then perform
+        //    ! ReadableByteStreamControllerError(stream.[[controller]], e).
+        [&](JS::NonnullGCPtr<ReadableByteStreamController> controller) {
+            readable_byte_stream_controller_error(controller, error);
+        },
+
+        // 2. Otherwise, perform ! ReadableStreamDefaultControllerError(stream.[[controller]], e).
+        [&](JS::NonnullGCPtr<ReadableStreamDefaultController> controller) {
+            readable_stream_default_controller_error(controller, error);
+        });
 }
 
 void ReadableStream::initialize(JS::Realm& realm)

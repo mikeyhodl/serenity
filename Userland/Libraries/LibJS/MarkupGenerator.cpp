@@ -113,7 +113,7 @@ ErrorOr<void> MarkupGenerator::object_to_html(Object const& object, StringBuilde
         if (!first)
             TRY(html_output.try_append(TRY(wrap_string_in_style(", "sv, StyleType::Punctuation))));
         first = false;
-        TRY(html_output.try_append(TRY(wrap_string_in_style(TRY(String::number(entry.index())), StyleType::Number))));
+        TRY(html_output.try_append(TRY(wrap_string_in_style(String::number(entry.index()), StyleType::Number))));
         TRY(html_output.try_append(TRY(wrap_string_in_style(": "sv, StyleType::Punctuation))));
         // FIXME: Exception check
         TRY(value_to_html(object.get(entry.index()).release_value(), html_output, seen_objects));
@@ -172,7 +172,7 @@ ErrorOr<void> MarkupGenerator::error_to_html(Error const& error, StringBuilder& 
     auto message_string = message.to_string_without_side_effects();
     auto uncaught_message = TRY(String::formatted("Uncaught {}[{}]: ", in_promise ? "(in promise) " : "", name_string));
 
-    TRY(html_output.try_append(TRY(wrap_string_in_style(uncaught_message, StyleType::Invalid)).bytes_as_string_view()));
+    TRY(html_output.try_append(TRY(wrap_string_in_style(uncaught_message, StyleType::Invalid))));
     TRY(html_output.try_appendff("{}<br>", message_string.is_empty() ? "\"\"" : escape_html_entities(message_string)));
 
     for (size_t i = 0; i < error.traceback().size() - min(error.traceback().size(), 3); i++) {

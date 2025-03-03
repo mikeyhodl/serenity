@@ -47,13 +47,14 @@ public:
 
     WebIDL::ExceptionOr<JS::NonnullGCPtr<Blob>> slice(Optional<i64> start = {}, Optional<i64> end = {}, Optional<String> const& content_type = {});
 
-    WebIDL::ExceptionOr<JS::NonnullGCPtr<Streams::ReadableStream>> stream();
-    WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> text();
-    WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> array_buffer();
+    JS::NonnullGCPtr<Streams::ReadableStream> stream();
+    JS::NonnullGCPtr<JS::Promise> text();
+    JS::NonnullGCPtr<JS::Promise> array_buffer();
+    JS::NonnullGCPtr<JS::Promise> bytes();
 
-    ReadonlyBytes bytes() const { return m_byte_buffer.bytes(); }
+    ReadonlyBytes raw_bytes() const { return m_byte_buffer.bytes(); }
 
-    WebIDL::ExceptionOr<JS::NonnullGCPtr<Streams::ReadableStream>> get_stream();
+    JS::NonnullGCPtr<Streams::ReadableStream> get_stream();
 
     virtual StringView interface_name() const override { return "Blob"sv; }
 
@@ -65,6 +66,8 @@ protected:
     Blob(JS::Realm&, ByteBuffer);
 
     virtual void initialize(JS::Realm&) override;
+
+    WebIDL::ExceptionOr<JS::NonnullGCPtr<Blob>> slice_blob(Optional<i64> start = {}, Optional<i64> end = {}, Optional<String> const& content_type = {});
 
     ByteBuffer m_byte_buffer {};
     String m_type {};

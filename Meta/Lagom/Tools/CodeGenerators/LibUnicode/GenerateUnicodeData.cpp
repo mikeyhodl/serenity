@@ -130,11 +130,17 @@ struct CodePointBidiClass {
     ByteString bidi_class;
 };
 
+struct CodePointComposition {
+    u32 second_code_point { 0 };
+    u32 combined_code_point { 0 };
+};
+
 struct UnicodeData {
     UniqueStringStorage unique_strings;
 
     u32 code_points_with_decomposition_mapping { 0 };
     Vector<u32> decomposition_mappings;
+    HashMap<u32, Vector<CodePointComposition>> composition_mappings;
     Vector<ByteString> compatibility_tags;
 
     Vector<SpecialCasing> special_casing;
@@ -192,6 +198,7 @@ struct UnicodeData {
 
     HashTable<ByteString> bidirectional_classes;
     Vector<CodePointBidiClass> code_point_bidirectional_classes;
+    Vector<Alias> bidirectional_class_aliases;
 };
 
 static ByteString sanitize_entry(ByteString const& entry)
@@ -370,7 +377,7 @@ static ErrorOr<void> parse_prop_list(Core::InputBufferedFile& file, PropList& pr
             properties = { segments[1].trim_whitespace() };
 
         for (auto& property : properties) {
-            auto& code_points = prop_list.ensure(sanitize_property ? sanitize_entry(property).trim_whitespace().view() : property.trim_whitespace());
+            auto& code_points = prop_list.ensure(sanitize_property ? sanitize_entry(property).trim_whitespace() : ByteString { property.trim_whitespace() });
             code_points.append(code_point_range);
         }
     }
@@ -490,11 +497,11 @@ static ErrorOr<void> parse_value_alias_list(Core::InputBufferedFile& file, Strin
         VERIFY((segments.size() == 3) || (segments.size() == 4));
         auto value = primary_value_is_first ? segments[1].trim_whitespace() : segments[2].trim_whitespace();
         auto alias = primary_value_is_first ? segments[2].trim_whitespace() : segments[1].trim_whitespace();
-        append_alias(sanitize_alias ? sanitize_entry(alias).view() : alias, value);
+        append_alias(sanitize_alias ? sanitize_entry(alias) : ByteString { alias }, value);
 
         if (segments.size() == 4) {
             alias = segments[3].trim_whitespace();
-            append_alias(sanitize_alias ? sanitize_entry(alias).view() : alias, value);
+            append_alias(sanitize_alias ? sanitize_entry(alias) : ByteString { alias }, value);
         }
     }
 
@@ -635,6 +642,25 @@ static Optional<CodePointDecomposition> parse_decomposition_mapping(StringView s
     return mapping;
 }
 
+static void add_composition_mapping(u32 code_point, CodePointDecomposition& decomposition, UnicodeData& unicode_data, Vector<Unicode::CodePointRange> const& full_composition_exclusion_code_points)
+{
+    if (decomposition.decomposition_size != 2)
+        return;
+    if (decomposition.tag != "Canonical"sv)
+        return;
+    static Unicode::CodePointRangeComparator comparator {};
+    for (auto const& range : full_composition_exclusion_code_points) {
+        auto comparison = comparator(code_point, range);
+        if (comparison == 0)
+            return;
+        if (comparison < 0)
+            break;
+    }
+    u32 const first_code_point = unicode_data.decomposition_mappings[decomposition.decomposition_index];
+    u32 const second_code_point = unicode_data.decomposition_mappings[decomposition.decomposition_index + 1];
+    unicode_data.composition_mappings.ensure(first_code_point).append(CodePointComposition { .second_code_point = second_code_point, .combined_code_point = code_point });
+}
+
 static ErrorOr<void> parse_block_display_names(Core::InputBufferedFile& file, UnicodeData& unicode_data)
 {
     Array<u8, 1024> buffer;
@@ -663,6 +689,7 @@ static ErrorOr<void> parse_unicode_data(Core::InputBufferedFile& file, UnicodeDa
     Optional<u32> code_point_range_start;
 
     auto& assigned_code_points = unicode_data.prop_list.find("Assigned"sv)->value;
+    auto const& full_composition_exclusion_code_points = unicode_data.prop_list.find("Full_Composition_Exclusion"sv)->value;
     Optional<u32> assigned_code_point_range_start = 0;
     u32 previous_code_point = 0;
 
@@ -741,6 +768,8 @@ static ErrorOr<void> parse_unicode_data(Core::InputBufferedFile& file, UnicodeDa
         }
 
         unicode_data.code_points_with_decomposition_mapping += data.decomposition_mapping.has_value();
+        if (data.decomposition_mapping.has_value())
+            add_composition_mapping(data.code_point, *data.decomposition_mapping, unicode_data, full_composition_exclusion_code_points);
 
         unicode_data.bidirectional_classes.set(data.bidi_class, AK::HashSetExistingEntryBehavior::Keep);
 
@@ -814,7 +843,7 @@ namespace Unicode {
     generate_enum("WordBreakProperty"sv, {}, unicode_data.word_break_props.keys());
     generate_enum("SentenceBreakProperty"sv, {}, unicode_data.sentence_break_props.keys());
     generate_enum("CompatibilityFormattingTag"sv, "Canonical"sv, unicode_data.compatibility_tags);
-    generate_enum("BidirectionalClass"sv, {}, unicode_data.bidirectional_classes.values());
+    generate_enum("BidirectionalClassInternal"sv, {}, unicode_data.bidirectional_classes.values(), unicode_data.bidirectional_class_aliases);
 
     generator.append(R"~~~(
 struct SpecialCasing {
@@ -854,6 +883,12 @@ struct CodePointDecomposition {
     ReadonlySpan<u32> decomposition;
 };
 
+struct CodePointCompositionRaw {
+    u32 code_point { 0 };
+    u32 second_code_point { 0 };
+    u32 combined_code_point { 0 };
+};
+
 Optional<Locale> locale_from_string(StringView locale);
 
 ReadonlySpan<SpecialCasing> special_case_mapping(u32 code_point);
@@ -875,7 +910,7 @@ static ErrorOr<void> generate_unicode_data_implementation(Core::InputBufferedFil
     generator.set("special_casing_size", ByteString::number(unicode_data.special_casing.size()));
     generator.set("case_folding_size", ByteString::number(unicode_data.case_folding.size()));
 
-    generator.set("CODE_POINT_TABLES_LSB_COUNT", TRY(String::number(CODE_POINT_TABLES_LSB_COUNT)));
+    generator.set("CODE_POINT_TABLES_LSB_COUNT", String::number(CODE_POINT_TABLES_LSB_COUNT));
     generator.set("CODE_POINT_TABLES_LSB_MASK", TRY(String::formatted("{:#x}", CODE_POINT_TABLES_LSB_MASK)));
 
     generator.append(R"~~~(
@@ -1003,7 +1038,7 @@ struct CodePointNameComparator : public CodePointRangeComparator {
 
 struct BidiClassData {
     CodePointRange code_point_range {};
-    BidirectionalClass bidi_class {};
+    BidirectionalClassInternal bidi_class {};
 };
 
 struct CodePointBidiClassComparator : public CodePointRangeComparator {
@@ -1075,16 +1110,47 @@ static constexpr Array<@mapping_type@, @size@> s_@name@_mappings { {
     append_code_point_mappings("abbreviation"sv, "CodePointAbbreviation"sv, unicode_data.code_point_abbreviations.size(), [](auto const& data) { return data.abbreviation; });
     append_code_point_mappings("decomposition"sv, "CodePointDecompositionRaw"sv, unicode_data.code_points_with_decomposition_mapping, [](auto const& data) { return data.decomposition_mapping; });
 
+    size_t composition_mappings_size = 0;
+    for (auto const& entry : unicode_data.composition_mappings)
+        composition_mappings_size += entry.value.size();
+    generator.set("composition_mappings_size", ByteString::number(composition_mappings_size));
+    generator.append(R"~~~(
+static constexpr Array<CodePointCompositionRaw, @composition_mappings_size@> s_composition_mappings { {
+    )~~~");
+    constexpr size_t max_mappings_per_row = 40;
+    size_t mappings_in_current_row = 0;
+    auto first_code_points = unicode_data.composition_mappings.keys();
+    quick_sort(first_code_points);
+    for (auto const first_code_point : first_code_points) {
+        for (auto const& mapping : unicode_data.composition_mappings.find(first_code_point)->value) {
+            if (mappings_in_current_row++ > 0)
+                generator.append(" ");
+
+            generator.set("code_point", ByteString::formatted("{:#x}", first_code_point));
+            generator.set("second_code_point", ByteString::formatted("{:#x}", mapping.second_code_point));
+            generator.set("combined_code_point", ByteString::formatted("{:#x}", mapping.combined_code_point));
+            generator.append("{ @code_point@, @second_code_point@, @combined_code_point@ },");
+
+            if (mappings_in_current_row == max_mappings_per_row) {
+                mappings_in_current_row = 0;
+                generator.append("\n    ");
+            }
+        }
+    }
+    generator.append(R"~~~(
+} };
+)~~~");
+
     auto append_casing_table = [&](auto collection_snake, auto const& unique_properties) -> ErrorOr<void> {
         generator.set("name", TRY(String::formatted("{}_unique_properties", collection_snake)));
-        generator.set("size", TRY(String::number(unique_properties.size())));
+        generator.set("size", String::number(unique_properties.size()));
 
-        auto optional_code_point_to_string = [](auto const& code_point) -> ErrorOr<String> {
+        auto optional_code_point_to_string = [](auto const& code_point) -> String {
             if (!code_point.has_value())
                 return "-1"_string;
             return String::number(*code_point);
         };
-        auto first_index_to_string = [](auto const& list) -> ErrorOr<String> {
+        auto first_index_to_string = [](auto const& list) -> String {
             if (list.is_empty())
                 return "0"_string;
             return String::number(list.first());
@@ -1094,14 +1160,14 @@ static constexpr Array<@mapping_type@, @size@> s_@name@_mappings { {
 static constexpr Array<CasingTable, @size@> @name@ { {)~~~");
 
         for (auto const& casing : unique_properties) {
-            generator.set("canonical_combining_class", TRY(String::number(casing.canonical_combining_class)));
-            generator.set("simple_uppercase_mapping", TRY(optional_code_point_to_string(casing.simple_uppercase_mapping)));
-            generator.set("simple_lowercase_mapping", TRY(optional_code_point_to_string(casing.simple_lowercase_mapping)));
-            generator.set("simple_titlecase_mapping", TRY(optional_code_point_to_string(casing.simple_titlecase_mapping)));
-            generator.set("special_casing_start_index", TRY(first_index_to_string(casing.special_casing_indices)));
-            generator.set("special_casing_size", TRY(String::number(casing.special_casing_indices.size())));
-            generator.set("case_folding_start_index", TRY(first_index_to_string(casing.case_folding_indices)));
-            generator.set("case_folding_size", TRY(String::number(casing.case_folding_indices.size())));
+            generator.set("canonical_combining_class", String::number(casing.canonical_combining_class));
+            generator.set("simple_uppercase_mapping", optional_code_point_to_string(casing.simple_uppercase_mapping));
+            generator.set("simple_lowercase_mapping", optional_code_point_to_string(casing.simple_lowercase_mapping));
+            generator.set("simple_titlecase_mapping", optional_code_point_to_string(casing.simple_titlecase_mapping));
+            generator.set("special_casing_start_index", first_index_to_string(casing.special_casing_indices));
+            generator.set("special_casing_size", String::number(casing.special_casing_indices.size()));
+            generator.set("case_folding_start_index", first_index_to_string(casing.case_folding_indices));
+            generator.set("case_folding_size", String::number(casing.case_folding_indices.size()));
 
             generator.append(R"~~~(
     { @canonical_combining_class@, @simple_uppercase_mapping@, @simple_lowercase_mapping@, @simple_titlecase_mapping@, @special_casing_start_index@, @special_casing_size@, @case_folding_start_index@, @case_folding_size@ },)~~~");
@@ -1116,8 +1182,8 @@ static constexpr Array<CasingTable, @size@> @name@ { {)~~~");
 
     auto append_property_table = [&](auto collection_snake, auto const& unique_properties) -> ErrorOr<void> {
         generator.set("name", TRY(String::formatted("{}_unique_properties", collection_snake)));
-        generator.set("outer_size", TRY(String::number(unique_properties.size())));
-        generator.set("inner_size", TRY(String::number(unique_properties[0].size())));
+        generator.set("outer_size", String::number(unique_properties.size()));
+        generator.set("inner_size", String::number(unique_properties[0].size()));
 
         generator.append(R"~~~(
 static constexpr Array<Array<bool, @inner_size@>, @outer_size@> @name@ { {)~~~");
@@ -1144,7 +1210,7 @@ static constexpr Array<Array<bool, @inner_size@>, @outer_size@> @name@ { {)~~~")
     auto append_code_point_tables = [&](StringView collection_snake, auto const& tables, auto& append_unique_properties) -> ErrorOr<void> {
         auto append_stage = [&](auto const& stage, auto name, auto type) -> ErrorOr<void> {
             generator.set("name", TRY(String::formatted("{}_{}", collection_snake, name)));
-            generator.set("size", TRY(String::number(stage.size())));
+            generator.set("size", String::number(stage.size()));
             generator.set("type", type);
 
             generator.append(R"~~~(
@@ -1158,7 +1224,7 @@ static constexpr Array<@type@, @size@> @name@ { {
                 if (values_in_current_row++ > 0)
                     generator.append(", ");
 
-                generator.set("value", TRY(String::number(value)));
+                generator.set("value", String::number(value));
                 generator.append("@value@");
 
                 if (values_in_current_row == max_values_per_row) {
@@ -1237,7 +1303,7 @@ static constexpr Array<BidiClassData, @size@> s_bidirectional_classes { {
             generator.set("first", ByteString::formatted("{:#x}", data.code_point_range.first));
             generator.set("last", ByteString::formatted("{:#x}", data.code_point_range.last));
             generator.set("bidi_class", data.bidi_class);
-            generator.append("{ { @first@, @last@ }, BidirectionalClass::@bidi_class@ }");
+            generator.append("{ { @first@, @last@ }, BidirectionalClassInternal::@bidi_class@ }");
 
             if (bidi_classes_in_current_row == max_bidi_classes_per_row) {
                 bidi_classes_in_current_row = 0;
@@ -1365,15 +1431,21 @@ Optional<CodePointDecomposition const> code_point_decomposition(u32 code_point)
     return CodePointDecomposition { mapping->code_point, mapping->tag, ReadonlySpan<u32> { s_decomposition_mappings_data.data() + mapping->decomposition_index, mapping->decomposition_count } };
 }
 
-Optional<CodePointDecomposition const> code_point_decomposition_by_index(size_t index)
+Optional<u32> code_point_composition(u32 first_code_point, u32 second_code_point)
 {
-    if (index >= s_decomposition_mappings.size())
+    size_t mapping_index;
+    if (!binary_search(s_composition_mappings, first_code_point, &mapping_index, CodePointComparator<CodePointCompositionRaw> {}))
         return {};
-    auto const& mapping = s_decomposition_mappings[index];
-    return CodePointDecomposition { mapping.code_point, mapping.tag, ReadonlySpan<u32> { s_decomposition_mappings_data.data() + mapping.decomposition_index, mapping.decomposition_count } };
+    while (mapping_index > 0 && s_composition_mappings[mapping_index - 1].code_point == first_code_point)
+        mapping_index--;
+    for (; mapping_index < s_composition_mappings.size() && s_composition_mappings[mapping_index].code_point == first_code_point; ++mapping_index) {
+        if (s_composition_mappings[mapping_index].second_code_point == second_code_point)
+            return s_composition_mappings[mapping_index].combined_code_point;
+    }
+    return {};
 }
 
-Optional<BidirectionalClass> bidirectional_class(u32 code_point)
+Optional<BidirectionalClassInternal> bidirectional_class_internal(u32 code_point)
 {
     if (auto const* entry = binary_search(s_bidirectional_classes, code_point, nullptr, CodePointBidiClassComparator {}))
         return entry->bidi_class;
@@ -1440,8 +1512,6 @@ bool code_point_has_@enum_snake@(u32 code_point, @enum_title@ @enum_snake@)
     TRY(append_prop_search("GraphemeBreakProperty"sv, "grapheme_break_property"sv, "s_grapheme_break_properties"sv));
     TRY(append_prop_search("WordBreakProperty"sv, "word_break_property"sv, "s_word_break_properties"sv));
     TRY(append_prop_search("SentenceBreakProperty"sv, "sentence_break_property"sv, "s_sentence_break_properties"sv));
-
-    TRY(append_from_string("BidirectionalClass"sv, "bidirectional_class"sv, unicode_data.bidirectional_classes, {}));
 
     generator.append(R"~~~(
 }
@@ -1653,42 +1723,44 @@ struct PropertyMetadata {
 // this process reduces over 1 million entries (0x10ffff) to ~44,030.
 //
 // For much more in-depth reading, see: https://icu.unicode.org/design/struct/utrie
+static constexpr auto MAX_CODE_POINT = 0x10ffffu;
+
+template<typename T>
+static ErrorOr<void> update_tables(u32 code_point, CodePointTables<T>& tables, auto& metadata, auto const& values)
+{
+    static constexpr auto BLOCK_SIZE = CODE_POINT_TABLES_LSB_MASK + 1;
+
+    size_t unique_properties_index = 0;
+    if (auto block_index = tables.unique_properties.find_first_index(values); block_index.has_value()) {
+        unique_properties_index = *block_index;
+    } else {
+        unique_properties_index = tables.unique_properties.size();
+        TRY(tables.unique_properties.try_append(values));
+    }
+
+    TRY(metadata.current_block.try_append(unique_properties_index));
+
+    if (metadata.current_block.size() == BLOCK_SIZE || code_point == MAX_CODE_POINT) {
+        size_t stage2_index = 0;
+        if (auto block_index = metadata.unique_blocks.get(metadata.current_block); block_index.has_value()) {
+            stage2_index = *block_index;
+        } else {
+            stage2_index = tables.stage2.size();
+            TRY(tables.stage2.try_extend(metadata.current_block));
+
+            TRY(metadata.unique_blocks.try_set(metadata.current_block, stage2_index));
+        }
+
+        TRY(tables.stage1.try_append(stage2_index));
+        metadata.current_block.clear_with_capacity();
+    }
+
+    return {};
+}
+
 static ErrorOr<void> create_code_point_tables(UnicodeData& unicode_data)
 {
-    static constexpr auto MAX_CODE_POINT = 0x10ffffu;
-
-    auto update_tables = [&](auto code_point, auto& tables, auto& metadata, auto const& values) -> ErrorOr<void> {
-        static constexpr auto BLOCK_SIZE = CODE_POINT_TABLES_LSB_MASK + 1;
-
-        size_t unique_properties_index = 0;
-        if (auto block_index = tables.unique_properties.find_first_index(values); block_index.has_value()) {
-            unique_properties_index = *block_index;
-        } else {
-            unique_properties_index = tables.unique_properties.size();
-            TRY(tables.unique_properties.try_append(values));
-        }
-
-        TRY(metadata.current_block.try_append(unique_properties_index));
-
-        if (metadata.current_block.size() == BLOCK_SIZE || code_point == MAX_CODE_POINT) {
-            size_t stage2_index = 0;
-            if (auto block_index = metadata.unique_blocks.get(metadata.current_block); block_index.has_value()) {
-                stage2_index = *block_index;
-            } else {
-                stage2_index = tables.stage2.size();
-                TRY(tables.stage2.try_extend(metadata.current_block));
-
-                TRY(metadata.unique_blocks.try_set(metadata.current_block, stage2_index));
-            }
-
-            TRY(tables.stage1.try_append(stage2_index));
-            metadata.current_block.clear_with_capacity();
-        }
-
-        return {};
-    };
-
-    auto update_casing_tables = [&](auto code_point, auto& tables, auto& metadata) -> ErrorOr<void> {
+    auto update_casing_tables = [&]<typename T>(u32 code_point, CodePointTables<T>& tables, CasingMetadata& metadata) -> ErrorOr<void> {
         CasingTable casing {};
 
         while (metadata.iterator != metadata.end) {
@@ -1707,7 +1779,7 @@ static ErrorOr<void> create_code_point_tables(UnicodeData& unicode_data)
         return {};
     };
 
-    auto update_property_tables = [&](auto code_point, auto& tables, auto& metadata) -> ErrorOr<void> {
+    auto update_property_tables = [&]<typename T>(u32 code_point, CodePointTables<T>& tables, PropertyMetadata& metadata) -> ErrorOr<void> {
         static Unicode::CodePointRangeComparator comparator {};
 
         for (auto& property_values : metadata.property_values) {
@@ -1843,6 +1915,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     populate_general_category_unions(unicode_data.general_categories);
     TRY(parse_unicode_data(*unicode_data_file, unicode_data));
+    TRY(parse_value_alias_list(*prop_value_alias_file, "bc"sv, unicode_data.bidirectional_classes.values(), unicode_data.bidirectional_class_aliases));
     TRY(parse_value_alias_list(*prop_value_alias_file, "gc"sv, unicode_data.general_categories.keys(), unicode_data.general_category_aliases));
     TRY(parse_value_alias_list(*prop_value_alias_file, "sc"sv, unicode_data.script_list.keys(), unicode_data.script_aliases, false));
     TRY(normalize_script_extensions(unicode_data.script_extensions, unicode_data.script_list, unicode_data.script_aliases));

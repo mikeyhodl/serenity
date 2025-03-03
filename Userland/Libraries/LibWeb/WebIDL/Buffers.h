@@ -10,6 +10,7 @@
 #include <AK/Variant.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Heap/Cell.h>
+#include <LibJS/Heap/CellAllocator.h>
 
 namespace Web::WebIDL {
 
@@ -20,6 +21,7 @@ using BufferableObject = Variant<
 
 class BufferableObjectBase : public JS::Cell {
     JS_CELL(BufferableObjectBase, JS::Cell);
+    JS_DECLARE_ALLOCATOR(BufferableObjectBase);
 
 public:
     virtual ~BufferableObjectBase() override = default;
@@ -27,6 +29,8 @@ public:
     u32 byte_length() const;
 
     JS::NonnullGCPtr<JS::Object> raw_object();
+    JS::NonnullGCPtr<JS::Object const> raw_object() const { return const_cast<BufferableObjectBase&>(*this).raw_object(); }
+
     JS::GCPtr<JS::ArrayBuffer> viewed_array_buffer();
 
     BufferableObject const& bufferable_object() const { return m_bufferable_object; }
@@ -54,6 +58,7 @@ protected:
 //          Float32Array or Float64Array or DataView) ArrayBufferView;
 class ArrayBufferView : public BufferableObjectBase {
     JS_CELL(ArrayBufferView, BufferableObjectBase);
+    JS_DECLARE_ALLOCATOR(ArrayBufferView);
 
 public:
     using BufferableObjectBase::BufferableObjectBase;
@@ -71,6 +76,7 @@ public:
 // typedef (ArrayBufferView or ArrayBuffer) BufferSource;
 class BufferSource : public BufferableObjectBase {
     JS_CELL(BufferSource, BufferableObjectBase);
+    JS_DECLARE_ALLOCATOR(BufferSource);
 
 public:
     using BufferableObjectBase::BufferableObjectBase;

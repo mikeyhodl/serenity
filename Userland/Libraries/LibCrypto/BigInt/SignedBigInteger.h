@@ -22,7 +22,7 @@ public:
     requires(sizeof(T) <= sizeof(i32))
     SignedBigInteger(T value)
         : m_sign(value < 0)
-        , m_unsigned_data(abs(static_cast<i32>(value)))
+        , m_unsigned_data(static_cast<u32>(abs(static_cast<i64>(value))))
     {
     }
 
@@ -117,6 +117,7 @@ public:
     [[nodiscard]] SignedBigInteger bitwise_xor(SignedBigInteger const& other) const;
     [[nodiscard]] SignedBigInteger bitwise_not() const;
     [[nodiscard]] SignedBigInteger shift_left(size_t num_bits) const;
+    [[nodiscard]] SignedBigInteger shift_right(size_t num_bits) const;
     [[nodiscard]] SignedBigInteger multiplied_by(SignedBigInteger const& other) const;
     [[nodiscard]] SignedDivisionResult divided_by(SignedBigInteger const& divisor) const;
 

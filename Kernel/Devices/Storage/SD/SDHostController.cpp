@@ -6,7 +6,7 @@
 
 #include <AK/Format.h>
 #include <AK/StdLibExtras.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Storage/SD/Commands.h>
 #include <Kernel/Devices/Storage/SD/SDHostController.h>
 #include <Kernel/Devices/Storage/StorageManagement.h>
@@ -73,13 +73,19 @@ SDHostController::SDHostController()
 {
 }
 
-ErrorOr<void> SDHostController::reset() { return ENOTIMPL; }
-
-ErrorOr<void> SDHostController::shutdown() { return ENOTIMPL; }
-
 void SDHostController::complete_current_request(AsyncDeviceRequest::RequestResult)
 {
     VERIFY_NOT_REACHED();
+}
+
+LockRefPtr<StorageDevice> SDHostController::device(u32 index) const
+{
+    // FIXME: Remove this once we get rid of this hacky method in the future.
+    if (index != 0)
+        return nullptr;
+    if (!m_card)
+        return nullptr;
+    return *m_card;
 }
 
 ErrorOr<void> SDHostController::initialize()
@@ -108,7 +114,8 @@ ErrorOr<void> SDHostController::initialize()
 void SDHostController::try_enable_dma()
 {
     if (m_registers->capabilities.adma2) {
-        auto maybe_dma_buffer = MM.allocate_dma_buffer_pages(dma_region_size, "SDHC DMA Buffer"sv, Memory::Region::Access::ReadWrite);
+        // FIXME: Synchronize DMA buffer accesses correctly and set the MemoryType to NonCacheable.
+        auto maybe_dma_buffer = MM.allocate_dma_buffer_pages(dma_region_size, "SDHC DMA Buffer"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO);
         if (maybe_dma_buffer.is_error()) {
             dmesgln("Could not allocate DMA pages for SDHC: {}", maybe_dma_buffer.error());
         } else {
@@ -133,7 +140,7 @@ void SDHostController::try_enable_dma()
     }
 }
 
-ErrorOr<NonnullLockRefPtr<SDMemoryCard>> SDHostController::try_initialize_inserted_card()
+ErrorOr<NonnullRefPtr<SDMemoryCard>> SDHostController::try_initialize_inserted_card()
 {
     if (!is_card_inserted())
         return ENODEV;
@@ -157,7 +164,7 @@ ErrorOr<NonnullLockRefPtr<SDMemoryCard>> SDHostController::try_initialize_insert
     // 2. Send CMD8 (SEND_IF_COND) to the card
     // SD interface condition: 7:0 = check pattern, 11:8 = supply voltage
     //      0x1aa: check pattern = 10101010, supply voltage = 1 => 2.7-3.6V
-    const u32 voltage_window = 0x1aa;
+    u32 const voltage_window = 0x1aa;
     TRY(issue_command(SD::Commands::send_if_cond, voltage_window));
     auto interface_condition_response = wait_for_response();
 
@@ -267,7 +274,7 @@ ErrorOr<NonnullLockRefPtr<SDMemoryCard>> SDHostController::try_initialize_insert
     m_registers->host_configuration_0 |= data_transfer_width_4bit;
     // 6. In case of SD memory only card, go to the 'End'. In case of other card, go to step (7).
 
-    return TRY(DeviceManagement::try_create_device<SDMemoryCard>(
+    return TRY(Device::try_create_device<SDMemoryCard>(
         *this,
         StorageDevice::LUNAddress { controller_id(), 0, 0 },
         hardware_relative_controller_id(), block_len,
@@ -456,14 +463,14 @@ ErrorOr<void> SDHostController::sd_clock_supply(u32 frequency)
     VERIFY((m_registers->host_configuration_1 & sd_clock_enable) == 0);
 
     // 1. Find out the divisor to determine the SD Clock Frequency
-    const u32 sd_clock_frequency = TRY(retrieve_sd_clock_frequency());
+    u32 const sd_clock_frequency = TRY(retrieve_sd_clock_frequency());
     u32 divisor = TRY(calculate_sd_clock_divisor(sd_clock_frequency, frequency));
 
     // 2. Set Internal Clock Enable and SDCLK Frequency Select in the Clock Control register
-    const u32 eight_lower_bits_of_sdclk_frequency_select = (divisor & 0xff) << 8;
+    u32 const eight_lower_bits_of_sdclk_frequency_select = (divisor & 0xff) << 8;
     u32 sdclk_frequency_select = eight_lower_bits_of_sdclk_frequency_select;
     if (host_version() == SD::HostVersion::Version3) {
-        const u32 two_upper_bits_of_sdclk_frequency_select = (divisor >> 8 & 0x3) << 6;
+        u32 const two_upper_bits_of_sdclk_frequency_select = (divisor >> 8 & 0x3) << 6;
         sdclk_frequency_select |= two_upper_bits_of_sdclk_frequency_select;
     }
     m_registers->host_configuration_1 = (m_registers->host_configuration_1 & ~sd_clock_divisor_mask) | internal_clock_enable | sdclk_frequency_select;
@@ -956,9 +963,10 @@ ErrorOr<u32> SDHostController::retrieve_sd_clock_frequency()
     if (m_registers->capabilities.base_clock_frequency == 0) {
         // Spec says:
         // If these bits are all 0, the Host System has to get information via another method
-        TODO();
+        dbgln("FIXME: The SD Host Controller does not provide the base clock frequency; get this frequency using another method");
+        return ENOTSUP;
     }
-    const i64 one_mhz = 1'000'000;
+    i64 const one_mhz = 1'000'000;
     return { m_registers->capabilities.base_clock_frequency * one_mhz };
 }
 

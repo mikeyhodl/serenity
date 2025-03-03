@@ -6,10 +6,12 @@
 
 #include <AK/GenericLexer.h>
 #include <AK/Random.h>
+#include <LibWeb/FileAPI/File.h>
 #include <LibWeb/HTML/FormControlInfrastructure.h>
 #include <LibWeb/HTML/FormDataEvent.h>
 #include <LibWeb/HTML/HTMLButtonElement.h>
 #include <LibWeb/HTML/HTMLDataListElement.h>
+#include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/HTMLOptionElement.h>
 #include <LibWeb/HTML/HTMLSelectElement.h>
 #include <LibWeb/Infra/Strings.h>
@@ -119,10 +121,10 @@ WebIDL::ExceptionOr<Optional<Vector<XHR::FormDataEntry>>> construct_entry_list(J
             auto [x, y] = input_element->selected_coordinate();
 
             // 6. Create an entry with namex and x, and append it to entry list.
-            entry_list.append(XHR::FormDataEntry { .name = move(name_x), .value = MUST(String::number(x)) });
+            entry_list.append(XHR::FormDataEntry { .name = move(name_x), .value = String::number(x) });
 
             // 7. Create an entry with namey and y, and append it to entry list.
-            entry_list.append(XHR::FormDataEntry { .name = move(name_y), .value = MUST(String::number(y)) });
+            entry_list.append(XHR::FormDataEntry { .name = move(name_y), .value = String::number(y) });
 
             // 8. Continue.
             continue;
@@ -186,13 +188,20 @@ WebIDL::ExceptionOr<Optional<Vector<XHR::FormDataEntry>>> construct_entry_list(J
             entry_list.append(XHR::FormDataEntry { .name = name.to_string(), .value = control_as_form_associated_element->value() });
         }
 
-        // FIXME: 11. If the element has a dirname attribute, and that attribute's value is not the empty string, then:
-        // FIXME:     1. Let dirname be the value of the element's dirname attribute.
-        // FIXME:     2. Let dir be the string "ltr" if the directionality of the element is 'ltr', and "rtl" otherwise (i.e., when the directionality of the element is 'rtl').
-        // FIXME:     3. Create an entry with dirname and dir, and append it to entry list.
+        // 11. If the element has a dirname attribute, and that attribute's value is not the empty string, then:
+        if (auto attribute = control->get_attribute(HTML::AttributeNames::dirname); attribute.has_value() && !attribute.value().is_empty()) {
+            // 1. Let dirname be the value of the element's dirname attribute.
+            String dirname = attribute.value();
+
+            // 2. Let dir be the string "ltr" if the directionality of the element is 'ltr', and "rtl" otherwise (i.e., when the directionality of the element is 'rtl').
+            String dir = MUST((control->directionality() == DOM::Element::Directionality::Ltr) ? String::from_utf8("ltr"sv) : String::from_utf8("rtl"sv));
+
+            // 3. Create an entry with dirname and dir, and append it to entry list.
+            entry_list.append(XHR::FormDataEntry { .name = dirname, .value = dir });
+        }
     }
     // 6. Let form data be a new FormData object associated with entry list.
-    auto form_data = TRY(XHR::FormData::construct_impl(realm, entry_list));
+    auto form_data = TRY(XHR::FormData::construct_impl(realm, move(entry_list)));
 
     // 7. Fire an event named formdata at form using FormDataEvent, with the formData attribute initialized to form data and the bubbles attribute initialized to true.
     FormDataEventInit init {};
@@ -205,7 +214,7 @@ WebIDL::ExceptionOr<Optional<Vector<XHR::FormDataEntry>>> construct_entry_list(J
     form.set_constructing_entry_list(false);
 
     // 9. Return a clone of entry list.
-    return entry_list;
+    return form_data->entry_list();
 }
 
 ErrorOr<String> normalize_line_breaks(StringView value)
@@ -270,7 +279,7 @@ ErrorOr<SerializedFormData> serialize_to_multipart_form_data(Vector<XHR::FormDat
                 TRY(builder.try_append(TRY(String::formatted("Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n", escaped_name, escaped_filename))));
                 // The parts of the generated multipart/form-data resource that correspond to file fields must have a `Content-Type` header specified.
                 TRY(builder.try_append(TRY(String::formatted("Content-Type: {}\r\n\r\n", file->type()))));
-                TRY(builder.try_append(file->bytes()));
+                TRY(builder.try_append(file->raw_bytes()));
                 TRY(builder.try_append("\r\n"sv));
                 return {};
             },

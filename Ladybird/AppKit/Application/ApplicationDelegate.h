@@ -12,6 +12,8 @@
 #include <Ladybird/Types.h>
 #include <LibURL/URL.h>
 #include <LibWeb/CSS/PreferredColorScheme.h>
+#include <LibWeb/CSS/PreferredContrast.h>
+#include <LibWeb/CSS/PreferredMotion.h>
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWebView/CookieJar.h>
 
@@ -24,9 +26,10 @@
 
 - (nullable instancetype)init:(Vector<URL::URL>)initial_urls
                 newTabPageURL:(URL::URL)new_tab_page_url
-                withCookieJar:(WebView::CookieJar)cookie_jar
+                withCookieJar:(NonnullOwnPtr<WebView::CookieJar>)cookie_jar
             webContentOptions:(Ladybird::WebContentOptions const&)web_content_options
-      webdriverContentIPCPath:(StringView)webdriver_content_ipc_path;
+      webdriverContentIPCPath:(StringView)webdriver_content_ipc_path
+                  allowPopups:(BOOL)allow_popups;
 
 - (nonnull TabController*)createNewTab:(Optional<URL::URL> const&)url
                                fromTab:(nullable Tab*)tab
@@ -37,12 +40,17 @@
                                fromTab:(nullable Tab*)tab
                            activateTab:(Web::HTML::ActivateTab)activate_tab;
 
+- (void)setActiveTab:(nonnull Tab*)tab;
+- (nullable Tab*)activeTab;
+
 - (void)removeTab:(nonnull TabController*)controller;
 
 - (WebView::CookieJar&)cookieJar;
 - (Ladybird::WebContentOptions const&)webContentOptions;
 - (Optional<StringView> const&)webdriverContentIPCPath;
 - (Web::CSS::PreferredColorScheme)preferredColorScheme;
+- (Web::CSS::PreferredContrast)preferredContrast;
+- (Web::CSS::PreferredMotion)preferredMotion;
 - (WebView::SearchEngine const&)searchEngine;
 
 @end

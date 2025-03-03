@@ -31,14 +31,14 @@ LayoutState::~LayoutState()
 
 LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node)
 {
-    if (auto* used_values = used_values_per_layout_node.get(&node).value_or(nullptr))
+    if (auto* used_values = used_values_per_layout_node.get(node).value_or(nullptr))
         return *used_values;
 
     for (auto const* ancestor = m_parent; ancestor; ancestor = ancestor->m_parent) {
-        if (auto* ancestor_used_values = ancestor->used_values_per_layout_node.get(&node).value_or(nullptr)) {
+        if (auto* ancestor_used_values = ancestor->used_values_per_layout_node.get(node).value_or(nullptr)) {
             auto cow_used_values = adopt_own(*new UsedValues(*ancestor_used_values));
             auto* cow_used_values_ptr = cow_used_values.ptr();
-            used_values_per_layout_node.set(&node, move(cow_used_values));
+            used_values_per_layout_node.set(node, move(cow_used_values));
             return *cow_used_values_ptr;
         }
     }
@@ -48,17 +48,17 @@ LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node)
     auto new_used_values = adopt_own(*new UsedValues);
     auto* new_used_values_ptr = new_used_values.ptr();
     new_used_values->set_node(const_cast<NodeWithStyle&>(node), containing_block_used_values);
-    used_values_per_layout_node.set(&node, move(new_used_values));
+    used_values_per_layout_node.set(node, move(new_used_values));
     return *new_used_values_ptr;
 }
 
 LayoutState::UsedValues const& LayoutState::get(NodeWithStyle const& node) const
 {
-    if (auto const* used_values = used_values_per_layout_node.get(&node).value_or(nullptr))
+    if (auto const* used_values = used_values_per_layout_node.get(node).value_or(nullptr))
         return *used_values;
 
     for (auto const* ancestor = m_parent; ancestor; ancestor = ancestor->m_parent) {
-        if (auto const* ancestor_used_values = ancestor->used_values_per_layout_node.get(&node).value_or(nullptr))
+        if (auto const* ancestor_used_values = ancestor->used_values_per_layout_node.get(node).value_or(nullptr))
             return *ancestor_used_values;
     }
 
@@ -67,7 +67,7 @@ LayoutState::UsedValues const& LayoutState::get(NodeWithStyle const& node) const
     auto new_used_values = adopt_own(*new UsedValues);
     auto* new_used_values_ptr = new_used_values.ptr();
     new_used_values->set_node(const_cast<NodeWithStyle&>(node), containing_block_used_values);
-    const_cast<LayoutState*>(this)->used_values_per_layout_node.set(&node, move(new_used_values));
+    const_cast<LayoutState*>(this)->used_values_per_layout_node.set(node, move(new_used_values));
     return *new_used_values_ptr;
 }
 
@@ -94,18 +94,24 @@ static CSSPixelRect measure_scrollable_overflow(Box const& box)
         }
     }
 
+    auto content_overflow_rect = scrollable_overflow_rect;
+
     // - The border boxes of all boxes for which it is the containing block
     //   and whose border boxes are positioned not wholly in the negative scrollable overflow region,
     //   FIXME: accounting for transforms by projecting each box onto the plane of the element that establishes its 3D rendering context. [CSS3-TRANSFORMS]
     if (!box.children_are_inline()) {
-        box.for_each_child_of_type<Box>([&box, &scrollable_overflow_rect](Box const& child) {
+        box.for_each_child_of_type<Box>([&box, &scrollable_overflow_rect, &content_overflow_rect](Box const& child) {
             if (!child.paintable_box())
                 return IterationDecision::Continue;
 
             auto child_border_box = child.paintable_box()->absolute_border_box_rect();
+
             // NOTE: Here we check that the child is not wholly in the negative scrollable overflow region.
-            if (child_border_box.bottom() > 0 && child_border_box.right() > 0)
-                scrollable_overflow_rect = scrollable_overflow_rect.united(child_border_box);
+            if (child_border_box.bottom() < 0 || child_border_box.right() < 0)
+                return IterationDecision::Continue;
+
+            scrollable_overflow_rect = scrollable_overflow_rect.united(child_border_box);
+            content_overflow_rect = content_overflow_rect.united(child_border_box);
 
             // - The scrollable overflow areas of all of the above boxes
             //   (including zero-area boxes and accounting for transforms as described above),
@@ -122,22 +128,30 @@ static CSSPixelRect measure_scrollable_overflow(Box const& box)
             return IterationDecision::Continue;
         });
     } else {
-        box.for_each_child([&scrollable_overflow_rect](Node const& child) {
+        box.for_each_child([&scrollable_overflow_rect, &content_overflow_rect](Node const& child) {
             if (child.paintable() && child.paintable()->is_inline_paintable()) {
-                for (auto const& fragment : static_cast<Painting::InlinePaintable const&>(*child.paintable()).fragments())
+                for (auto const& fragment : static_cast<Painting::InlinePaintable const&>(*child.paintable()).fragments()) {
                     scrollable_overflow_rect = scrollable_overflow_rect.united(fragment.absolute_rect());
+                    content_overflow_rect = content_overflow_rect.united(fragment.absolute_rect());
+                }
             }
+
+            return IterationDecision::Continue;
         });
     }
 
     // FIXME: - The margin areas of grid item and flex item boxes for which the box establishes a containing block.
 
-    // FIXME: - Additional padding added to the end-side of the scrollable overflow rectangle as necessary
-    //          to enable a scroll position that satisfies the requirements of place-content: end alignment.
+    // - Additional padding added to the end-side of the scrollable overflow rectangle as necessary
+    //   to enable a scroll position that satisfies the requirements of place-content: end alignment.
+    auto has_scrollable_overflow = !paintable_box.absolute_padding_box_rect().contains(scrollable_overflow_rect);
+    if (has_scrollable_overflow) {
+        scrollable_overflow_rect.set_height(max(scrollable_overflow_rect.height(), content_overflow_rect.height() + box.box_model().padding.bottom));
+    }
 
     paintable_box.set_overflow_data(Painting::PaintableBox::OverflowData {
         .scrollable_overflow_rect = scrollable_overflow_rect,
-        .has_scrollable_overflow = !paintable_box.absolute_padding_box_rect().contains(scrollable_overflow_rect),
+        .has_scrollable_overflow = has_scrollable_overflow,
     });
 
     return scrollable_overflow_rect;
@@ -208,11 +222,11 @@ void LayoutState::commit(Box& root)
     //       when text paintables shift around in the tree.
     root.for_each_in_inclusive_subtree([&](Layout::Node& node) {
         node.set_paintable(nullptr);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
     root.document().for_each_shadow_including_inclusive_descendant([&](DOM::Node& node) {
         node.set_paintable(nullptr);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     HashTable<Layout::TextNode*> text_nodes;
@@ -466,7 +480,6 @@ void LayoutState::UsedValues::set_node(NodeWithStyle& node, UsedValues const* co
             }
             return false;
         }
-        // FIXME: Determine if calc() value is definite.
         return false;
     };
 
@@ -482,6 +495,23 @@ void LayoutState::UsedValues::set_node(NodeWithStyle& node, UsedValues const* co
 
     m_has_definite_width = is_definite_size(computed_values.width(), m_content_width, true);
     m_has_definite_height = is_definite_size(computed_values.height(), m_content_height, false);
+
+    // For boxes with a preferred aspect ratio and one definite size, we can infer the other size
+    // and consider it definite since this did not require performing layout.
+    if (is<Box>(node)) {
+        auto const& box = static_cast<Box const&>(node);
+        if (auto aspect_ratio = box.preferred_aspect_ratio(); aspect_ratio.has_value()) {
+            if (m_has_definite_width && m_has_definite_height) {
+                // Both width and height are definite.
+            } else if (m_has_definite_width) {
+                m_content_height = m_content_width / *aspect_ratio;
+                m_has_definite_height = true;
+            } else if (m_has_definite_height) {
+                m_content_width = m_content_height * *aspect_ratio;
+                m_has_definite_width = true;
+            }
+        }
+    }
 
     if (m_has_definite_width) {
         if (has_definite_min_width)

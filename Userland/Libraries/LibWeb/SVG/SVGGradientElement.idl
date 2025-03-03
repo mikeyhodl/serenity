@@ -1,4 +1,5 @@
 #import <SVG/SVGElement.idl>
+#import <SVG/SVGURIReference.idl>
 
 // https://svgwg.org/svg2-draft/single-page.html#pservers-InterfaceSVGGradientElement
 [Exposed=Window]
@@ -10,10 +11,10 @@ interface SVGGradientElement : SVGElement {
     const unsigned short SVG_SPREADMETHOD_REFLECT = 2;
     const unsigned short SVG_SPREADMETHOD_REPEAT = 3;
 
-    // FIXME: [SameObject] readonly attribute SVGAnimatedEnumeration gradientUnits;
-    // FIXME: [SameObject] readonly attribute SVGAnimatedTransformList gradientTransform;
-    // FIXME: [SameObject] readonly attribute SVGAnimatedEnumeration spreadMethod;
+    [FIXME, SameObject] readonly attribute SVGAnimatedEnumeration gradientUnits;
+    [FIXME, SameObject] readonly attribute SVGAnimatedTransformList gradientTransform;
+    [FIXME, SameObject] readonly attribute SVGAnimatedEnumeration spreadMethod;
 
 };
 
-// FIXME: SVGGradientElement includes SVGURIReference;
+SVGGradientElement includes SVGURIReference;

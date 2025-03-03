@@ -11,6 +11,7 @@
 #include <LibGUI/SettingsWindow.h>
 #include <LibGfx/CursorParams.h>
 
+namespace MouseSettings {
 class MouseCursorModel final : public GUI::Model {
 public:
     static NonnullRefPtr<MouseCursorModel> create() { return adopt_ref(*new MouseCursorModel); }
@@ -56,6 +57,7 @@ public:
     virtual int column_count(const GUI::ModelIndex&) const override { return 1; }
 
     virtual GUI::Variant data(const GUI::ModelIndex& index, GUI::ModelRole role) const override;
+    virtual Vector<GUI::ModelIndex> matches(StringView, unsigned = GUI::Model::MatchesFlag::AllMatching, GUI::ModelIndex const& = GUI::ModelIndex()) override;
     virtual void invalidate() override;
 
 private:
@@ -66,6 +68,8 @@ class ThemeWidget final : public GUI::SettingsWindow::Tab {
     C_OBJECT_ABSTRACT(ThemeWidget)
 public:
     static ErrorOr<NonnullRefPtr<ThemeWidget>> try_create();
+    ErrorOr<void> initialize();
+
     virtual ~ThemeWidget() override = default;
 
     virtual void apply_settings() override;
@@ -73,9 +77,9 @@ public:
 
 private:
     ThemeWidget() = default;
-    ErrorOr<void> setup();
 
     RefPtr<GUI::TableView> m_cursors_tableview;
     RefPtr<GUI::ComboBox> m_theme_name_box;
     RefPtr<MouseCursorModel> m_mouse_cursor_model;
 };
+}

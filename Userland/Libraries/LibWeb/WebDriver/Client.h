@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2022, Florent Castelli <florent.castelli@gmail.com>
  * Copyright (c) 2022, Linus Groh <linusg@serenityos.org>
- * Copyright (c) 2022-2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -58,6 +58,11 @@ public:
     virtual Response maximize_window(Parameters parameters, JsonValue payload) = 0;
     virtual Response minimize_window(Parameters parameters, JsonValue payload) = 0;
     virtual Response fullscreen_window(Parameters parameters, JsonValue payload) = 0;
+    virtual Response switch_to_frame(Parameters parameters, JsonValue payload) = 0;
+    virtual Response switch_to_parent_frame(Parameters parameters, JsonValue payload) = 0;
+
+    // Extension: https://html.spec.whatwg.org/multipage/interaction.html#user-activation-user-agent-automation
+    virtual Response consume_user_activation(Parameters parameters, JsonValue payload) = 0;
 
     // 12. Elements, https://w3c.github.io/webdriver/#elements
     virtual Response find_element(Parameters parameters, JsonValue payload) = 0;
@@ -79,6 +84,8 @@ public:
     virtual Response get_computed_role(Parameters parameters, JsonValue payload) = 0;
     virtual Response get_computed_label(Parameters parameters, JsonValue payload) = 0;
     virtual Response element_click(Parameters parameters, JsonValue payload) = 0;
+    virtual Response element_clear(Parameters parameters, JsonValue payload) = 0;
+    virtual Response element_send_keys(Parameters parameters, JsonValue payload) = 0;
 
     // 13. Document, https://w3c.github.io/webdriver/#document
     virtual Response get_source(Parameters parameters, JsonValue payload) = 0;
@@ -93,6 +100,7 @@ public:
     virtual Response delete_all_cookies(Parameters parameters, JsonValue payload) = 0;
 
     // 15. Actions, https://w3c.github.io/webdriver/#actions
+    virtual Response perform_actions(Parameters parameters, JsonValue payload) = 0;
     virtual Response release_actions(Parameters parameters, JsonValue payload) = 0;
 
     // 16. User prompts, https://w3c.github.io/webdriver/#user-prompts
@@ -115,15 +123,18 @@ private:
     using WrappedError = Variant<AK::Error, HTTP::HttpRequest::ParseError, WebDriver::Error>;
 
     void die();
+
     ErrorOr<void, WrappedError> on_ready_to_read();
-    ErrorOr<JsonValue, WrappedError> read_body_as_json();
-    ErrorOr<void, WrappedError> handle_request(JsonValue body);
-    ErrorOr<void, WrappedError> send_success_response(JsonValue result);
-    ErrorOr<void, WrappedError> send_error_response(Error const& error);
-    void log_response(unsigned code);
+    static ErrorOr<JsonValue, WrappedError> read_body_as_json(HTTP::HttpRequest const&);
+
+    ErrorOr<void, WrappedError> handle_request(HTTP::HttpRequest const&, JsonValue body);
+    void handle_error(HTTP::HttpRequest const&, WrappedError const&);
+
+    ErrorOr<void, WrappedError> send_success_response(HTTP::HttpRequest const&, JsonValue result);
+    ErrorOr<void, WrappedError> send_error_response(HTTP::HttpRequest const&, Error const& error);
+    static void log_response(HTTP::HttpRequest const&, unsigned code);
 
     NonnullOwnPtr<Core::BufferedTCPSocket> m_socket;
-    Optional<HTTP::HttpRequest> m_request;
     StringBuilder m_remaining_request;
 };
 

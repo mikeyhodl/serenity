@@ -35,8 +35,6 @@ public:
 
     virtual ~Range() override;
 
-    // FIXME: There are a ton of methods missing here.
-
     WebIDL::ExceptionOr<void> set_start(Node& node, WebIDL::UnsignedLong offset);
     WebIDL::ExceptionOr<void> set_end(Node& node, WebIDL::UnsignedLong offset);
     WebIDL::ExceptionOr<void> set_start_before(Node& node);
@@ -90,8 +88,8 @@ public:
 
     static HashTable<Range*>& live_ranges();
 
-    JS::NonnullGCPtr<Geometry::DOMRectList> get_client_rects() const;
-    JS::NonnullGCPtr<Geometry::DOMRect> get_bounding_client_rect() const;
+    JS::NonnullGCPtr<Geometry::DOMRectList> get_client_rects();
+    JS::NonnullGCPtr<Geometry::DOMRect> get_bounding_client_rect();
 
     bool contains_node(Node const&) const;
 

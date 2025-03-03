@@ -14,10 +14,13 @@
     X(ASCII85Decode)              \
     X(ASCIIHexDecode)             \
     X(Alternate)                  \
+    X(AntiAlias)                  \
     X(Author)                     \
+    X(BBox)                       \
     X(BG)                         \
     X(BG2)                        \
     X(BM)                         \
+    X(Background)                 \
     X(BaseEncoding)               \
     X(BaseFont)                   \
     X(BitsPerComponent)           \
@@ -44,6 +47,7 @@
     X(Colors)                     \
     X(Columns)                    \
     X(Contents)                   \
+    X(Coords)                     \
     X(Count)                      \
     X(CreationDate)               \
     X(Creator)                    \
@@ -75,6 +79,7 @@
     X(EndOfBlock)                 \
     X(EndOfLine)                  \
     X(ExtGState)                  \
+    X(Extend)                     \
     X(F)                          \
     X(FL)                         \
     X(Filter)                     \
@@ -97,6 +102,7 @@
     X(FontFile3)                  \
     X(FontMatrix)                 \
     X(FunctionType)               \
+    X(Function)                   \
     X(Functions)                  \
     X(Gamma)                      \
     X(H)                          \
@@ -168,7 +174,10 @@
     X(SA)                         \
     X(SM)                         \
     X(SMask)                      \
+    X(SMaskInData)                \
     X(Separation)                 \
+    X(Shading)                    \
+    X(ShadingType)                \
     X(Size)                       \
     X(StmF)                       \
     X(StrF)                       \

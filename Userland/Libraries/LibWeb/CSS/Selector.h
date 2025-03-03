@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <kling@serenityos.org>
- * Copyright (c) 2021-2023, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2024, Sam Atkins <sam@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,8 +11,8 @@
 #include <AK/RefCounted.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibWeb/CSS/Keyword.h>
 #include <LibWeb/CSS/PseudoClass.h>
-#include <LibWeb/CSS/ValueID.h>
 
 namespace Web::CSS {
 
@@ -23,7 +23,7 @@ class Selector : public RefCounted<Selector> {
 public:
     class PseudoElement {
     public:
-        enum class Type {
+        enum class Type : u8 {
             Before,
             After,
             FirstLine,
@@ -52,7 +52,7 @@ public:
         explicit PseudoElement(Type type)
             : m_type(type)
         {
-            VERIFY(type != Type::UnknownWebKit);
+            VERIFY(is_known_pseudo_element_type(type));
         }
 
         PseudoElement(Type type, String name)
@@ -64,6 +64,11 @@ public:
         bool operator==(PseudoElement const&) const = default;
 
         static Optional<PseudoElement> from_string(FlyString const&);
+
+        [[nodiscard]] static bool is_known_pseudo_element_type(Type type)
+        {
+            return to_underlying(type) < to_underlying(CSS::Selector::PseudoElement::Type::KnownPseudoElementCount);
+        }
 
         static StringView name(Selector::PseudoElement::Type pseudo_element);
 
@@ -83,7 +88,7 @@ public:
     };
 
     struct SimpleSelector {
-        enum class Type {
+        enum class Type : u8 {
             Universal,
             TagName,
             Id,
@@ -91,6 +96,7 @@ public:
             Attribute,
             PseudoClass,
             PseudoElement,
+            Nesting,
         };
 
         struct ANPlusBPattern {
@@ -102,7 +108,7 @@ public:
             {
                 // 1. If A is zero, return the serialization of B.
                 if (step_size == 0) {
-                    return MUST(String::number(offset));
+                    return String::number(offset);
                 }
 
                 // 2. Otherwise, let result initially be an empty string.
@@ -145,7 +151,7 @@ public:
             Vector<FlyString> languages {};
 
             // Used by :dir()
-            Optional<ValueID> identifier {};
+            Optional<Keyword> keyword {};
         };
 
         struct Name {
@@ -212,6 +218,8 @@ public:
         QualifiedName& qualified_name() { return value.get<QualifiedName>(); }
 
         String serialize() const;
+
+        SimpleSelector absolutized(SimpleSelector const& selector_for_nesting) const;
     };
 
     enum class Combinator {
@@ -228,6 +236,8 @@ public:
         // but it is more understandable to put them together.
         Combinator combinator { Combinator::None };
         Vector<SimpleSelector> simple_selectors;
+
+        CompoundSelector absolutized(SimpleSelector const& selector_for_nesting) const;
     };
 
     static NonnullRefPtr<Selector> create(Vector<CompoundSelector>&& compound_selectors)
@@ -238,9 +248,14 @@ public:
     ~Selector() = default;
 
     Vector<CompoundSelector> const& compound_selectors() const { return m_compound_selectors; }
-    Optional<PseudoElement> pseudo_element() const { return m_pseudo_element; }
+    Optional<PseudoElement> const& pseudo_element() const { return m_pseudo_element; }
+    NonnullRefPtr<Selector> relative_to(SimpleSelector const&) const;
+    bool contains_the_nesting_selector() const { return m_contains_the_nesting_selector; }
+    NonnullRefPtr<Selector> absolutized(SimpleSelector const& selector_for_nesting) const;
     u32 specificity() const;
     String serialize() const;
+
+    auto const& ancestor_hashes() const { return m_ancestor_hashes; }
 
 private:
     explicit Selector(Vector<CompoundSelector>&&);
@@ -248,9 +263,14 @@ private:
     Vector<CompoundSelector> m_compound_selectors;
     mutable Optional<u32> m_specificity;
     Optional<Selector::PseudoElement> m_pseudo_element;
+    bool m_contains_the_nesting_selector { false };
+
+    void collect_ancestor_hashes();
+
+    Array<u32, 8> m_ancestor_hashes;
 };
 
-String serialize_a_group_of_selectors(Vector<NonnullRefPtr<Selector>> const& selectors);
+String serialize_a_group_of_selectors(SelectorList const& selectors);
 
 }
 

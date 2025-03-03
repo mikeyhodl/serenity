@@ -144,15 +144,10 @@ ErrorOr<Region*> AddressSpace::try_allocate_split_region(Region const& source_re
         region_name = TRY(KString::try_create(source_region.name()));
 
     auto new_region = TRY(Region::create_unplaced(
-        source_region.vmobject(), offset_in_vmobject, move(region_name), source_region.access(), source_region.is_cacheable() ? Region::Cacheable::Yes : Region::Cacheable::No, source_region.is_shared()));
+        source_region.vmobject(), offset_in_vmobject, move(region_name), source_region.access(), source_region.memory_type(), source_region.is_shared()));
     new_region->set_syscall_region(source_region.is_syscall_region());
     new_region->set_mmap(source_region.is_mmap(), source_region.mmapped_from_readable(), source_region.mmapped_from_writable());
     new_region->set_stack(source_region.is_stack());
-    size_t page_offset_in_source_region = (offset_in_vmobject - source_region.offset_in_vmobject()) / PAGE_SIZE;
-    for (size_t i = 0; i < new_region->page_count(); ++i) {
-        if (source_region.should_cow(page_offset_in_source_region + i))
-            TRY(new_region->set_should_cow(i, true));
-    }
     TRY(m_region_tree.place_specifically(*new_region, range));
     return new_region.leak_ptr();
 }
@@ -177,12 +172,12 @@ ErrorOr<Region*> AddressSpace::allocate_region(RandomizeVirtualAddress randomize
     return region.leak_ptr();
 }
 
-ErrorOr<Region*> AddressSpace::allocate_region_with_vmobject(VirtualRange requested_range, NonnullLockRefPtr<VMObject> vmobject, size_t offset_in_vmobject, StringView name, int prot, bool shared)
+ErrorOr<Region*> AddressSpace::allocate_region_with_vmobject(VirtualRange requested_range, NonnullLockRefPtr<VMObject> vmobject, size_t offset_in_vmobject, StringView name, int prot, bool shared, MemoryType memory_type)
 {
-    return allocate_region_with_vmobject(RandomizeVirtualAddress::Yes, requested_range.base(), requested_range.size(), PAGE_SIZE, move(vmobject), offset_in_vmobject, name, prot, shared);
+    return allocate_region_with_vmobject(RandomizeVirtualAddress::Yes, requested_range.base(), requested_range.size(), PAGE_SIZE, move(vmobject), offset_in_vmobject, name, prot, shared, memory_type);
 }
 
-ErrorOr<Region*> AddressSpace::allocate_region_with_vmobject(RandomizeVirtualAddress randomize_virtual_address, VirtualAddress requested_address, size_t requested_size, size_t requested_alignment, NonnullLockRefPtr<VMObject> vmobject, size_t offset_in_vmobject, StringView name, int prot, bool shared)
+ErrorOr<Region*> AddressSpace::allocate_region_with_vmobject(RandomizeVirtualAddress randomize_virtual_address, VirtualAddress requested_address, size_t requested_size, size_t requested_alignment, NonnullLockRefPtr<VMObject> vmobject, size_t offset_in_vmobject, StringView name, int prot, bool shared, MemoryType memory_type)
 {
     if (!requested_address.is_page_aligned())
         return EINVAL;
@@ -206,7 +201,7 @@ ErrorOr<Region*> AddressSpace::allocate_region_with_vmobject(RandomizeVirtualAdd
     if (!name.is_null())
         region_name = TRY(KString::try_create(name));
 
-    auto region = TRY(Region::create_unplaced(move(vmobject), offset_in_vmobject, move(region_name), prot_to_region_access_flags(prot), Region::Cacheable::Yes, shared));
+    auto region = TRY(Region::create_unplaced(move(vmobject), offset_in_vmobject, move(region_name), prot_to_region_access_flags(prot), memory_type, shared));
 
     if (requested_address.is_null())
         TRY(m_region_tree.place_anywhere(*region, randomize_virtual_address, size, alignment));

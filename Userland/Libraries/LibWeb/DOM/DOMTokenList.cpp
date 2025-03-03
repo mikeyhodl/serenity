@@ -6,9 +6,11 @@
  */
 
 #include <AK/StringBuilder.h>
+#include <LibWeb/Bindings/DOMTokenListPrototype.h>
 #include <LibWeb/DOM/DOMTokenList.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
+#include <LibWeb/HTML/HTMLLinkElement.h>
 #include <LibWeb/Infra/CharacterTypes.h>
 #include <LibWeb/WebIDL/DOMException.h>
 
@@ -94,12 +96,6 @@ void DOMTokenList::associated_attribute_changed(StringView value)
     auto split_values = value.split_view_if(Infra::is_ascii_whitespace);
     for (auto const& split_value : split_values)
         append_to_ordered_set(m_token_set, String::from_utf8(split_value).release_value_but_fixme_should_propagate_errors());
-}
-
-// https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-indices%E2%91%A3
-bool DOMTokenList::is_supported_property_index(u32 index) const
-{
-    return index < m_token_set.size();
 }
 
 // https://dom.spec.whatwg.org/#dom-domtokenlist-item
@@ -190,9 +186,12 @@ WebIDL::ExceptionOr<bool> DOMTokenList::toggle(String const& token, Optional<boo
 WebIDL::ExceptionOr<bool> DOMTokenList::replace(String const& token, String const& new_token)
 {
     // 1. If either token or newToken is the empty string, then throw a "SyntaxError" DOMException.
+    TRY(validate_token_not_empty(token));
+    TRY(validate_token_not_empty(new_token));
+
     // 2. If either token or newToken contains any ASCII whitespace, then throw an "InvalidCharacterError" DOMException.
-    TRY(validate_token(token));
-    TRY(validate_token(new_token));
+    TRY(validate_token_not_whitespace(token));
+    TRY(validate_token_not_whitespace(new_token));
 
     // 3. If this’s token set does not contain token, then return false.
     if (!contains(token))
@@ -210,24 +209,45 @@ WebIDL::ExceptionOr<bool> DOMTokenList::replace(String const& token, String cons
 
 // https://dom.spec.whatwg.org/#dom-domtokenlist-supports
 // https://dom.spec.whatwg.org/#concept-domtokenlist-validation
-WebIDL::ExceptionOr<bool> DOMTokenList::supports([[maybe_unused]] StringView token)
+WebIDL::ExceptionOr<bool> DOMTokenList::supports(StringView token)
 {
-    // FIXME: Implement this fully when any use case defines supported tokens.
+    static HashMap<FlyString, Vector<StringView>> supported_tokens_map = {
+        // NOTE: The supported values for rel were taken from HTMLLinkElement::Relationship
+        { HTML::AttributeNames::rel, { "alternate"sv, "stylesheet"sv, "preload"sv, "dns-prefetch"sv, "preconnect"sv, "icon"sv } },
+    };
 
     // 1. If the associated attribute’s local name does not define supported tokens, throw a TypeError.
-    return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, String::formatted("Attribute {} does not define any supported tokens", m_associated_attribute).release_value_but_fixme_should_propagate_errors() };
+    auto supported_tokens = supported_tokens_map.get(m_associated_attribute);
+    if (!supported_tokens.has_value())
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, MUST(String::formatted("Attribute {} does not define any supported tokens", m_associated_attribute)) };
+
+    // AD-HOC: Other browsers return false for rel attributes on non-link elements for all attribute values we currently support.
+    if (m_associated_attribute == HTML::AttributeNames::rel && !is<HTML::HTMLLinkElement>(*m_associated_element))
+        return false;
 
     // 2. Let lowercase token be a copy of token, in ASCII lowercase.
+    auto lowercase_token = token.to_lowercase_string();
+
     // 3. If lowercase token is present in supported tokens, return true.
+    if (supported_tokens->contains_slow(lowercase_token))
+        return true;
+
     // 4. Return false.
+    return false;
+}
+
+// https://dom.spec.whatwg.org/#concept-ordered-set-serializer
+String DOMTokenList::serialize_ordered_set() const
+{
+    StringBuilder builder;
+    builder.join(' ', m_token_set);
+    return MUST(builder.to_string());
 }
 
 // https://dom.spec.whatwg.org/#dom-domtokenlist-value
 String DOMTokenList::value() const
 {
-    StringBuilder builder;
-    builder.join(' ', m_token_set);
-    return MUST(builder.to_string());
+    return m_associated_element->get_attribute_value(m_associated_attribute);
 }
 
 // https://dom.spec.whatwg.org/#ref-for-concept-element-attributes-set-value%E2%91%A2
@@ -242,10 +262,22 @@ void DOMTokenList::set_value(String const& value)
 
 WebIDL::ExceptionOr<void> DOMTokenList::validate_token(StringView token) const
 {
+    TRY(validate_token_not_empty(token));
+    TRY(validate_token_not_whitespace(token));
+    return {};
+}
+
+WebIDL::ExceptionOr<void> DOMTokenList::validate_token_not_empty(StringView token) const
+{
     if (token.is_empty())
-        return WebIDL::SyntaxError::create(realm(), "Non-empty DOM tokens are not allowed"_fly_string);
+        return WebIDL::SyntaxError::create(realm(), "Non-empty DOM tokens are not allowed"_string);
+    return {};
+}
+
+WebIDL::ExceptionOr<void> DOMTokenList::validate_token_not_whitespace(StringView token) const
+{
     if (any_of(token, Infra::is_ascii_whitespace))
-        return WebIDL::InvalidCharacterError::create(realm(), "DOM tokens containing ASCII whitespace are not allowed"_fly_string);
+        return WebIDL::InvalidCharacterError::create(realm(), "DOM tokens containing ASCII whitespace are not allowed"_string);
     return {};
 }
 
@@ -261,14 +293,14 @@ void DOMTokenList::run_update_steps()
         return;
 
     // 2. Set an attribute value for the associated element using associated attribute’s local name and the result of running the ordered set serializer for token set.
-    MUST(associated_element->set_attribute(m_associated_attribute, value()));
+    MUST(associated_element->set_attribute(m_associated_attribute, serialize_ordered_set()));
 }
 
-WebIDL::ExceptionOr<JS::Value> DOMTokenList::item_value(size_t index) const
+Optional<JS::Value> DOMTokenList::item_value(size_t index) const
 {
     auto string = item(index);
     if (!string.has_value())
-        return JS::js_undefined();
+        return {};
     return JS::PrimitiveString::create(vm(), string.release_value());
 }
 

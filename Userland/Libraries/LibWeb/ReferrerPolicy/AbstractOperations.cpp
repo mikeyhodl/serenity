@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2022, Linus Groh <linusg@serenityos.org>
+ * Copyright (c) 2024, Jamie Mansfield <jmansfield@cadixdev.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -15,6 +16,39 @@
 #include <LibWeb/SecureContexts/AbstractOperations.h>
 
 namespace Web::ReferrerPolicy {
+
+// https://w3c.github.io/webappsec-referrer-policy/#parse-referrer-policy-from-header
+ReferrerPolicy parse_a_referrer_policy_from_a_referrer_policy_header(Fetch::Infrastructure::Response const& response)
+{
+    // 1. Let policy-tokens be the result of extracting header list values given `Referrer-Policy` and response’s header list.
+    auto policy_tokens_or_failure = Fetch::Infrastructure::extract_header_list_values("Referrer-Policy"sv.bytes(), response.header_list());
+    auto policy_tokens = policy_tokens_or_failure.has<Vector<ByteBuffer>>() ? policy_tokens_or_failure.get<Vector<ByteBuffer>>() : Vector<ByteBuffer> {};
+
+    // 2. Let policy be the empty string.
+    auto policy = ReferrerPolicy::EmptyString;
+
+    // 3. For each token in policy-tokens, if token is a referrer policy and token is not the empty string, then set policy to token.
+    for (auto token : policy_tokens) {
+        auto referrer_policy = from_string(token);
+        if (referrer_policy.has_value() && referrer_policy.value() != ReferrerPolicy::EmptyString)
+            policy = referrer_policy.release_value();
+    }
+
+    // 4. Return policy.
+    return policy;
+}
+
+// https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect
+void set_request_referrer_policy_on_redirect(Fetch::Infrastructure::Request& request, Fetch::Infrastructure::Response const& response)
+{
+    // 1. Let policy be the result of executing § 8.1 Parse a referrer policy from a Referrer-Policy header on
+    //    actualResponse.
+    auto policy = parse_a_referrer_policy_from_a_referrer_policy_header(response);
+
+    // 2. If policy is not the empty string, then set request’s referrer policy to policy.
+    if (policy != ReferrerPolicy::EmptyString)
+        request.set_referrer_policy(policy);
+}
 
 // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
 Optional<URL::URL> determine_requests_referrer(Fetch::Infrastructure::Request const& request)
@@ -112,7 +146,7 @@ Optional<URL::URL> determine_requests_referrer(Fetch::Infrastructure::Request co
     case ReferrerPolicy::StrictOriginWhenCrossOrigin:
         // 1. If the origin of referrerURL and the origin of request’s current URL are the same, then return
         //    referrerURL.
-        if (referrer_url.has_value() && DOMURL::url_origin(*referrer_url).is_same_origin(DOMURL::url_origin(request.current_url())))
+        if (referrer_url.has_value() && referrer_url->origin().is_same_origin(request.current_url().origin()))
             return referrer_url;
 
         // 2. If referrerURL is a potentially trustworthy URL and request’s current URL is not a potentially
@@ -130,7 +164,7 @@ Optional<URL::URL> determine_requests_referrer(Fetch::Infrastructure::Request co
         // 1. If the origin of referrerURL and the origin of request’s current URL are the same, then return
         //    referrerURL.
         if (referrer_url.has_value()
-            && DOMURL::url_origin(*referrer_url).is_same_origin(DOMURL::url_origin(request.current_url()))) {
+            && referrer_url->origin().is_same_origin(request.current_url().origin())) {
             return referrer_url;
         }
 
@@ -141,7 +175,7 @@ Optional<URL::URL> determine_requests_referrer(Fetch::Infrastructure::Request co
         // 1. If the origin of referrerURL and the origin of request’s current URL are the same, then return
         //    referrerURL.
         if (referrer_url.has_value()
-            && DOMURL::url_origin(*referrer_url).is_same_origin(DOMURL::url_origin(request.current_url()))) {
+            && referrer_url->origin().is_same_origin(request.current_url().origin())) {
             return referrer_url;
         }
 
@@ -164,6 +198,7 @@ Optional<URL::URL> determine_requests_referrer(Fetch::Infrastructure::Request co
     }
 }
 
+// https://w3c.github.io/webappsec-referrer-policy/#strip-url
 Optional<URL::URL> strip_url_for_use_as_referrer(Optional<URL::URL> url, OriginOnly origin_only)
 {
     // 1. If url is null, return no referrer.
@@ -175,10 +210,10 @@ Optional<URL::URL> strip_url_for_use_as_referrer(Optional<URL::URL> url, OriginO
         return {};
 
     // 3. Set url’s username to the empty string.
-    MUST(url->set_username(""sv));
+    url->set_username(""sv);
 
     // 4. Set url’s password to the empty string.
-    MUST(url->set_password(""sv));
+    url->set_password(""sv);
 
     // 5. Set url’s fragment to null.
     url->set_fragment({});

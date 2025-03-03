@@ -5,7 +5,6 @@
  */
 
 #include <AK/Format.h>
-#include <Kernel/Arch/aarch64/BootPPMParser.h>
 #include <Kernel/Arch/aarch64/RPi/Framebuffer.h>
 #include <Kernel/Arch/aarch64/RPi/FramebufferMailboxMessages.h>
 #include <Kernel/Boot/BootInfo.h>
@@ -119,16 +118,13 @@ void Framebuffer::initialize()
 {
     auto& framebuffer = the();
     if (framebuffer.initialized()) {
-        multiboot_framebuffer_addr = PhysicalAddress((PhysicalPtr)framebuffer.gpu_buffer());
-        multiboot_framebuffer_width = framebuffer.width();
-        multiboot_framebuffer_height = framebuffer.height();
-        multiboot_framebuffer_pitch = framebuffer.pitch();
+        g_boot_info.boot_framebuffer.paddr = PhysicalAddress((PhysicalPtr)framebuffer.gpu_buffer());
+        g_boot_info.boot_framebuffer.width = framebuffer.width();
+        g_boot_info.boot_framebuffer.height = framebuffer.height();
+        g_boot_info.boot_framebuffer.pitch = framebuffer.pitch();
 
-        // NOTE: The required pixel format for MULTIBOOT_FRAMEBUFFER_TYPE_RGB is actually BGRx8888.
         VERIFY(framebuffer.pixel_order() == PixelOrder::BGR);
-        multiboot_framebuffer_type = MULTIBOOT_FRAMEBUFFER_TYPE_RGB;
-
-        multiboot_flags |= MULTIBOOT_INFO_FRAMEBUFFER_INFO;
+        g_boot_info.boot_framebuffer.type = BootFramebufferType::BGRx8888;
     }
 }
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='perl5'
-version='5.38.2'
-cross_version='1.5.2'
+version='5.40.1'
+cross_version='1.6.1'
 useconfigure='true'
 files=(
-    "https://www.cpan.org/src/5.0/perl-${version}.tar.xz#d91115e90b896520e83d4de6b52f8254ef2b70a8d545ffab33200ea9f1cf29e8"
-    "https://github.com/arsv/perl-cross/releases/download/${cross_version}/perl-cross-${cross_version}.tar.gz#584dc54c48dca25e032b676a15bef377c1fed9de318b4fc140292a5dbf326e90"
+    "https://www.cpan.org/src/5.0/perl-${version}.tar.xz#dfa20c2eef2b4af133525610bbb65dd13777ecf998c9c5b1ccf0d308e732ee3f"
+    "https://github.com/arsv/perl-cross/releases/download/${cross_version}/perl-cross-${cross_version}.tar.gz#b5f4b4457bbd7be37adac8ee423beedbcdba8963a85f79770f5e701dabc5550f"
 )
 configopts=(
     '-Dosname=serenity'

@@ -7,6 +7,7 @@
 #include <LibJS/Heap/Heap.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibWeb/Animations/DocumentTimeline.h>
+#include <LibWeb/Bindings/DocumentTimelinePrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HighResolutionTime/Performance.h>
@@ -19,7 +20,14 @@ JS_DEFINE_ALLOCATOR(DocumentTimeline);
 JS::NonnullGCPtr<DocumentTimeline> DocumentTimeline::create(JS::Realm& realm, DOM::Document& document, HighResolutionTime::DOMHighResTimeStamp origin_time)
 {
     auto timeline = realm.heap().allocate<DocumentTimeline>(realm, realm, document, origin_time);
-    timeline->set_current_time(document.window()->performance()->now());
+    auto current_time = document.last_animation_frame_timestamp();
+    if (!current_time.has_value()) {
+        // The document hasn't processed an animation frame yet, so just use the exact current time
+        auto* window_or_worker = dynamic_cast<HTML::WindowOrWorkerGlobalScopeMixin*>(&realm.global_object());
+        VERIFY(window_or_worker);
+        current_time = window_or_worker->performance()->now();
+    }
+    timeline->set_current_time(current_time);
     return timeline;
 }
 

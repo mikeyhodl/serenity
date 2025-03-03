@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGUI/Event.h>
 #include <LibGfx/StylePainter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/BrowsingContext.h>
@@ -16,6 +15,8 @@
 #include <LibWeb/Painting/RadioButtonPaintable.h>
 
 namespace Web::Painting {
+
+JS_DEFINE_ALLOCATOR(RadioButtonPaintable);
 
 JS::NonnullGCPtr<RadioButtonPaintable> RadioButtonPaintable::create(Layout::RadioButton const& layout_box)
 {
@@ -40,7 +41,7 @@ void RadioButtonPaintable::paint(PaintContext& context, PaintPhase phase) const
     auto draw_circle = [&](auto const& rect, Color color) {
         // Note: Doing this is a bit more forgiving than draw_circle() which will round to the nearset even radius.
         // This will fudge it (which works better here).
-        context.recording_painter().fill_rect_with_rounded_corners(rect, color, rect.width() / 2);
+        context.display_list_recorder().fill_rect_with_rounded_corners(rect, color, rect.width() / 2);
     };
 
     auto shrink_all = [&](auto const& rect, int amount) {

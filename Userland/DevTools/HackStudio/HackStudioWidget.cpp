@@ -1044,7 +1044,7 @@ void HackStudioWidget::initialize_debugger()
         m_project->root_path(),
         [this](PtraceRegisters const& regs) {
             VERIFY(Debugger::the().session());
-            const auto& debug_session = *Debugger::the().session();
+            auto const& debug_session = *Debugger::the().session();
             auto source_position = debug_session.get_source_position(regs.ip());
             if (!source_position.has_value()) {
                 dbgln("Could not find source position for address: {:p}", regs.ip());
@@ -1363,9 +1363,13 @@ ErrorOr<void> HackStudioWidget::create_action_tab(GUI::Widget& parent)
 
     m_disassembly_widget = m_action_tab_widget->add_tab<DisassemblyWidget>("Disassembly"_string);
     m_git_widget = m_action_tab_widget->add_tab<GitWidget>("Git"_string);
-    m_git_widget->set_view_diff_callback([this](auto const& original_content, auto const& diff) {
+    m_git_widget->set_view_diff_callback([this](auto const& original_content, auto const& diff, auto const& file_path) {
         m_diff_viewer->set_content(original_content, diff);
         set_edit_mode(EditMode::Diff);
+        StringBuilder diff_title;
+        diff_title.append("Diff:", 5);
+        diff_title.append(file_path.view());
+        m_diff_viewer->window()->set_title(diff_title.to_byte_string());
     });
     m_gml_preview_widget = m_action_tab_widget->add_tab<GMLPreviewWidget>("GML Preview"_string, "");
 
@@ -1699,7 +1703,7 @@ bool HackStudioWidget::any_document_is_dirty() const
 
 void HackStudioWidget::update_gml_preview()
 {
-    auto gml_content = current_editor_wrapper().filename().ends_with(".gml"sv) ? current_editor_wrapper().editor().text().view() : ""sv;
+    auto gml_content = current_editor_wrapper().filename().ends_with(".gml"sv) ? current_editor_wrapper().editor().text() : ByteString::empty();
     m_gml_preview_widget->load_gml(gml_content);
 }
 

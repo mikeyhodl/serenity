@@ -15,23 +15,20 @@
 #include <LibGfx/Size.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Heap/Cell.h>
+#include <LibURL/Origin.h>
 #include <LibWeb/DOM/Position.h>
 #include <LibWeb/HTML/ActivateTab.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWeb/HTML/NavigableContainer.h>
-#include <LibWeb/HTML/Origin.h>
 #include <LibWeb/HTML/SandboxingFlagSet.h>
 #include <LibWeb/HTML/SessionHistoryEntry.h>
 #include <LibWeb/HTML/TokenizedFeatures.h>
 #include <LibWeb/HTML/VisibilityState.h>
-#include <LibWeb/Page/EventHandler.h>
 #include <LibWeb/Platform/Timer.h>
 #include <LibWeb/TreeNode.h>
 
 namespace Web::HTML {
 
-class BrowsingContext final : public JS::Cell
-    , public Weakable<BrowsingContext> {
+class BrowsingContext final : public JS::Cell {
     JS_CELL(BrowsingContext, JS::Cell);
     JS_DECLARE_ALLOCATOR(BrowsingContext);
 
@@ -48,7 +45,6 @@ public:
 
     JS::NonnullGCPtr<HTML::TraversableNavigable> top_level_traversable() const;
 
-    JS::GCPtr<BrowsingContext> parent() const { return m_parent; }
     JS::GCPtr<BrowsingContext> first_child() const;
     JS::GCPtr<BrowsingContext> next_sibling() const;
 
@@ -56,51 +52,50 @@ public:
     bool is_familiar_with(BrowsingContext const&) const;
 
     template<typename Callback>
-    IterationDecision for_each_in_inclusive_subtree(Callback callback) const
+    TraversalDecision for_each_in_inclusive_subtree(Callback callback) const
     {
-        if (callback(*this) == IterationDecision::Break)
-            return IterationDecision::Break;
+        if (callback(*this) == TraversalDecision::Break)
+            return TraversalDecision::Break;
         for (auto child = first_child(); child; child = child->next_sibling()) {
-            if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->for_each_in_inclusive_subtree(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename Callback>
-    IterationDecision for_each_in_inclusive_subtree(Callback callback)
+    TraversalDecision for_each_in_inclusive_subtree(Callback callback)
     {
-        if (callback(*this) == IterationDecision::Break)
-            return IterationDecision::Break;
+        if (callback(*this) == TraversalDecision::Break)
+            return TraversalDecision::Break;
         for (auto child = first_child(); child; child = child->next_sibling()) {
-            if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->for_each_in_inclusive_subtree(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename Callback>
-    IterationDecision for_each_in_subtree(Callback callback) const
+    TraversalDecision for_each_in_subtree(Callback callback) const
     {
         for (auto child = first_child(); child; child = child->next_sibling()) {
-            if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->for_each_in_inclusive_subtree(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     template<typename Callback>
-    IterationDecision for_each_in_subtree(Callback callback)
+    TraversalDecision for_each_in_subtree(Callback callback)
     {
         for (auto child = first_child(); child; child = child->next_sibling()) {
-            if (child->for_each_in_inclusive_subtree(callback) == IterationDecision::Break)
-                return IterationDecision::Break;
+            if (child->for_each_in_inclusive_subtree(callback) == TraversalDecision::Break)
+                return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     }
 
     bool is_top_level() const;
-    bool is_focused_context() const;
 
     DOM::Document const* active_document() const;
     DOM::Document* active_document();
@@ -116,24 +111,9 @@ public:
     Page& page() { return m_page; }
     Page const& page() const { return m_page; }
 
-    Web::EventHandler& event_handler() { return m_event_handler; }
-    Web::EventHandler const& event_handler() const { return m_event_handler; }
+    u64 virtual_browsing_context_group_id() const { return m_virtual_browsing_context_group_id; }
 
     JS::GCPtr<BrowsingContext> top_level_browsing_context() const;
-
-    JS::GCPtr<DOM::Position> cursor_position() const { return m_cursor_position; }
-    void set_cursor_position(JS::NonnullGCPtr<DOM::Position>);
-    bool increment_cursor_position_offset();
-    bool decrement_cursor_position_offset();
-
-    bool cursor_blink_state() const { return m_cursor_blink_state; }
-
-    String selected_text() const;
-    void select_all();
-
-    void did_edit(Badge<EditEventHandler>);
-
-    JS::GCPtr<DOM::Node> currently_focused_area();
 
     BrowsingContextGroup* group();
     void set_group(BrowsingContextGroup*);
@@ -143,6 +123,10 @@ public:
 
     // https://html.spec.whatwg.org/multipage/origin.html#one-permitted-sandboxed-navigator
     BrowsingContext const* the_one_permitted_sandboxed_navigator() const;
+    void set_the_one_permitted_sandboxed_navigator(BrowsingContext const*)
+    {
+        // FIXME: Implement this
+    }
 
     bool has_navigable_been_destroyed() const;
 
@@ -151,17 +135,15 @@ public:
 
     void set_is_popup(TokenizedFeature::Popup is_popup) { m_is_popup = is_popup; }
 
+    SandboxingFlagSet popup_sandboxing_flag_set() const { return m_popup_sandboxing_flag_set; }
+    void set_popup_sandboxing_flag_set(SandboxingFlagSet value) { m_popup_sandboxing_flag_set = value; }
+
 private:
     explicit BrowsingContext(JS::NonnullGCPtr<Page>);
 
     virtual void visit_edges(Cell::Visitor&) override;
 
-    void reset_cursor_blink_cycle();
-
     JS::NonnullGCPtr<Page> m_page;
-
-    // FIXME: Move EventHandler to Navigable
-    Web::EventHandler m_event_handler;
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#browsing-context
     JS::GCPtr<HTML::WindowProxy> m_window_proxy;
@@ -170,10 +152,13 @@ private:
     JS::GCPtr<BrowsingContext> m_opener_browsing_context;
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#opener-origin-at-creation
-    Optional<HTML::Origin> m_opener_origin_at_creation;
+    Optional<URL::Origin> m_opener_origin_at_creation;
 
     // https://html.spec.whatwg.org/multipage/browsers.html#is-popup
     TokenizedFeature::Popup m_is_popup { TokenizedFeature::Popup::No };
+
+    // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
+    SandboxingFlagSet m_popup_sandboxing_flag_set {};
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#is-auxiliary
     bool m_is_auxiliary { false };
@@ -184,22 +169,16 @@ private:
     // https://html.spec.whatwg.org/multipage/document-sequences.html#virtual-browsing-context-group-id
     u64 m_virtual_browsing_context_group_id = { 0 };
 
-    // FIXME: Move cursor tracking to Navigable
-    JS::GCPtr<DOM::Position> m_cursor_position;
-    RefPtr<Core::Timer> m_cursor_blink_timer;
-    bool m_cursor_blink_state { false };
-
     // https://html.spec.whatwg.org/multipage/browsers.html#tlbc-group
     JS::GCPtr<BrowsingContextGroup> m_group;
 
-    JS::GCPtr<BrowsingContext> m_parent;
     JS::GCPtr<BrowsingContext> m_first_child;
     JS::GCPtr<BrowsingContext> m_last_child;
     JS::GCPtr<BrowsingContext> m_next_sibling;
     JS::GCPtr<BrowsingContext> m_previous_sibling;
 };
 
-HTML::Origin determine_the_origin(URL::URL const& url, SandboxingFlagSet sandbox_flags, Optional<HTML::Origin> source_origin);
+URL::Origin determine_the_origin(Optional<URL::URL const&>, SandboxingFlagSet, Optional<URL::Origin> source_origin);
 
 SandboxingFlagSet determine_the_creation_sandboxing_flags(BrowsingContext const&, JS::GCPtr<DOM::Element> embedder);
 

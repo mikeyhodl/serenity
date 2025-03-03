@@ -17,6 +17,7 @@ struct ThreadRegisters {
     u64 spsr_el1;
     u64 elr_el1;
     u64 sp_el0;
+    u64 tpidr_el0;
     u64 ttbr0_el1;
 
     FlatPtr ip() const { return elr_el1; }
@@ -24,6 +25,8 @@ struct ThreadRegisters {
 
     FlatPtr sp() const { return sp_el0; }
     void set_sp(FlatPtr value) { sp_el0 = value; }
+
+    FlatPtr frame_pointer() const { return x[29]; }
 
     void set_initial_state(bool is_kernel_process, Memory::AddressSpace& space, FlatPtr kernel_stack_top)
     {

@@ -97,6 +97,7 @@ enum class SVGUnits {
 using GradientUnits = SVGUnits;
 using MaskUnits = SVGUnits;
 using MaskContentUnits = SVGUnits;
+using ClipPathUnits = SVGUnits;
 
 enum class SpreadMethod {
     Pad,
@@ -135,6 +136,8 @@ enum class FillRule {
     Nonzero,
     Evenodd
 };
+
+using ClipRule = FillRule;
 
 enum class TextAnchor {
     Start,

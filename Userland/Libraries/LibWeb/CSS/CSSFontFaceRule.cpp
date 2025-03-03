@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/Font/FontStyleMapping.h>
 #include <LibWeb/Bindings/CSSFontFaceRulePrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
@@ -16,12 +17,12 @@ namespace Web::CSS {
 
 JS_DEFINE_ALLOCATOR(CSSFontFaceRule);
 
-JS::NonnullGCPtr<CSSFontFaceRule> CSSFontFaceRule::create(JS::Realm& realm, FontFace&& font_face)
+JS::NonnullGCPtr<CSSFontFaceRule> CSSFontFaceRule::create(JS::Realm& realm, ParsedFontFace&& font_face)
 {
     return realm.heap().allocate<CSSFontFaceRule>(realm, realm, move(font_face));
 }
 
-CSSFontFaceRule::CSSFontFaceRule(JS::Realm& realm, FontFace&& font_face)
+CSSFontFaceRule::CSSFontFaceRule(JS::Realm& realm, ParsedFontFace&& font_face)
     : CSSRule(realm)
     , m_font_face(move(font_face))
 {
@@ -35,7 +36,7 @@ void CSSFontFaceRule::initialize(JS::Realm& realm)
 
 CSSStyleDeclaration* CSSFontFaceRule::style()
 {
-    // FIXME: Return a CSSStyleDeclaration subclass that directs changes to the FontFace.
+    // FIXME: Return a CSSStyleDeclaration subclass that directs changes to the ParsedFontFace.
     return nullptr;
 }
 
@@ -63,7 +64,7 @@ String CSSFontFaceRule::serialized() const
         builder.append(" src: "sv);
 
         // 2. The result of invoking serialize a comma-separated list on performing serialize a URL or serialize a LOCAL for each source on the source list.
-        serialize_a_comma_separated_list(builder, m_font_face.sources(), [&](StringBuilder& builder, FontFace::Source source) -> void {
+        serialize_a_comma_separated_list(builder, m_font_face.sources(), [&](StringBuilder& builder, ParsedFontFace::Source source) -> void {
             if (source.local_or_url.has<URL::URL>()) {
                 serialize_a_url(builder, MUST(source.local_or_url.get<URL::URL>().to_string()));
             } else {
@@ -92,15 +93,74 @@ String CSSFontFaceRule::serialized() const
     // followed by the result of performing serialize a <'font-variant'>,
     // followed by the string ";", i.e., SEMICOLON (U+003B).
 
-    // FIXME: 8. If rule’s associated font-feature-settings descriptor is present, a single SPACE (U+0020),
-    // followed by the string "font-feature-settings:", followed by a single SPACE (U+0020),
-    // followed by the result of performing serialize a <'font-feature-settings'>,
-    // followed by the string ";", i.e., SEMICOLON (U+003B).
+    // 8. If rule’s associated font-feature-settings descriptor is present, a single SPACE (U+0020),
+    //    followed by the string "font-feature-settings:", followed by a single SPACE (U+0020),
+    //    followed by the result of performing serialize a <'font-feature-settings'>,
+    //    followed by the string ";", i.e., SEMICOLON (U+003B).
+    if (m_font_face.font_feature_settings().has_value()) {
+        auto const& feature_settings = m_font_face.font_feature_settings().value();
+        builder.append(" font-feature-settings: "sv);
+        // NOTE: We sort the tags during parsing, so they're already in the correct order.
+        bool first = true;
+        for (auto const& [key, value] : feature_settings) {
+            if (first) {
+                first = false;
+            } else {
+                builder.append(", "sv);
+            }
 
-    // FIXME: 9. If rule’s associated font-stretch descriptor is present, a single SPACE (U+0020),
-    // followed by the string "font-stretch:", followed by a single SPACE (U+0020),
-    // followed by the result of performing serialize a <'font-stretch'>,
-    // followed by the string ";", i.e., SEMICOLON (U+003B).
+            serialize_a_string(builder, key);
+            // NOTE: 1 is the default value, so don't serialize it.
+            if (value != 1)
+                builder.appendff(" {}", value);
+        }
+        builder.append(";"sv);
+    }
+
+    // 9. If rule’s associated font-stretch descriptor is present, a single SPACE (U+0020),
+    //    followed by the string "font-stretch:", followed by a single SPACE (U+0020),
+    //    followed by the result of performing serialize a <'font-stretch'>,
+    //    followed by the string ";", i.e., SEMICOLON (U+003B).
+    // NOTE: font-stretch is now an alias for font-width, so we use that instead.
+    if (m_font_face.width().has_value()) {
+        builder.append(" font-width: "sv);
+        // NOTE: font-width is supposed to always be serialized as a percentage.
+        //       Right now, it's stored as a Gfx::FontWidth value, so we have to lossily convert it back.
+        float percentage = 100.0f;
+        switch (m_font_face.width().value()) {
+        case Gfx::FontWidth::UltraCondensed:
+            percentage = 50.0f;
+            break;
+        case Gfx::FontWidth::ExtraCondensed:
+            percentage = 62.5f;
+            break;
+        case Gfx::FontWidth::Condensed:
+            percentage = 75.0f;
+            break;
+        case Gfx::FontWidth::SemiCondensed:
+            percentage = 87.5f;
+            break;
+        case Gfx::FontWidth::Normal:
+            percentage = 100.0f;
+            break;
+        case Gfx::FontWidth::SemiExpanded:
+            percentage = 112.5f;
+            break;
+        case Gfx::FontWidth::Expanded:
+            percentage = 125.0f;
+            break;
+        case Gfx::FontWidth::ExtraExpanded:
+            percentage = 150.0f;
+            break;
+        case Gfx::FontWidth::UltraExpanded:
+            percentage = 200.0f;
+            break;
+        default:
+            break;
+        }
+        builder.appendff("{}%", percentage);
+        builder.append(";"sv);
+    }
 
     // 10. If rule’s associated font-weight descriptor is present, a single SPACE (U+0020),
     //     followed by the string "font-weight:", followed by a single SPACE (U+0020),

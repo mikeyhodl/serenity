@@ -37,13 +37,13 @@
 #include <LibMarkdown/Document.h>
 #include <LibMarkdown/SyntaxHighlighter.h>
 #include <LibSQL/AST/SyntaxHighlighter.h>
+#include <LibShell/SyntaxHighlighter.h>
 #include <LibSyntax/Language.h>
 #include <LibWeb/CSS/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/HTMLHeadElement.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWebView/OutOfProcessWebView.h>
-#include <Shell/SyntaxHighlighter.h>
 #include <fcntl.h>
 
 namespace HackStudio {
@@ -346,8 +346,7 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
 
 void Editor::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -365,7 +364,7 @@ void Editor::drop_event(GUI::DropEvent& event)
             return;
         }
         set_current_editor_wrapper(static_cast<EditorWrapper*>(parent()));
-        open_file(urls.first().serialize_path());
+        open_file(URL::percent_decode(urls.first().serialize_path()));
     }
 }
 
@@ -762,7 +761,7 @@ void Editor::create_tokens_info_timer()
     m_tokens_info_timer = Core::Timer::create_repeating((int)token_info_timer_interval_ms, [this] {
         on_token_info_timer_tick();
         m_tokens_info_timer->stop();
-    }).release_value_but_fixme_should_propagate_errors();
+    });
     m_tokens_info_timer->start();
 }
 

@@ -28,8 +28,7 @@ namespace AK {
 
 // FIXME: Remove this when OpenBSD Clang fully supports consteval.
 //        And once oss-fuzz updates to clang >15.
-//        And once Android ships an NDK with clang >14
-#if defined(AK_OS_OPENBSD) || defined(OSS_FUZZ) || defined(AK_OS_ANDROID)
+#if defined(AK_OS_OPENBSD) || defined(OSS_FUZZ)
 #    define AK_SHORT_STRING_CONSTEVAL constexpr
 #else
 #    define AK_SHORT_STRING_CONSTEVAL consteval
@@ -50,6 +49,15 @@ public:
 
     // Creates a new String from a sequence of UTF-8 encoded code points.
     static ErrorOr<String> from_utf8(StringView);
+
+    enum class WithBOMHandling {
+        Yes,
+        No,
+    };
+
+    // Creates a new String using the replacement character for invalid bytes
+    [[nodiscard]] static String from_utf8_with_replacement_character(StringView, WithBOMHandling = WithBOMHandling::Yes);
+
     template<typename T>
     requires(IsOneOf<RemoveCVReference<T>, ByteString, DeprecatedFlyString, FlyString, String>)
     static ErrorOr<String> from_utf8(T&&) = delete;
@@ -79,7 +87,7 @@ public:
     static ErrorOr<String> repeated(u32 code_point, size_t count);
 
     // Creates a new String from another string, repeated N times.
-    static String repeated(String const&, size_t count);
+    static ErrorOr<String> repeated(String const&, size_t count);
 
     // Creates a new String by case-transforming this String. Using these methods require linking LibUnicode into your application.
     ErrorOr<String> to_lowercase(Optional<StringView> const& locale = {}) const;
@@ -87,9 +95,13 @@ public:
     ErrorOr<String> to_titlecase(Optional<StringView> const& locale = {}, TrailingCodePointTransformation trailing_code_point_transformation = TrailingCodePointTransformation::Lowercase) const;
     ErrorOr<String> to_casefold() const;
 
+    [[nodiscard]] String to_ascii_lowercase() const;
+    [[nodiscard]] String to_ascii_uppercase() const;
+
     // Compare this String against another string with caseless matching. Using this method requires linking LibUnicode into your application.
     [[nodiscard]] bool equals_ignoring_case(String const&) const;
 
+    [[nodiscard]] bool equals_ignoring_ascii_case(String const&) const;
     [[nodiscard]] bool equals_ignoring_ascii_case(StringView) const;
 
     [[nodiscard]] bool starts_with(u32 code_point) const;
@@ -107,13 +119,15 @@ public:
     ErrorOr<String> substring_from_byte_offset_with_shared_superstring(size_t start) const;
 
     // Returns an iterable view over the Unicode code points.
-    [[nodiscard]] Utf8View code_points() const;
+    [[nodiscard]] Utf8View code_points() const&;
+    [[nodiscard]] Utf8View code_points() const&& = delete;
 
     // Returns true if the String is zero-length.
     [[nodiscard]] bool is_empty() const;
 
     // Returns a StringView covering the full length of the string. Note that iterating this will go byte-at-a-time, not code-point-at-a-time.
-    [[nodiscard]] StringView bytes_as_string_view() const;
+    [[nodiscard]] StringView bytes_as_string_view() const&;
+    [[nodiscard]] StringView bytes_as_string_view() const&& = delete;
 
     [[nodiscard]] size_t count(StringView needle) const { return StringUtils::count(bytes_as_string_view(), needle); }
 
@@ -129,6 +143,9 @@ public:
 
     Optional<size_t> find_byte_offset(u32 code_point, size_t from_byte_offset = 0) const;
     Optional<size_t> find_byte_offset(StringView substring, size_t from_byte_offset = 0) const;
+
+    // Using this method requires linking LibUnicode into your application.
+    Optional<size_t> find_byte_offset_ignoring_case(StringView, size_t from_byte_offset = 0) const;
 
     [[nodiscard]] bool operator==(String const&) const = default;
     [[nodiscard]] bool operator==(FlyString const&) const;
@@ -150,9 +167,9 @@ public:
     [[nodiscard]] u32 ascii_case_insensitive_hash() const;
 
     template<Arithmetic T>
-    static ErrorOr<String> number(T value)
+    [[nodiscard]] static String number(T value)
     {
-        return formatted("{}", value);
+        return MUST(formatted("{}", value));
     }
 
     template<Arithmetic T>
@@ -186,7 +203,7 @@ public:
     static ErrorOr<String> from_byte_string(T&&) = delete;
 
 private:
-    friend FlyString;
+    friend class ::AK::FlyString;
 
     using ShortString = Detail::ShortString;
 

@@ -7,7 +7,6 @@
 #include "ThemeWidget.h"
 
 #include <AK/LexicalPath.h>
-#include <Applications/MouseSettings/ThemeWidgetGML.h>
 #include <LibCore/Directory.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/ComboBox.h>
@@ -15,6 +14,7 @@
 #include <LibGUI/SortingProxyModel.h>
 #include <LibGUI/TableView.h>
 
+namespace MouseSettings {
 ErrorOr<String> MouseCursorModel::column_name(int column_index) const
 {
     switch (column_index) {
@@ -97,16 +97,24 @@ void ThemeModel::invalidate()
     Model::invalidate();
 }
 
-ErrorOr<NonnullRefPtr<ThemeWidget>> ThemeWidget::try_create()
+Vector<GUI::ModelIndex> ThemeModel::matches(StringView needle, unsigned flags, const GUI::ModelIndex& parent)
 {
-    auto widget = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ThemeWidget()));
-    TRY(widget->setup());
-    return widget;
+    Vector<GUI::ModelIndex> found = {};
+
+    for (size_t i = 0; i < m_themes.size(); ++i) {
+        auto theme = m_themes[i];
+        if (!string_matches(theme, needle, flags))
+            continue;
+        found.append(index(i, 0, parent));
+        if (flags & GUI::Model::MatchesFlag::FirstMatchOnly)
+            break;
+    }
+
+    return found;
 }
 
-ErrorOr<void> ThemeWidget::setup()
+ErrorOr<void> ThemeWidget::initialize()
 {
-    TRY(load_from_gml(theme_widget_gml));
     m_cursors_tableview = find_descendant_of_type_named<GUI::TableView>("cursors_tableview");
     m_cursors_tableview->set_highlight_selected_rows(true);
     m_cursors_tableview->set_alternating_row_colors(false);
@@ -127,6 +135,7 @@ ErrorOr<void> ThemeWidget::setup()
     m_mouse_cursor_model->change_theme(theme_name);
 
     m_theme_name_box = find_descendant_of_type_named<GUI::ComboBox>("theme_name_box");
+    m_theme_name_box->set_only_allow_values_from_model(true);
     m_theme_name_box->on_change = [this](ByteString const& value, GUI::ModelIndex const&) {
         m_mouse_cursor_model->change_theme(value);
         set_modified(true);
@@ -145,6 +154,5 @@ void ThemeWidget::apply_settings()
 void ThemeWidget::reset_default_values()
 {
     m_theme_name_box->set_text("Default");
-    // FIXME: ComboBox::set_text() doesn't fire the on_change callback, so we have to set the theme here manually.
-    m_mouse_cursor_model->change_theme("Default");
+}
 }

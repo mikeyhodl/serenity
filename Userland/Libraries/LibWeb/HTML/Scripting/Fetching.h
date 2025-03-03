@@ -56,6 +56,7 @@ ScriptFetchOptions default_classic_script_fetch_options();
 
 class FetchContext : public JS::GraphLoadingState::HostDefined {
     JS_CELL(FetchContext, JS::GraphLoadingState::HostDefined);
+    JS_DECLARE_ALLOCATOR(FetchContext);
 
 public:
     JS::Value parse_error;                                    // [[ParseError]]
@@ -88,6 +89,7 @@ Optional<URL::URL> resolve_url_like_module_specifier(ByteString const& specifier
 
 WebIDL::ExceptionOr<void> fetch_classic_script(JS::NonnullGCPtr<HTMLScriptElement>, URL::URL const&, EnvironmentSettingsObject& settings_object, ScriptFetchOptions options, CORSSettingAttribute cors_setting, String character_encoding, OnFetchScriptComplete on_complete);
 WebIDL::ExceptionOr<void> fetch_classic_worker_script(URL::URL const&, EnvironmentSettingsObject& fetch_client, Fetch::Infrastructure::Request::Destination, EnvironmentSettingsObject& settings_object, PerformTheFetchHook, OnFetchScriptComplete);
+WebIDL::ExceptionOr<JS::NonnullGCPtr<ClassicScript>> fetch_a_classic_worker_imported_script(URL::URL const&, HTML::EnvironmentSettingsObject&, PerformTheFetchHook = nullptr);
 WebIDL::ExceptionOr<void> fetch_module_worker_script_graph(URL::URL const&, EnvironmentSettingsObject& fetch_client, Fetch::Infrastructure::Request::Destination, EnvironmentSettingsObject& settings_object, PerformTheFetchHook, OnFetchScriptComplete);
 WebIDL::ExceptionOr<void> fetch_worklet_module_worker_script_graph(URL::URL const&, EnvironmentSettingsObject& fetch_client, Fetch::Infrastructure::Request::Destination, EnvironmentSettingsObject& settings_object, PerformTheFetchHook, OnFetchScriptComplete);
 void fetch_internal_module_script_graph(JS::Realm&, JS::ModuleRequest const& module_request, EnvironmentSettingsObject& fetch_client_settings_object, Fetch::Infrastructure::Request::Destination, ScriptFetchOptions const&, Script& referring_script, HashTable<ModuleLocationTuple> const& visited_set, PerformTheFetchHook, OnFetchScriptComplete on_complete);
@@ -97,6 +99,8 @@ void fetch_single_imported_module_script(JS::Realm&, URL::URL const&, Environmen
 
 void fetch_descendants_of_a_module_script(JS::Realm&, JavaScriptModuleScript& module_script, EnvironmentSettingsObject& fetch_client_settings_object, Fetch::Infrastructure::Request::Destination, HashTable<ModuleLocationTuple> visited_set, PerformTheFetchHook, OnFetchScriptComplete callback);
 void fetch_descendants_of_and_link_a_module_script(JS::Realm&, JavaScriptModuleScript&, EnvironmentSettingsObject&, Fetch::Infrastructure::Request::Destination, PerformTheFetchHook, OnFetchScriptComplete on_complete);
+
+Fetch::Infrastructure::Request::Destination fetch_destination_from_module_type(Fetch::Infrastructure::Request::Destination, ByteString const&);
 
 void fetch_single_module_script(JS::Realm&, URL::URL const&, EnvironmentSettingsObject& fetch_client, Fetch::Infrastructure::Request::Destination, ScriptFetchOptions const&, EnvironmentSettingsObject& settings_object, Web::Fetch::Infrastructure::Request::ReferrerType const&, Optional<JS::ModuleRequest> const&, TopLevelModule, PerformTheFetchHook, OnFetchScriptComplete callback);
 }

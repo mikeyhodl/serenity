@@ -9,11 +9,12 @@
 #include <AK/Error.h>
 #include <AK/OwnPtr.h>
 #include <AK/Platform.h>
+#include <AK/SetOnce.h>
 #include <AK/Time.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <Kernel/API/TimePage.h>
-#include <Kernel/Arch/RegisterState.h>
+#include <Kernel/Firmware/DeviceTree/DeviceRecipe.h>
 #include <Kernel/Forward.h>
 #include <Kernel/Library/LockRefPtr.h>
 #include <Kernel/UnixTypes.h>
@@ -37,6 +38,8 @@ public:
     static void initialize(u32 cpu);
     static bool is_initialized();
     static TimeManagement& the();
+
+    static void add_recipe(DeviceTree::DeviceRecipe<NonnullLockRefPtr<HardwareTimerBase>>);
 
     static u64 scheduler_current_time();
 
@@ -72,7 +75,7 @@ public:
     // FIXME: Most likely broken, because it does not check m_update[12] for in-progress updates.
     void set_remaining_epoch_time_adjustment(Duration adjustment) { m_remaining_epoch_time_adjustment = adjustment; }
 
-    bool can_query_precise_time() const { return m_can_query_precise_time; }
+    bool can_query_precise_time() const { return m_can_query_precise_time.was_set(); }
 
     Memory::VMObject& time_page_vmobject();
 
@@ -84,7 +87,7 @@ private:
     bool probe_and_set_x86_legacy_hardware_timers();
     bool probe_and_set_x86_non_legacy_hardware_timers();
     void increment_time_since_boot_hpet();
-    static void update_time(RegisterState const&);
+    static void update_time();
 #elif ARCH(AARCH64)
     bool probe_and_set_aarch64_hardware_timers();
 #elif ARCH(RISCV64)
@@ -96,7 +99,7 @@ private:
     Vector<HardwareTimerBase*> scan_for_non_periodic_timers();
     Vector<NonnullLockRefPtr<HardwareTimerBase>> m_hardware_timers;
     void set_system_timer(HardwareTimerBase&);
-    static void system_timer_tick(RegisterState const&);
+    static void system_timer_tick();
 
     // Variables between m_update1 and m_update2 are synchronized
     // FIXME: Replace m_update1 and m_update2 with a SpinlockLocker
@@ -108,7 +111,7 @@ private:
     Atomic<u32> m_update2 { 0 };
 
     u32 m_time_ticks_per_second { 0 }; // may be different from interrupts/second (e.g. hpet)
-    bool m_can_query_precise_time { false };
+    SetOnce m_can_query_precise_time;
     bool m_updating_time { false }; // may only be accessed from the BSP!
 
     LockRefPtr<HardwareTimerBase> m_system_timer;

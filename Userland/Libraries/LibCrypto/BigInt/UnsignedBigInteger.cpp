@@ -49,8 +49,7 @@ UnsignedBigInteger::UnsignedBigInteger(double value)
         return;
     }
 
-    FloatExtractor<double> extractor;
-    extractor.d = value;
+    auto extractor = FloatExtractor<double>::from_float(value);
     VERIFY(!extractor.sign);
 
     i32 real_exponent = extractor.exponent - extractor.exponent_bias;
@@ -112,19 +111,21 @@ size_t UnsignedBigInteger::export_data(Bytes data, bool remove_leading_zeros) co
         ssize_t leading_zeros = -1;
         if (remove_leading_zeros) {
             UnsignedBigInteger::Word word = m_words[word_count - 1];
+            u8 value[4] {};
             for (size_t i = 0; i < sizeof(u32); i++) {
                 u8 byte = (u8)(word >> ((sizeof(u32) - i - 1) * 8));
-                data[out++] = byte;
+                value[i] = byte;
                 if (leading_zeros < 0 && byte != 0)
                     leading_zeros = (int)i;
             }
+            data.overwrite(out, value, array_size(value));
+            out += array_size(value);
         }
         for (size_t i = word_count - (remove_leading_zeros ? 1 : 0); i > 0; i--) {
             auto word = m_words[i - 1];
-            data[out++] = (u8)(word >> 24);
-            data[out++] = (u8)(word >> 16);
-            data[out++] = (u8)(word >> 8);
-            data[out++] = (u8)word;
+            u8 value[] { (u8)(word >> 24), (u8)(word >> 16), (u8)(word >> 8), (u8)word };
+            data.overwrite(out, value, array_size(value));
+            out += array_size(value);
         }
         if (leading_zeros > 0)
             out -= leading_zeros;
@@ -348,7 +349,7 @@ double UnsignedBigInteger::to_double(UnsignedBigInteger::RoundingMode rounding_m
     VERIFY((mantissa & 0xfff0000000000000) == 0);
     extractor.mantissa = mantissa;
 
-    return extractor.d;
+    return extractor.to_float();
 }
 
 void UnsignedBigInteger::set_to_0()
@@ -492,6 +493,15 @@ FLATTEN UnsignedBigInteger UnsignedBigInteger::shift_left(size_t num_bits) const
     return output;
 }
 
+FLATTEN UnsignedBigInteger UnsignedBigInteger::shift_right(size_t num_bits) const
+{
+    UnsignedBigInteger output;
+
+    UnsignedBigIntegerAlgorithms::shift_right_without_allocation(*this, num_bits, output);
+
+    return output;
+}
+
 FLATTEN UnsignedBigInteger UnsignedBigInteger::multiplied_by(UnsignedBigInteger const& other) const
 {
     UnsignedBigInteger result;
@@ -521,7 +531,7 @@ FLATTEN UnsignedDivisionResult UnsignedBigInteger::divided_by(UnsignedBigInteger
     UnsignedBigInteger temp_shift;
     UnsignedBigInteger temp_minus;
 
-    UnsignedBigIntegerAlgorithms::divide_without_allocation(*this, divisor, temp_shift_result, temp_shift_plus, temp_shift, temp_minus, quotient, remainder);
+    UnsignedBigIntegerAlgorithms::divide_without_allocation(*this, divisor, quotient, remainder);
 
     return UnsignedDivisionResult { quotient, remainder };
 }
@@ -536,8 +546,8 @@ u32 UnsignedBigInteger::hash() const
 
 void UnsignedBigInteger::set_bit_inplace(size_t bit_index)
 {
-    const size_t word_index = bit_index / UnsignedBigInteger::BITS_IN_WORD;
-    const size_t inner_word_index = bit_index % UnsignedBigInteger::BITS_IN_WORD;
+    size_t const word_index = bit_index / UnsignedBigInteger::BITS_IN_WORD;
+    size_t const inner_word_index = bit_index % UnsignedBigInteger::BITS_IN_WORD;
 
     m_words.ensure_capacity(word_index + 1);
 
@@ -627,8 +637,7 @@ UnsignedBigInteger::CompareResult UnsignedBigInteger::compare_to_double(double v
     if (is_zero())
         return CompareResult::DoubleGreaterThanBigInt;
 
-    FloatExtractor<double> extractor;
-    extractor.d = value;
+    auto extractor = FloatExtractor<double>::from_float(value);
 
     // Value cannot be negative at this point.
     VERIFY(extractor.sign == 0);

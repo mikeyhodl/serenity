@@ -16,6 +16,22 @@
 
 namespace AK {
 
+String String::from_utf8_with_replacement_character(StringView view, WithBOMHandling with_bom_handling)
+{
+    if (auto bytes = view.bytes(); with_bom_handling == WithBOMHandling::Yes && bytes.size() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        view = view.substring_view(3);
+
+    if (Utf8View(view).validate())
+        return String::from_utf8_without_validation(view.bytes());
+
+    StringBuilder builder;
+
+    for (auto c : Utf8View { view })
+        builder.append_code_point(c);
+
+    return builder.to_string_without_validation();
+}
+
 String String::from_utf8_without_validation(ReadonlyBytes bytes)
 {
     String result;
@@ -77,7 +93,7 @@ ErrorOr<String> String::repeated(u32 code_point, size_t count)
     return result;
 }
 
-StringView String::bytes_as_string_view() const
+StringView String::bytes_as_string_view() const&
 {
     return StringView(bytes());
 }
@@ -197,7 +213,7 @@ u32 String::ascii_case_insensitive_hash() const
     return case_insensitive_string_hash(reinterpret_cast<char const*>(bytes().data()), bytes().size());
 }
 
-Utf8View String::code_points() const
+Utf8View String::code_points() const&
 {
     return Utf8View(bytes_as_string_view());
 }
@@ -303,18 +319,72 @@ ErrorOr<String> String::from_byte_string(ByteString const& byte_string)
     return String::from_utf8(byte_string.view());
 }
 
+String String::to_ascii_lowercase() const
+{
+    bool const has_ascii_uppercase = [&] {
+        for (u8 const byte : bytes()) {
+            if (AK::is_ascii_upper_alpha(byte))
+                return true;
+        }
+        return false;
+    }();
+
+    if (!has_ascii_uppercase)
+        return *this;
+
+    Vector<u8> lowercase_bytes;
+    lowercase_bytes.ensure_capacity(bytes().size());
+    for (u8 const byte : bytes()) {
+        if (AK::is_ascii_upper_alpha(byte))
+            lowercase_bytes.unchecked_append(AK::to_ascii_lowercase(byte));
+        else
+            lowercase_bytes.unchecked_append(byte);
+    }
+    return String::from_utf8_without_validation(lowercase_bytes);
+}
+
+String String::to_ascii_uppercase() const
+{
+    bool const has_ascii_lowercase = [&] {
+        for (u8 const byte : bytes()) {
+            if (AK::is_ascii_lower_alpha(byte))
+                return true;
+        }
+        return false;
+    }();
+
+    if (!has_ascii_lowercase)
+        return *this;
+
+    Vector<u8> uppercase_bytes;
+    uppercase_bytes.ensure_capacity(bytes().size());
+    for (u8 const byte : bytes()) {
+        if (AK::is_ascii_lower_alpha(byte))
+            uppercase_bytes.unchecked_append(AK::to_ascii_uppercase(byte));
+        else
+            uppercase_bytes.unchecked_append(byte);
+    }
+    return String::from_utf8_without_validation(uppercase_bytes);
+}
+
+bool String::equals_ignoring_ascii_case(String const& other) const
+{
+    return StringUtils::equals_ignoring_ascii_case(bytes_as_string_view(), other.bytes_as_string_view());
+}
+
 bool String::equals_ignoring_ascii_case(StringView other) const
 {
     return StringUtils::equals_ignoring_ascii_case(bytes_as_string_view(), other);
 }
 
-String String::repeated(String const& input, size_t count)
+ErrorOr<String> String::repeated(String const& input, size_t count)
 {
-    VERIFY(!Checked<size_t>::multiplication_would_overflow(count, input.bytes().size()));
+    if (Checked<u32>::multiplication_would_overflow(count, input.bytes().size()))
+        return Error::from_errno(EOVERFLOW);
 
     String result;
     size_t input_size = input.bytes().size();
-    MUST(result.replace_with_new_string(count * input_size, [&](Bytes buffer) {
+    TRY(result.replace_with_new_string(count * input_size, [&](Bytes buffer) {
         if (input_size == 1) {
             buffer.fill(input.bytes().first());
         } else {
@@ -323,6 +393,7 @@ String String::repeated(String const& input, size_t count)
         }
         return ErrorOr<void> {};
     }));
+
     return result;
 }
 

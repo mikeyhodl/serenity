@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/IPv4Address.h>
+#include <AK/IPv6Address.h>
 #include <AK/RefPtr.h>
 #include <Kernel/Locking/MutexProtected.h>
 #include <Kernel/Net/NetworkAdapter.h>
@@ -34,10 +35,10 @@ struct Route final : public AtomicRefCounted<Route> {
         return destination == other.destination && (gateway == other.gateway || other.gateway.is_zero()) && netmask == other.netmask && flags == other.flags && adapter.ptr() == other.adapter.ptr();
     }
 
-    const IPv4Address destination;
-    const IPv4Address gateway;
-    const IPv4Address netmask;
-    const u16 flags;
+    IPv4Address const destination;
+    IPv4Address const gateway;
+    IPv4Address const netmask;
+    u16 const flags;
     NonnullRefPtr<NetworkAdapter> const adapter;
 
     IntrusiveListNode<Route, RefPtr<Route>> route_list_node {};

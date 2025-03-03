@@ -18,6 +18,7 @@
 
 namespace Ladybird {
 
+class EventLoopImplementationQt;
 class EventLoopImplementationQtEventTarget;
 
 class EventLoopManagerQt final : public Core::EventLoopManager {
@@ -35,12 +36,17 @@ public:
     virtual void did_post_event() override;
     static bool event_target_received_event(Badge<EventLoopImplementationQtEventTarget>, QEvent* event);
 
-    // FIXME: These APIs only exist for obscure use-cases inside SerenityOS. Try to get rid of them.
-    virtual int register_signal(int, Function<void(int)>) override { return 0; }
-    virtual void unregister_signal(int) override { }
+    virtual int register_signal(int, Function<void(int)>) override;
+    virtual void unregister_signal(int) override;
+
+    void set_main_loop_signal_notifiers(Badge<EventLoopImplementationQt>);
 
 private:
+    static void handle_signal(int);
+
     NonnullOwnPtr<EventLoopImplementationQtEventTarget> m_main_thread_event_target;
+    QSocketNotifier* m_signal_socket_notifier { nullptr };
+    int m_signal_socket_fds[2] = { -1, -1 };
 };
 
 class QtEventLoopManagerEvent final : public QEvent {
@@ -74,7 +80,7 @@ public:
     virtual bool was_exit_requested() const override { return false; }
     virtual void notify_forked_and_in_child() override { }
 
-    void set_main_loop() { m_main_loop = true; }
+    void set_main_loop();
 
 private:
     friend class EventLoopManagerQt;

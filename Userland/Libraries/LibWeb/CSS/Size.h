@@ -29,7 +29,7 @@ public:
     static Size make_px(CSSPixels);
     static Size make_length(Length);
     static Size make_percentage(Percentage);
-    static Size make_calculated(NonnullRefPtr<CalculatedStyleValue>);
+    static Size make_calculated(NonnullRefPtr<CSSMathValue>);
     static Size make_min_content();
     static Size make_max_content();
     static Size make_fit_content(Length available_space);
@@ -45,14 +45,11 @@ public:
     bool is_fit_content() const { return m_type == Type::FitContent; }
     bool is_none() const { return m_type == Type::None; }
 
-    // FIXME: This is a stopgap API that will go away once all layout code is aware of CSS::Size.
-    CSS::Length resolved(Layout::Node const&, CSSPixels reference_value) const;
-
     [[nodiscard]] CSSPixels to_px(Layout::Node const&, CSSPixels reference_value) const;
 
     bool contains_percentage() const;
 
-    CalculatedStyleValue const& calculated() const
+    CSSMathValue const& calculated() const
     {
         VERIFY(is_calculated());
         return m_length_percentage.calculated();

@@ -313,7 +313,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     process_model->update();
 
     i32 frequency = Config::read_i32("SystemMonitor"sv, "Monitor"sv, "Frequency"sv, 3);
-    if (frequency != 1 && frequency != 3 && frequency != 5) {
+    if (frequency != 0 && frequency != 1 && frequency != 3 && frequency != 5) {
         frequency = 3;
         Config::write_i32("SystemMonitor"sv, "Monitor"sv, "Frequency"sv, frequency);
     }
@@ -334,7 +334,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     };
     update_stats();
     auto& refresh_timer = window->add<Core::Timer>(frequency * 1000, move(update_stats));
-    refresh_timer.start();
+    if (frequency > 0)
+        refresh_timer.start();
 
     auto selected_id = [&](ProcessModel::Column column) -> pid_t {
         if (process_table_view.selection().is_empty())
@@ -453,9 +454,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     frequency_action_group.set_exclusive(true);
 
     auto make_frequency_action = [&](int seconds) -> ErrorOr<void> {
-        auto action = GUI::Action::create_checkable(ByteString::formatted("&{} Sec", seconds), [&refresh_timer, seconds](auto&) {
+        auto action = GUI::Action::create_checkable(ByteString::formatted("&{} Sec", seconds), [&window, &refresh_timer, seconds](auto&) {
             Config::write_i32("SystemMonitor"sv, "Monitor"sv, "Frequency"sv, seconds);
             refresh_timer.restart(seconds * 1000);
+            window->set_title("System Monitor");
         });
         action->set_status_tip(TRY(String::formatted("Refresh every {} seconds", seconds)));
         action->set_checked(frequency == seconds);
@@ -469,9 +471,26 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     TRY(make_frequency_action(5));
 
     auto view_menu = window->add_menu("&View"_string);
+    auto refresh_action = GUI::Action::create("&Refresh", { Mod_Ctrl, Key_R }, Key_F5, TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/reload.png"sv)), [&refresh_timer, &update_stats](auto&) {
+        if (refresh_timer.is_active())
+            refresh_timer.restart();
+        update_stats();
+    });
+    view_menu->add_action(*refresh_action);
+    view_menu->add_separator();
     view_menu->add_action(GUI::CommonActions::make_fullscreen_action([&](auto&) {
         window->set_fullscreen(!window->is_fullscreen());
     }));
+
+    auto pause_action = GUI::Action::create_checkable("&Paused", [&window, &refresh_timer](auto&) {
+        Config::write_i32("SystemMonitor"sv, "Monitor"sv, "Frequency"sv, 0);
+        window->set_title("System Monitor - Paused");
+        refresh_timer.stop();
+    });
+    pause_action->set_status_tip("Pause updates"_string);
+    pause_action->set_checked(frequency == 0);
+    frequency_action_group.add_action(*pause_action);
+    frequency_menu->add_action(*pause_action);
 
     auto help_menu = window->add_menu("&Help"_string);
     help_menu->add_action(GUI::CommonActions::make_command_palette_action(window));
@@ -578,15 +597,15 @@ ErrorOr<void> build_performance_tab(GUI::Widget& graphs_container)
 {
     auto& cpu_graph_group_box = *graphs_container.find_descendant_of_type_named<GUI::GroupBox>("cpu_graph");
 
-    size_t cpu_graphs_per_row = min(4, ProcessModel::the().cpus().size());
-    auto cpu_graph_rows = ceil_div(ProcessModel::the().cpus().size(), cpu_graphs_per_row);
-    cpu_graph_group_box.set_fixed_height(120u * cpu_graph_rows);
+    size_t cpus_count = ProcessModel::the().cpus().size();
+    size_t cpu_graphs_per_row = min(cpus_count, 4);
+    auto cpu_graph_rows = ceil_div(cpus_count, cpu_graphs_per_row);
 
     Vector<SystemMonitor::GraphWidget&> cpu_graphs;
     for (auto row = 0u; row < cpu_graph_rows; ++row) {
         auto& cpu_graph_row = cpu_graph_group_box.add<GUI::Widget>();
         cpu_graph_row.set_layout<GUI::HorizontalBoxLayout>(6);
-        cpu_graph_row.set_fixed_height(108);
+        cpu_graph_row.set_min_height(108);
         for (auto i = 0u; i < cpu_graphs_per_row; ++i) {
             auto& cpu_graph = cpu_graph_row.add<SystemMonitor::GraphWidget>();
             cpu_graph.set_max(100);

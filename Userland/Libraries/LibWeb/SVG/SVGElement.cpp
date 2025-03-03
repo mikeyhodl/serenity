@@ -7,10 +7,13 @@
 
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGElementPrototype.h>
+#include <LibWeb/CSS/StyleProperties.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/HTML/DOMStringMap.h>
 #include <LibWeb/SVG/SVGElement.h>
+#include <LibWeb/SVG/SVGSVGElement.h>
 #include <LibWeb/SVG/SVGUseElement.h>
 
 namespace Web::SVG {
@@ -24,19 +27,25 @@ void SVGElement::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGElement);
-
-    m_dataset = HTML::DOMStringMap::create(*this);
 }
 
 void SVGElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_dataset);
+    visitor.visit(m_class_name_animated_string);
 }
 
-void SVGElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+JS::NonnullGCPtr<HTML::DOMStringMap> SVGElement::dataset()
 {
-    Base::attribute_changed(name, value);
+    if (!m_dataset)
+        m_dataset = HTML::DOMStringMap::create(*this);
+    return *m_dataset;
+}
+
+void SVGElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
+{
+    Base::attribute_changed(name, old_value, value);
 
     update_use_elements_that_reference_this();
 }
@@ -74,7 +83,7 @@ void SVGElement::update_use_elements_that_reference_this()
 
     document().for_each_in_subtree_of_type<SVGUseElement>([this](SVGUseElement& use_element) {
         use_element.svg_element_changed(*this);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 }
 
@@ -93,7 +102,7 @@ void SVGElement::remove_from_use_element_that_reference_this()
 
     document().for_each_in_subtree_of_type<SVGUseElement>([this](SVGUseElement& use_element) {
         use_element.svg_element_removed(*this);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 }
 
@@ -105,6 +114,38 @@ void SVGElement::focus()
 void SVGElement::blur()
 {
     dbgln("(STUBBED) SVGElement::blur()");
+}
+
+// https://svgwg.org/svg2-draft/types.html#__svg__SVGElement__classNames
+JS::NonnullGCPtr<SVGAnimatedString> SVGElement::class_name()
+{
+    // The className IDL attribute reflects the ‘class’ attribute.
+    if (!m_class_name_animated_string)
+        m_class_name_animated_string = SVGAnimatedString::create(realm(), *this, AttributeNames::class_);
+
+    return *m_class_name_animated_string;
+}
+
+// https://svgwg.org/svg2-draft/types.html#__svg__SVGElement__ownerSVGElement
+JS::GCPtr<SVGSVGElement> SVGElement::owner_svg_element()
+{
+    // The ownerSVGElement IDL attribute represents the nearest ancestor ‘svg’ element.
+    // On getting ownerSVGElement, the nearest ancestor ‘svg’ element is returned;
+    // if the current element is the outermost svg element, then null is returned.
+    return shadow_including_first_ancestor_of_type<SVGSVGElement>();
+}
+
+JS::NonnullGCPtr<SVGAnimatedLength> SVGElement::svg_animated_length_for_property(CSS::PropertyID property) const
+{
+    // FIXME: Create a proper animated value when animations are supported.
+    auto make_length = [&] {
+        if (auto const* style = computed_css_values(); style) {
+            if (auto length = style->length_percentage(property); length.has_value())
+                return SVGLength::from_length_percentage(realm(), *length);
+        }
+        return SVGLength::create(realm(), 0, 0.0f);
+    };
+    return SVGAnimatedLength::create(realm(), make_length(), make_length());
 }
 
 }

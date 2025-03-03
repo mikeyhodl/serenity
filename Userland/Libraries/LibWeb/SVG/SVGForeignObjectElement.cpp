@@ -6,8 +6,10 @@
 
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGForeignObjectElementPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/Layout/BlockContainer.h>
+#include <LibWeb/Layout/SVGForeignObjectBox.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/SVGAnimatedLength.h>
 #include <LibWeb/SVG/SVGForeignObjectElement.h>
@@ -47,7 +49,7 @@ void SVGForeignObjectElement::visit_edges(Cell::Visitor& visitor)
 
 JS::GCPtr<Layout::Node> SVGForeignObjectElement::create_layout_node(NonnullRefPtr<CSS::StyleProperties> style)
 {
-    return heap().allocate_without_realm<Layout::BlockContainer>(document(), this, move(style));
+    return heap().allocate_without_realm<Layout::SVGForeignObjectBox>(document(), *this, move(style));
 }
 
 void SVGForeignObjectElement::apply_presentational_hints(CSS::StyleProperties& style) const

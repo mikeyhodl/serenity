@@ -11,6 +11,8 @@
 
 namespace Web::Layout {
 
+JS_DEFINE_ALLOCATOR(FrameBox);
+
 FrameBox::FrameBox(DOM::Document& document, DOM::Element& element, NonnullRefPtr<CSS::StyleProperties> style)
     : ReplacedBox(document, element, move(style))
 {
@@ -30,7 +32,7 @@ void FrameBox::did_set_content_size()
     ReplacedBox::did_set_content_size();
 
     if (dom_node().content_navigable())
-        dom_node().content_navigable()->set_size(paintable_box()->content_size());
+        dom_node().content_navigable()->set_viewport_size(paintable_box()->content_size());
 }
 
 JS::GCPtr<Painting::Paintable> FrameBox::create_paintable() const

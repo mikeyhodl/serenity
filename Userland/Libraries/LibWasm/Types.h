@@ -14,6 +14,7 @@
 #include <AK/String.h>
 #include <AK/UFixedBigInt.h>
 #include <AK/Variant.h>
+#include <AK/WeakPtr.h>
 #include <LibWasm/Constants.h>
 #include <LibWasm/Forward.h>
 #include <LibWasm/Opcode.h>
@@ -54,8 +55,10 @@ enum class ParseError {
     InvalidType,
     HugeAllocationRequested,
     OutOfMemory,
-    // FIXME: This should not exist!
-    NotImplemented,
+    SectionSizeMismatch,
+    InvalidUtf8,
+    DuplicateSection,
+    SectionOutOfOrder,
 };
 
 ByteString parse_error_to_byte_string(ParseError);
@@ -80,7 +83,7 @@ template<typename T>
 struct GenericIndexParser {
     static ParseResult<T> parse(Stream& stream)
     {
-        auto value_or_error = stream.read_value<LEB128<size_t>>();
+        auto value_or_error = stream.read_value<LEB128<u32>>();
         if (value_or_error.is_error())
             return with_eof_check(stream, ParseError::ExpectedIndex);
         size_t value = value_or_error.release_value();
@@ -163,8 +166,6 @@ public:
         V128,
         FunctionReference,
         ExternReference,
-        NullFunctionReference,
-        NullExternReference,
     };
 
     explicit ValueType(Kind kind)
@@ -174,7 +175,7 @@ public:
 
     bool operator==(ValueType const&) const = default;
 
-    auto is_reference() const { return m_kind == ExternReference || m_kind == FunctionReference || m_kind == NullExternReference || m_kind == NullFunctionReference; }
+    auto is_reference() const { return m_kind == ExternReference || m_kind == FunctionReference; }
     auto is_vector() const { return m_kind == V128; }
     auto is_numeric() const { return !is_reference() && !is_vector(); }
     auto kind() const { return m_kind; }
@@ -198,10 +199,6 @@ public:
             return "funcref";
         case ExternReference:
             return "externref";
-        case NullFunctionReference:
-            return "ref.null externref";
-        case NullExternReference:
-            return "ref.null funcref";
         }
         VERIFY_NOT_REACHED();
     }
@@ -256,6 +253,11 @@ public:
 
     auto min() const { return m_min; }
     auto& max() const { return m_max; }
+    bool is_subset_of(Limits other) const
+    {
+        return m_min >= other.min()
+            && (!other.max().has_value() || (m_max.has_value() && *m_max <= *other.max()));
+    }
 
     static ParseResult<Limits> parse(Stream& stream);
 
@@ -459,14 +461,14 @@ public:
     {
     }
 
-    static ParseResult<Vector<Instruction>> parse(Stream& stream, InstructionPointer& ip);
+    static ParseResult<Instruction> parse(Stream& stream);
 
     auto& opcode() const { return m_opcode; }
     auto& arguments() const { return m_arguments; }
+    auto& arguments() { return m_arguments; }
 
 private:
     OpCode m_opcode { 0 };
-    // clang-format off
     Variant<
         BlockType,
         DataIndex,
@@ -495,15 +497,43 @@ private:
         i32,
         i64,
         u128,
-        u8 // Empty state
-    > m_arguments;
-    // clang-format on
+        u8> // Empty state
+        m_arguments;
+};
+
+struct SectionId {
+public:
+    enum class SectionIdKind : u8 {
+        Custom,
+        Type,
+        Import,
+        Function,
+        Table,
+        Memory,
+        Global,
+        Export,
+        Start,
+        Element,
+        DataCount,
+        Code,
+        Data,
+    };
+
+    explicit SectionId(SectionIdKind kind)
+        : m_kind(kind)
+    {
+    }
+
+    SectionIdKind kind() const { return m_kind; }
+
+    static ParseResult<SectionId> parse(Stream& stream);
+
+private:
+    SectionIdKind m_kind;
 };
 
 class CustomSection {
 public:
-    static constexpr u8 section_id = 0;
-
     CustomSection(ByteString name, ByteBuffer contents)
         : m_name(move(name))
         , m_contents(move(contents))
@@ -522,7 +552,7 @@ private:
 
 class TypeSection {
 public:
-    static constexpr u8 section_id = 1;
+    TypeSection() = default;
 
     explicit TypeSection(Vector<FunctionType> types)
         : m_types(move(types))
@@ -559,10 +589,8 @@ public:
         template<typename T>
         static ParseResult<Import> parse_with_type(auto&& stream, auto&& module, auto&& name)
         {
-            auto result = T::parse(stream);
-            if (result.is_error())
-                return result.error();
-            return Import { module.release_value(), name.release_value(), result.release_value() };
+            auto result = TRY(T::parse(stream));
+            return Import { module, name, result };
         }
 
         ByteString m_module;
@@ -571,7 +599,7 @@ public:
     };
 
 public:
-    static constexpr u8 section_id = 2;
+    ImportSection() = default;
 
     explicit ImportSection(Vector<Import> imports)
         : m_imports(move(imports))
@@ -588,7 +616,7 @@ private:
 
 class FunctionSection {
 public:
-    static constexpr u8 section_id = 3;
+    FunctionSection() = default;
 
     explicit FunctionSection(Vector<TypeIndex> types)
         : m_types(move(types))
@@ -621,7 +649,7 @@ public:
     };
 
 public:
-    static constexpr u8 section_id = 4;
+    TableSection() = default;
 
     explicit TableSection(Vector<Table> tables)
         : m_tables(move(tables))
@@ -654,7 +682,7 @@ public:
     };
 
 public:
-    static constexpr u8 section_id = 5;
+    MemorySection() = default;
 
     explicit MemorySection(Vector<Memory> memories)
         : m_memories(move(memories))
@@ -678,7 +706,7 @@ public:
 
     auto& instructions() const { return m_instructions; }
 
-    static ParseResult<Expression> parse(Stream& stream);
+    static ParseResult<Expression> parse(Stream& stream, Optional<size_t> size_hint = {});
 
 private:
     Vector<Instruction> m_instructions;
@@ -705,7 +733,7 @@ public:
     };
 
 public:
-    static constexpr u8 section_id = 6;
+    GlobalSection() = default;
 
     explicit GlobalSection(Vector<Global> entries)
         : m_entries(move(entries))
@@ -743,7 +771,7 @@ public:
         ExportDesc m_description;
     };
 
-    static constexpr u8 section_id = 7;
+    ExportSection() = default;
 
     explicit ExportSection(Vector<Export> entries)
         : m_entries(move(entries))
@@ -775,9 +803,9 @@ public:
         FunctionIndex m_index;
     };
 
-    static constexpr u8 section_id = 8;
+    StartSection() = default;
 
-    explicit StartSection(StartFunction func)
+    explicit StartSection(Optional<StartFunction> func)
         : m_function(move(func))
     {
     }
@@ -787,7 +815,7 @@ public:
     static ParseResult<StartSection> parse(Stream& stream);
 
 private:
-    StartFunction m_function;
+    Optional<StartFunction> m_function;
 };
 
 class ElementSection {
@@ -801,44 +829,6 @@ public:
     struct Passive {
     };
 
-    struct SegmentType0 {
-        static ParseResult<SegmentType0> parse(Stream& stream);
-
-        Vector<FunctionIndex> function_indices;
-        Active mode;
-    };
-    struct SegmentType1 {
-        static ParseResult<SegmentType1> parse(Stream& stream);
-
-        Vector<FunctionIndex> function_indices;
-    };
-    struct SegmentType2 {
-        // FIXME: Implement me!
-        static ParseResult<SegmentType2> parse(Stream& stream);
-    };
-    struct SegmentType3 {
-        // FIXME: Implement me!
-        static ParseResult<SegmentType3> parse(Stream& stream);
-    };
-    struct SegmentType4 {
-        static ParseResult<SegmentType4> parse(Stream& stream);
-
-        Active mode;
-        Vector<Expression> initializer;
-    };
-    struct SegmentType5 {
-        // FIXME: Implement me!
-        static ParseResult<SegmentType5> parse(Stream& stream);
-    };
-    struct SegmentType6 {
-        // FIXME: Implement me!
-        static ParseResult<SegmentType6> parse(Stream& stream);
-    };
-    struct SegmentType7 {
-        // FIXME: Implement me!
-        static ParseResult<SegmentType7> parse(Stream& stream);
-    };
-
     struct Element {
         static ParseResult<Element> parse(Stream&);
 
@@ -847,7 +837,7 @@ public:
         Variant<Active, Passive, Declarative> mode;
     };
 
-    static constexpr u8 section_id = 9;
+    ElementSection() = default;
 
     explicit ElementSection(Vector<Element> segs)
         : m_segments(move(segs))
@@ -895,7 +885,7 @@ public:
         auto& locals() const { return m_locals; }
         auto& body() const { return m_body; }
 
-        static ParseResult<Func> parse(Stream& stream);
+        static ParseResult<Func> parse(Stream& stream, size_t size_hint);
 
     private:
         Vector<Locals> m_locals;
@@ -919,7 +909,7 @@ public:
         Func m_func;
     };
 
-    static constexpr u8 section_id = 10;
+    CodeSection() = default;
 
     explicit CodeSection(Vector<Code> funcs)
         : m_functions(move(funcs))
@@ -961,7 +951,7 @@ public:
         Value m_value;
     };
 
-    static constexpr u8 section_id = 11;
+    DataSection() = default;
 
     explicit DataSection(Vector<Data> data)
         : m_data(move(data))
@@ -978,7 +968,7 @@ private:
 
 class DataCountSection {
 public:
-    static constexpr u8 section_id = 12;
+    DataCountSection() = default;
 
     explicit DataCountSection(Optional<u32> count)
         : m_count(move(count))
@@ -993,7 +983,8 @@ private:
     Optional<u32> m_count;
 };
 
-class Module {
+class Module : public RefCounted<Module>
+    , public Weakable<Module> {
 public:
     enum class ValidationStatus {
         Unchecked,
@@ -1001,95 +992,62 @@ public:
         Valid,
     };
 
-    class Function {
-    public:
-        explicit Function(TypeIndex type, Vector<ValueType> local_types, Expression body)
-            : m_type(type)
-            , m_local_types(move(local_types))
-            , m_body(move(body))
-        {
-        }
-
-        auto& type() const { return m_type; }
-        auto& locals() const { return m_local_types; }
-        auto& body() const { return m_body; }
-
-    private:
-        TypeIndex m_type;
-        Vector<ValueType> m_local_types;
-        Expression m_body;
-    };
-
-    using AnySection = Variant<
-        CustomSection,
-        TypeSection,
-        ImportSection,
-        FunctionSection,
-        TableSection,
-        MemorySection,
-        GlobalSection,
-        ExportSection,
-        StartSection,
-        ElementSection,
-        CodeSection,
-        DataSection,
-        DataCountSection>;
-
     static constexpr Array<u8, 4> wasm_magic { 0, 'a', 's', 'm' };
     static constexpr Array<u8, 4> wasm_version { 1, 0, 0, 0 };
 
-    explicit Module(Vector<AnySection> sections)
-        : m_sections(move(sections))
-    {
-        if (!populate_sections()) {
-            m_validation_status = ValidationStatus::Invalid;
-            m_validation_error = "Failed to populate module sections"sv;
-        }
-    }
+    Module() = default;
 
-    auto& sections() const { return m_sections; }
-    auto& functions() const { return m_functions; }
-    auto& type(TypeIndex index) const
-    {
-        FunctionType const* type = nullptr;
-        for_each_section_of_type<TypeSection>([&](TypeSection const& section) {
-            type = &section.types().at(index.value());
-        });
-
-        VERIFY(type != nullptr);
-        return *type;
-    }
-
-    template<typename T, typename Callback>
-    void for_each_section_of_type(Callback&& callback) const
-    {
-        for (auto& section : m_sections) {
-            if (auto ptr = section.get_pointer<T>())
-                callback(*ptr);
-        }
-    }
-    template<typename T, typename Callback>
-    void for_each_section_of_type(Callback&& callback)
-    {
-        for (auto& section : m_sections) {
-            if (auto ptr = section.get_pointer<T>())
-                callback(*ptr);
-        }
-    }
+    auto& custom_sections() { return m_custom_sections; }
+    auto& custom_sections() const { return m_custom_sections; }
+    auto& type_section() const { return m_type_section; }
+    auto& type_section() { return m_type_section; }
+    auto& import_section() const { return m_import_section; }
+    auto& import_section() { return m_import_section; }
+    auto& function_section() { return m_function_section; }
+    auto& function_section() const { return m_function_section; }
+    auto& table_section() { return m_table_section; }
+    auto& table_section() const { return m_table_section; }
+    auto& memory_section() { return m_memory_section; }
+    auto& memory_section() const { return m_memory_section; }
+    auto& global_section() { return m_global_section; }
+    auto& global_section() const { return m_global_section; }
+    auto& export_section() { return m_export_section; }
+    auto& export_section() const { return m_export_section; }
+    auto& start_section() { return m_start_section; }
+    auto& start_section() const { return m_start_section; }
+    auto& element_section() { return m_element_section; }
+    auto& element_section() const { return m_element_section; }
+    auto& code_section() { return m_code_section; }
+    auto& code_section() const { return m_code_section; }
+    auto& data_section() { return m_data_section; }
+    auto& data_section() const { return m_data_section; }
+    auto& data_count_section() { return m_data_count_section; }
+    auto& data_count_section() const { return m_data_count_section; }
 
     void set_validation_status(ValidationStatus status, Badge<Validator>) { set_validation_status(status); }
     ValidationStatus validation_status() const { return m_validation_status; }
     StringView validation_error() const { return *m_validation_error; }
     void set_validation_error(ByteString error) { m_validation_error = move(error); }
 
-    static ParseResult<Module> parse(Stream& stream);
+    static ParseResult<NonnullRefPtr<Module>> parse(Stream& stream);
 
 private:
-    bool populate_sections();
     void set_validation_status(ValidationStatus status) { m_validation_status = status; }
 
-    Vector<AnySection> m_sections;
-    Vector<Function> m_functions;
+    Vector<CustomSection> m_custom_sections;
+    TypeSection m_type_section;
+    ImportSection m_import_section;
+    FunctionSection m_function_section;
+    TableSection m_table_section;
+    MemorySection m_memory_section;
+    GlobalSection m_global_section;
+    ExportSection m_export_section;
+    StartSection m_start_section;
+    ElementSection m_element_section;
+    CodeSection m_code_section;
+    DataSection m_data_section;
+    DataCountSection m_data_count_section;
+
     ValidationStatus m_validation_status { ValidationStatus::Unchecked };
     Optional<ByteString> m_validation_error;
 };

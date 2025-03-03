@@ -6,31 +6,11 @@
 
 #pragma once
 
+#include <arch/fenv.h>
 #include <stdint.h>
 #include <sys/cdefs.h>
 
 __BEGIN_DECLS
-
-struct __x87_floating_point_environment {
-    uint16_t __control_word;
-    uint16_t __reserved1;
-    uint16_t __status_word;
-    uint16_t __reserved2;
-    uint16_t __tag_word;
-    uint16_t __reserved3;
-    uint32_t __fpu_ip_offset;
-    uint16_t __fpu_ip_selector;
-    uint16_t __opcode : 11;
-    uint16_t __reserved4 : 5;
-    uint32_t __fpu_data_offset;
-    uint16_t __fpu_data_selector;
-    uint16_t __reserved5;
-};
-
-typedef struct fenv_t {
-    struct __x87_floating_point_environment __x87_fpu_env;
-    uint32_t __mxcsr;
-} fenv_t;
 
 #define FE_DFL_ENV ((fenv_t const*)-1)
 
@@ -58,6 +38,8 @@ int feraiseexcept(int exceptions);
 #define FE_DOWNWARD 1
 #define FE_UPWARD 2
 #define FE_TOWARDZERO 3
+// Only exists in RISC-V at the moment; on other architectures this is replaced with FE_TONEAREST.
+#define FE_TOMAXMAGNITUDE 4
 
 int fesetround(int round);
 int fegetround(void);

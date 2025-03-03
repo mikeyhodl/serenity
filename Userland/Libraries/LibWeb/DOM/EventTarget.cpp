@@ -6,7 +6,6 @@
  */
 
 #include <AK/StringBuilder.h>
-#include <Kernel/API/KeyCode.h>
 #include <LibJS/Parser.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/ECMAScriptFunctionObject.h>
@@ -23,6 +22,8 @@
 #include <LibWeb/DOM/EventDispatcher.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/DOM/IDLEventListener.h>
+#include <LibWeb/HTML/BeforeUnloadEvent.h>
+#include <LibWeb/HTML/CloseWatcherManager.h>
 #include <LibWeb/HTML/ErrorEvent.h>
 #include <LibWeb/HTML/EventHandler.h>
 #include <LibWeb/HTML/EventNames.h>
@@ -33,10 +34,13 @@
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/UIEvents/EventNames.h>
+#include <LibWeb/UIEvents/KeyCode.h>
 #include <LibWeb/UIEvents/KeyboardEvent.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
 namespace Web::DOM {
+
+JS_DEFINE_ALLOCATOR(EventTarget);
 
 EventTarget::EventTarget(JS::Realm& realm, MayInterfereWithIndexedPropertyAccess may_interfere_with_indexed_property_access)
     : PlatformObject(realm, may_interfere_with_indexed_property_access)
@@ -67,11 +71,8 @@ void EventTarget::visit_edges(Cell::Visitor& visitor)
     Base::visit_edges(visitor);
 
     if (auto const* data = m_data.ptr()) {
-        for (auto& event_listener : data->event_listener_list)
-            visitor.visit(event_listener);
-
-        for (auto& it : data->event_handler_map)
-            visitor.visit(it.value);
+        visitor.visit(data->event_listener_list);
+        visitor.visit(data->event_handler_map);
     }
 }
 
@@ -135,8 +136,8 @@ static FlattenedAddEventListenerOptions flatten_add_event_listener_options(Varia
         once = add_event_listener_options.once;
 
         // 2. If options["signal"] exists, then set signal to options["signal"].
-        if (add_event_listener_options.signal.has_value())
-            signal = add_event_listener_options.signal.value().ptr();
+        if (add_event_listener_options.signal)
+            signal = add_event_listener_options.signal;
     }
 
     // 5. Return capture, passive, once, and signal.
@@ -259,10 +260,10 @@ WebIDL::ExceptionOr<bool> EventTarget::dispatch_event_binding(Event& event)
 {
     // 1. If event’s dispatch flag is set, or if its initialized flag is not set, then throw an "InvalidStateError" DOMException.
     if (event.dispatched())
-        return WebIDL::InvalidStateError::create(realm(), "The event is already being dispatched."_fly_string);
+        return WebIDL::InvalidStateError::create(realm(), "The event is already being dispatched."_string);
 
     if (!event.initialized())
-        return WebIDL::InvalidStateError::create(realm(), "Cannot dispatch an uninitialized event."_fly_string);
+        return WebIDL::InvalidStateError::create(realm(), "Cannot dispatch an uninitialized event."_string);
 
     // 2. Initialize event’s isTrusted attribute to false.
     event.set_is_trusted(false);
@@ -486,7 +487,8 @@ WebIDL::CallbackType* EventTarget::get_current_value_of_event_handler(FlyString 
 
         //  6. Return scope. (NOTE: Not necessary)
 
-        auto function = JS::ECMAScriptFunctionObject::create(realm, name.to_deprecated_fly_string(), builder.to_byte_string(), program->body(), program->parameters(), program->function_length(), program->local_variables_names(), scope, nullptr, JS::FunctionKind::Normal, program->is_strict_mode(), program->might_need_arguments_object(), is_arrow_function);
+        auto function = JS::ECMAScriptFunctionObject::create(realm, name.to_deprecated_fly_string(), builder.to_byte_string(), program->body(), program->parameters(), program->function_length(), program->local_variables_names(), scope, nullptr, JS::FunctionKind::Normal, program->is_strict_mode(),
+            program->parsing_insights(), is_arrow_function);
 
         // 10. Remove settings object's realm execution context from the JavaScript execution context stack.
         VERIFY(vm.execution_context_stack().last() == &settings_object.realm_execution_context());
@@ -644,8 +646,7 @@ JS::ThrowCompletionOr<void> EventTarget::process_event_handler_for_event(FlyStri
 
     // 3. Let special error event handling be true if event is an ErrorEvent object, event's type is error, and event's currentTarget implements the WindowOrWorkerGlobalScope mixin.
     //    Otherwise, let special error event handling be false.
-    // FIXME: This doesn't check for WorkerGlobalScape as we don't currently have it.
-    bool special_error_event_handling = is<HTML::ErrorEvent>(event) && event.type() == HTML::EventNames::error && is<HTML::Window>(event.current_target().ptr());
+    bool special_error_event_handling = is<HTML::ErrorEvent>(event) && event.type() == HTML::EventNames::error && is<HTML::WindowOrWorkerGlobalScopeMixin>(event.current_target().ptr());
 
     // 4. Process the Event object event as follows:
     JS::Completion return_value_or_error;
@@ -689,10 +690,20 @@ JS::ThrowCompletionOr<void> EventTarget::process_event_handler_for_event(FlyStri
     // FIXME: Ideally, invoke_callback would convert JS::Value to the appropriate return type for us as per the spec, but it doesn't currently.
     auto return_value = *return_value_or_error.value();
 
-    // FIXME: If event is a BeforeUnloadEvent object and event's type is beforeunload
-    //          If return value is not null, then: (NOTE: When implementing, if we still return a JS::Value from invoke_callback, use is_nullish instead of is_null, as "null" refers to IDL null, which is JS null or undefined)
-    //              1. Set event's canceled flag.
-    //              2. If event's returnValue attribute's value is the empty string, then set event's returnValue attribute's value to return value.
+    // 5. Process return value as follows:
+    if (is<HTML::BeforeUnloadEvent>(event) && event.type() == "beforeunload") {
+        // ->  If event is a BeforeUnloadEvent object and event's type is "beforeunload"
+        //         If return value is not null, then:
+        if (!return_value.is_nullish()) {
+            // 1. Set event's canceled flag.
+            event.set_cancelled(true);
+
+            // 2. If event's returnValue attribute's value is the empty string, then set event's returnValue attribute's value to return value.
+            auto& before_unload_event = static_cast<HTML::BeforeUnloadEvent&>(event);
+            if (before_unload_event.return_value().is_empty())
+                before_unload_event.set_return_value(TRY(return_value.to_string(vm())));
+        }
+    }
 
     if (special_error_event_handling) {
         // -> If special error event handling is true
@@ -773,7 +784,7 @@ bool EventTarget::dispatch_event(Event& event)
 
         // keydown, provided the key is neither the Esc key nor a shortcut key reserved by the user agent.
         if (event.type() == UIEvents::EventNames::keydown)
-            return static_cast<UIEvents::KeyboardEvent*>(&event)->key_code() != KeyCode::Key_Escape;
+            return static_cast<UIEvents::KeyboardEvent*>(&event)->key_code() != UIEvents::KeyCode::Key_Escape;
 
         // mousedown.
         if (event.type() == UIEvents::EventNames::mousedown)
@@ -796,7 +807,9 @@ bool EventTarget::dispatch_event(Event& event)
     // FIXME: 3. Extend windows with the active window of each of document's ancestor navigables.
     // FIXME: 4. Extend windows with the active window of each of document's descendant navigables,
     //           filtered to include only those navigables whose active document's origin is same origin with document's origin.
-    // FIXME: 5. For each window in windows, set window's last activation timestamp to the current high resolution time.
+    // FIXME: 5. For each window in windows:
+    // FIXME: 5.1 Set window's last activation timestamp to the current high resolution time.
+    // FIXME: 5.2 Notify the close watcher manager about user activation given window.
 
     // FIXME: This is ad-hoc, but works for now.
     if (is_activation_triggering_input_event()) {
@@ -804,11 +817,15 @@ bool EventTarget::dispatch_event(Event& event)
         auto current_time = HighResolutionTime::relative_high_resolution_time(unsafe_shared_time, realm().global_object());
 
         if (is<HTML::Window>(this)) {
-            static_cast<HTML::Window*>(this)->set_last_activation_timestamp(current_time);
+            auto* window = static_cast<HTML::Window*>(this);
+            window->set_last_activation_timestamp(current_time);
+            window->close_watcher_manager()->notify_about_user_activation();
         } else if (is<DOM::Element>(this)) {
             auto const* element = static_cast<DOM::Element const*>(this);
-            if (auto window = element->document().window())
+            if (auto window = element->document().window()) {
                 window->set_last_activation_timestamp(current_time);
+                window->close_watcher_manager()->notify_about_user_activation();
+            }
         }
     }
 

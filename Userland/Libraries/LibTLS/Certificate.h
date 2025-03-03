@@ -12,6 +12,7 @@
 #include <AK/Time.h>
 #include <AK/Types.h>
 #include <LibCore/ConfigFile.h>
+#include <LibCrypto/ASN1/DER.h>
 #include <LibCrypto/BigInt/UnsignedBigInteger.h>
 #include <LibCrypto/PK/RSA.h>
 #include <LibTLS/Extensions.h>
@@ -200,17 +201,17 @@ public:
 
     Optional<String> get(StringView key) const
     {
-        return m_members.get(key);
+        return m_members.get(key).copy();
     }
 
     Optional<String> get(AttributeType key) const
     {
-        return m_members.get(enum_value(key));
+        return m_members.get(enum_value(key)).copy();
     }
 
     Optional<String> get(ObjectClass key) const
     {
-        return m_members.get(enum_value(key));
+        return m_members.get(enum_value(key)).copy();
     }
 
     String common_name() const
@@ -244,6 +245,19 @@ public:
     AlgorithmIdentifier algorithm;
     ByteBuffer raw_key;
 };
+ErrorOr<SubjectPublicKey> parse_subject_public_key_info(Crypto::ASN1::Decoder& decoder, Vector<StringView> current_scope = {});
+
+// https://www.rfc-editor.org/rfc/rfc5208#section-5
+class PrivateKey {
+public:
+    Crypto::PK::RSAPrivateKey<Crypto::UnsignedBigInteger> rsa;
+
+    AlgorithmIdentifier algorithm;
+    ByteBuffer raw_key;
+
+    // FIXME: attributes [0]  IMPLICIT Attributes OPTIONAL
+};
+ErrorOr<PrivateKey> parse_private_key_info(Crypto::ASN1::Decoder& decoder, Vector<StringView> current_scope = {});
 
 class Certificate {
 public:

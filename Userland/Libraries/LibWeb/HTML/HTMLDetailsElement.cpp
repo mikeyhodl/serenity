@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLDetailsElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/Event.h>
@@ -52,9 +53,9 @@ void HTMLDetailsElement::removed_from(DOM::Node*)
     set_shadow_root(nullptr);
 }
 
-void HTMLDetailsElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLDetailsElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    Base::attribute_changed(name, value);
+    Base::attribute_changed(name, old_value, value);
 
     // https://html.spec.whatwg.org/multipage/interactive-elements.html#details-notification-task-steps
     if (name == HTML::AttributeNames::open) {
@@ -118,7 +119,7 @@ void HTMLDetailsElement::queue_a_details_toggle_event_task(String old_state, Str
 // https://html.spec.whatwg.org/#the-details-and-summary-elements
 WebIDL::ExceptionOr<void> HTMLDetailsElement::create_shadow_tree_if_needed()
 {
-    if (shadow_root_internal())
+    if (shadow_root())
         return {};
 
     auto& realm = this->realm();
@@ -144,7 +145,7 @@ WebIDL::ExceptionOr<void> HTMLDetailsElement::create_shadow_tree_if_needed()
 
 void HTMLDetailsElement::update_shadow_tree_slots()
 {
-    if (!shadow_root_internal())
+    if (!shadow_root())
         return;
 
     Vector<HTMLSlotElement::SlottableHandle> summary_assignment;
@@ -156,15 +157,15 @@ void HTMLDetailsElement::update_shadow_tree_slots()
 
     for_each_in_subtree([&](auto& child) {
         if (&child == summary)
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         if (!child.is_slottable())
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
 
         child.as_slottable().visit([&](auto& node) {
             descendants_assignment.append(JS::make_handle(node));
         });
 
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     m_summary_slot->assign(move(summary_assignment));
@@ -176,7 +177,7 @@ void HTMLDetailsElement::update_shadow_tree_slots()
 // https://html.spec.whatwg.org/#the-details-and-summary-elements:the-details-element-6
 void HTMLDetailsElement::update_shadow_tree_style()
 {
-    if (!shadow_root_internal())
+    if (!shadow_root())
         return;
 
     if (has_attribute(HTML::AttributeNames::open)) {
@@ -184,9 +185,8 @@ void HTMLDetailsElement::update_shadow_tree_style()
             display: block;
         )~~~"_string));
     } else {
-        // FIXME: Should be `display: block` but we do not support `content-visibility: hidden`.
         MUST(m_descendants_slot->set_attribute(HTML::AttributeNames::style, R"~~~(
-            display: none;
+            display: block;
             content-visibility: hidden;
         )~~~"_string));
     }

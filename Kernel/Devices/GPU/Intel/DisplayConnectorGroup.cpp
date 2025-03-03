@@ -5,9 +5,8 @@
  */
 
 #include <Kernel/Arch/Delay.h>
-#include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Debug.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/GPU/Console/ContiguousFramebufferConsole.h>
 #include <Kernel/Devices/GPU/Intel/DisplayConnectorGroup.h>
 #include <Kernel/Devices/GPU/Intel/Plane/G33DisplayPlane.h>
@@ -21,7 +20,7 @@ namespace Kernel {
 
 ErrorOr<NonnullLockRefPtr<IntelDisplayConnectorGroup>> IntelDisplayConnectorGroup::try_create(Badge<IntelNativeGraphicsAdapter>, IntelGraphics::Generation generation, MMIORegion const& first_region, MMIORegion const& second_region)
 {
-    auto registers_region = TRY(MM.allocate_kernel_region(first_region.pci_bar_paddr, first_region.pci_bar_space_length, "Intel Native Graphics Registers"sv, Memory::Region::Access::ReadWrite));
+    auto registers_region = TRY(MM.allocate_mmio_kernel_region(first_region.pci_bar_paddr, first_region.pci_bar_space_length, "Intel Native Graphics Registers"sv, Memory::Region::Access::ReadWrite));
     // NOTE: 0x5100 is the offset of the start of the GMBus registers
     auto gmbus_connector = TRY(GMBusConnector::create_with_physical_address(first_region.pci_bar_paddr.offset(0x5100)));
     auto connector_group = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) IntelDisplayConnectorGroup(generation, move(gmbus_connector), move(registers_region), first_region, second_region)));
@@ -215,9 +214,6 @@ bool IntelDisplayConnectorGroup::set_crt_resolution(DisplayConnector::ModeSettin
 {
     VERIFY(m_control_lock.is_locked());
     VERIFY(m_modeset_lock.is_locked());
-
-    // Note: Just in case we still allow access to VGA IO ports, disable it now.
-    GraphicsManagement::the().disable_vga_emulation_access_permanently();
 
     auto dac_multiplier = compute_dac_multiplier(mode_setting.pixel_clock_in_khz);
     auto pll_settings = create_pll_settings(m_generation, (1000 * mode_setting.pixel_clock_in_khz * dac_multiplier), 96'000'000);

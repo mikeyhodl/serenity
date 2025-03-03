@@ -5,7 +5,7 @@
  */
 
 #include <Kernel/Devices/GPU/Console/ContiguousFramebufferConsole.h>
-#include <Kernel/Devices/TTY/ConsoleManagement.h>
+#include <Kernel/Devices/TTY/VirtualConsole.h>
 
 namespace Kernel::Graphics {
 
@@ -29,14 +29,14 @@ void ContiguousFramebufferConsole::set_resolution(size_t width, size_t height, s
 
     size_t size = Memory::page_round_up(pitch * height).release_value_but_fixme_should_propagate_errors();
     dbgln("Framebuffer Console: taking {} bytes", size);
-    auto region_or_error = MM.allocate_kernel_region(m_framebuffer_address, size, "Framebuffer Console"sv, Memory::Region::Access::ReadWrite, Memory::Region::Cacheable::Yes);
+    auto region_or_error = MM.allocate_mmio_kernel_region(m_framebuffer_address, size, "Framebuffer Console"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::NonCacheable);
     VERIFY(!region_or_error.is_error());
     m_framebuffer_region = region_or_error.release_value();
 
     // Just to start cleanly, we clean the entire framebuffer
     memset(m_framebuffer_region->vaddr().as_ptr(), 0, pitch * height);
 
-    ConsoleManagement::the().resolution_was_changed();
+    VirtualConsole::resolution_was_changed();
 }
 
 }

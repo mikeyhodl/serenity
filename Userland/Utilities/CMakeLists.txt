@@ -1,13 +1,244 @@
-file(GLOB CMD_SOURCES  CONFIGURE_DEPENDS "*.cpp")
+set(CMD_SOURCES_CPP
+    abench.cpp
+    aconv.cpp
+    adjtime.cpp
+    allocate.cpp
+    animation.cpp
+    aplay.cpp
+    arp.cpp
+    asctl.cpp
+    base64.cpp
+    basename.cpp
+    beep.cpp
+    blockdev.cpp
+    bt.cpp
+    cal.cpp
+    cat.cpp
+    checksum.cpp
+    chgrp.cpp
+    chmod.cpp
+    chown.cpp
+    chres.cpp
+    cksum.cpp
+    clear.cpp
+    cmp.cpp
+    comm.cpp
+    config.cpp
+    copy.cpp
+    copy_mount.cpp
+    cp.cpp
+    cpp-lexer.cpp
+    cpp-parser.cpp
+    cpp-preprocessor.cpp
+    crypto-bench.cpp
+    cut.cpp
+    date.cpp
+    dd.cpp
+    df.cpp
+    diff.cpp
+    dirname.cpp
+    disasm.cpp
+    disk_benchmark.cpp
+    dmesg.cpp
+    drain.cpp
+    du.cpp
+    echo.cpp
+    elfdeps.cpp
+    env.cpp
+    errno.cpp
+    expr.cpp
+    false.cpp
+    fdtdump.cpp
+    file.cpp
+    find.cpp
+    flock.cpp
+    fortune.cpp
+    functrace.cpp
+    fusermount.cpp
+    glsl-compiler.cpp
+    gml-format.cpp
+    grep.cpp
+    gron.cpp
+    groupadd.cpp
+    groupdel.cpp
+    groups.cpp
+    gzip.cpp
+    head.cpp
+    headless-browser.cpp
+    hexdump.cpp
+    hiddump.cpp
+    host.cpp
+    hostname.cpp
+    icc.cpp
+    iconv.cpp
+    id.cpp
+    ifconfig.cpp
+    image.cpp
+    image2bin.cpp
+    imgcmp.cpp
+    ini.cpp
+    init.cpp
+    install.cpp
+    isobmff.cpp
+    js.cpp
+    json.cpp
+    kcov-example.cpp
+    keymap.cpp
+    kill.cpp
+    killall.cpp
+    less.cpp
+    listdir.cpp
+    ln.cpp
+    logout.cpp
+    ls.cpp
+    lsblk.cpp
+    lscpu.cpp
+    lsdev.cpp
+    lsirq.cpp
+    lsof.cpp
+    lspci.cpp
+    lsusb.cpp
+    lzcat.cpp
+    man.cpp
+    markdown-check.cpp
+    matroska.cpp
+    md.cpp
+    memstat.cpp
+    mkdir.cpp
+    mkfifo.cpp
+    mkfs.fat.cpp
+    mknod.cpp
+    mktemp.cpp
+    mount.cpp
+    mv.cpp
+    nc.cpp
+    netstat.cpp
+    network-settings.cpp
+    nl.cpp
+    nohup.cpp
+    nologin.cpp
+    notify.cpp
+    nproc.cpp
+    ntpquery.cpp
+    open.cpp
+    passwd.cpp
+    paste.cpp
+    patch.cpp
+    pathchk.cpp
+    pdf.cpp
+    pgrep.cpp
+    pidof.cpp
+    ping.cpp
+    pixelflut.cpp
+    pkill.cpp
+    pledge.cpp
+    pls.cpp
+    pmap.cpp
+    pmemdump.cpp
+    printf.cpp
+    pro.cpp
+    profile.cpp
+    ps.cpp
+    purge.cpp
+    pwd.cpp
+    readelf.cpp
+    readlink.cpp
+    realpath.cpp
+    reboot.cpp
+    rev.cpp
+    rm.cpp
+    rmdir.cpp
+    route.cpp
+    run-tests.cpp
+    sed.cpp
+    seq.cpp
+    shot.cpp
+    shred.cpp
+    shuf.cpp
+    shutdown.cpp
+    sizefmt.cpp
+    sleep.cpp
+    slugify.cpp
+    sort.cpp
+    sql.cpp
+    stat.cpp
+    strace.cpp
+    strings.cpp
+    stty.cpp
+    su.cpp
+    sync.cpp
+    syscall.cpp
+    sysctl.cpp
+    tac.cpp
+    tail.cpp
+    tar.cpp
+    tee.cpp
+    telws.cpp
+    test-bindtodevice.cpp
+    test-fuzz.cpp
+    test-imap.cpp
+    test-jpeg-roundtrip.cpp
+    test-pthread.cpp
+    test-unveil.cpp
+    test.cpp
+    test_env.cpp
+    timezone.cpp
+    top.cpp
+    touch.cpp
+    tr.cpp
+    traceroute.cpp
+    tree.cpp
+    true.cpp
+    truncate.cpp
+    tsort.cpp
+    tt.cpp
+    ttfdisasm.cpp
+    tty.cpp
+    umount.cpp
+    uname.cpp
+    uniq.cpp
+    unveil.cpp
+    unzip.cpp
+    update-cpp-test-results.cpp
+    uptime.cpp
+    useradd.cpp
+    userdel.cpp
+    usermod.cpp
+    utmpupdate.cpp
+    w.cpp
+    wallpaper.cpp
+    wasm.cpp
+    watch.cpp
+    watchfs.cpp
+    wc.cpp
+    which.cpp
+    whoami.cpp
+    wsctl.cpp
+    xargs.cpp
+    xml.cpp
+    xxd.cpp
+    xzcat.cpp
+    yes.cpp
+    zip.cpp
+)
+set(CMD_SOURCES_JAKT
+    hello-world.jakt
+)
+if (ENABLE_JAKT)
+    list(APPEND CMD_SOURCES ${CMD_SOURCES_CPP} ${CMD_SOURCES_JAKT})
+else()
+    list(APPEND CMD_SOURCES ${CMD_SOURCES_CPP})
+endif()
+
 list(APPEND SPECIAL_TARGETS test install)
 list(APPEND REQUIRED_TARGETS
     arp base64 basename cat chmod chown clear comm cp cut date dd df diff dirname dmesg du echo env expr false
-    file find grep groups gunzip head host hostname id ifconfig kill killall ln logout ls mkdir mount mv network-settings nproc
+    file find grep groups head host hostname id ifconfig init kill killall ln logout ls mkdir mount mv network-settings nproc
     patch pgrep pidof ping pkill pmap ps readlink realpath reboot rm rmdir sed route seq shutdown sleep sort stat stty su tail test
-    touch tr true umount uname uniq uptime w wc which whoami xargs yes
+    touch tr true umount uname uniq uptime w watchfs wc which whoami xargs yes
 )
 list(APPEND RECOMMENDED_TARGETS
-    aconv adjtime aplay abench asctl bt checksum chres cksum copy fortune gzip init install keymap lsirq lsof lspci lzcat man mkfs.fat mknod mktemp
+    aconv adjtime aplay abench asctl bt checksum chres cksum copy fortune gzip install keymap lsdev lsirq lsof lspci lzcat man mkfs.fat mknod mktemp
     nc netstat notify ntpquery open passwd pixelflut pls printf pro shot strings tar tt unzip wallpaper xzcat zip
 )
 
@@ -15,6 +246,7 @@ list(APPEND RECOMMENDED_TARGETS
 
 foreach(CMD_SRC ${CMD_SOURCES})
     get_filename_component(CMD_NAME ${CMD_SRC} NAME_WLE)
+    get_filename_component(CMD_EXT ${CMD_SRC} LAST_EXT)
     if (CMD_NAME IN_LIST SPECIAL_TARGETS)
         set(TARGET_NAME "${CMD_NAME}-bin")
     else()
@@ -39,10 +271,14 @@ foreach(CMD_SRC ${CMD_SOURCES})
         )
     endif()
 
-    add_executable(${TARGET_NAME} ${CMD_SRC})
-    target_link_libraries(${TARGET_NAME} PRIVATE LibCore LibMain)
+    serenity_add_executable(${TARGET_NAME} ${CMD_SRC})
     serenity_set_implicit_links(${TARGET_NAME})
     set_target_properties(${TARGET_NAME} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    target_link_libraries(${TARGET_NAME} PRIVATE LibCore)
+    if(NOT ${CMD_EXT} EQUAL jakt)
+        target_link_libraries(${TARGET_NAME} PRIVATE LibMain)
+    endif()
+
     install(TARGETS ${TARGET_NAME} RUNTIME DESTINATION bin OPTIONAL)
 
     if (CMD_NAME IN_LIST SPECIAL_TARGETS)
@@ -53,27 +289,16 @@ foreach(CMD_SRC ${CMD_SOURCES})
     endif()
 endforeach()
 
-if (ENABLE_JAKT)
-    add_jakt_executable(hello-jakt
-        MAIN_SOURCE hello-world.jakt
-    )
-    target_link_libraries(hello-jakt PRIVATE LibC)
-    set_target_properties(hello-jakt PROPERTIES EXCLUDE_FROM_ALL TRUE)
-    install(TARGETS hello-jakt RUNTIME DESTINATION bin OPTIONAL)
-    serenity_component(
-        hello-jakt
-        RECOMMENDED
-        TARGETS hello-jakt
-    )
-endif()
-
 install(CODE "file(CREATE_LINK grep ${CMAKE_INSTALL_PREFIX}/bin/egrep SYMBOLIC)")
 install(CODE "file(CREATE_LINK grep ${CMAKE_INSTALL_PREFIX}/bin/fgrep SYMBOLIC)")
 install(CODE "file(CREATE_LINK grep ${CMAKE_INSTALL_PREFIX}/bin/rgrep SYMBOLIC)")
-install(CODE "file(CREATE_LINK gunzip ${CMAKE_INSTALL_PREFIX}/bin/zcat SYMBOLIC)")
+install(CODE "file(CREATE_LINK gzip ${CMAKE_INSTALL_PREFIX}/bin/gunzip SYMBOLIC)")
+install(CODE "file(CREATE_LINK gzip ${CMAKE_INSTALL_PREFIX}/bin/zcat SYMBOLIC)")
+install(CODE "file(CREATE_LINK /usr/lib/Loader.so ${CMAKE_INSTALL_PREFIX}/bin/ldd SYMBOLIC)")
 
 target_link_libraries(abench PRIVATE LibAudio LibFileSystem)
 target_link_libraries(aconv PRIVATE LibAudio LibFileSystem)
+target_link_libraries(animation PRIVATE LibGfx)
 target_link_libraries(aplay PRIVATE LibAudio LibFileSystem LibIPC)
 target_link_libraries(asctl PRIVATE LibAudio LibIPC)
 target_link_libraries(bt PRIVATE LibSymbolication LibURL)
@@ -87,28 +312,31 @@ target_link_libraries(cp PRIVATE LibFileSystem)
 target_link_libraries(cpp-lexer PRIVATE LibCpp)
 target_link_libraries(cpp-parser PRIVATE LibCpp)
 target_link_libraries(cpp-preprocessor PRIVATE LibCpp)
+target_link_libraries(crypto-bench PRIVATE LibCrypto)
 target_link_libraries(diff PRIVATE LibDiff)
-target_link_libraries(disasm PRIVATE LibX86)
+target_link_libraries(disasm PRIVATE LibELF LibX86)
 target_link_libraries(drain PRIVATE LibFileSystem)
+target_link_libraries(elfdeps PRIVATE LibELF)
 target_link_libraries(expr PRIVATE LibRegex)
 target_link_libraries(fdtdump PRIVATE LibDeviceTree)
-target_link_libraries(file PRIVATE LibGfx LibIPC LibArchive LibCompress LibAudio)
+target_link_libraries(file PRIVATE LibELF LibGfx LibIPC LibArchive LibCompress LibAudio)
 target_link_libraries(find PRIVATE LibFileSystem LibRegex LibURL)
-target_link_libraries(functrace PRIVATE LibDebug LibX86)
+target_link_libraries(functrace PRIVATE LibDebug LibELF LibX86)
 target_link_libraries(glsl-compiler PRIVATE LibGLSL)
 target_link_libraries(gml-format PRIVATE LibGUI)
 target_link_libraries(grep PRIVATE LibFileSystem LibRegex LibURL)
-target_link_libraries(gunzip PRIVATE LibCompress)
 target_link_libraries(gzip PRIVATE LibCompress)
 target_link_libraries(headless-browser PRIVATE LibCrypto LibFileSystem LibGemini LibGfx LibHTTP LibImageDecoderClient LibTLS LibWeb LibWebView LibWebSocket LibIPC LibJS LibDiff LibURL)
-target_link_libraries(icc PRIVATE LibGfx LibVideo LibURL)
+target_link_libraries(hiddump PRIVATE LibHID)
+target_link_libraries(icc PRIVATE LibGfx LibMedia LibURL)
+target_link_libraries(iconv PRIVATE LibTextCodec)
 target_link_libraries(image PRIVATE LibGfx)
 target_link_libraries(image2bin PRIVATE LibGfx)
+target_link_libraries(imgcmp PRIVATE LibGfx)
 target_link_libraries(ini PRIVATE LibFileSystem)
 target_link_libraries(install-bin PRIVATE LibFileSystem)
 target_link_libraries(isobmff PRIVATE LibGfx)
 target_link_libraries(js PRIVATE LibCrypto LibJS LibLine LibLocale LibTextCodec)
-link_with_locale_data(js)
 target_link_libraries(keymap PRIVATE LibKeyboard)
 target_link_libraries(less PRIVATE LibLine)
 target_link_libraries(ls PRIVATE LibFileSystem LibURL)
@@ -117,12 +345,12 @@ target_link_libraries(lsusb PRIVATE LibUSBDB)
 target_link_libraries(lzcat PRIVATE LibCompress)
 target_link_libraries(man PRIVATE LibMarkdown LibManual)
 target_link_libraries(markdown-check PRIVATE LibFileSystem LibMarkdown LibManual LibURL)
-target_link_libraries(matroska PRIVATE LibVideo)
+target_link_libraries(matroska PRIVATE LibMedia)
 target_link_libraries(md PRIVATE LibMarkdown)
 target_link_libraries(mkfs.fat PRIVATE LibFileSystem)
 target_link_libraries(mktemp PRIVATE LibFileSystem)
 target_link_libraries(mv PRIVATE LibFileSystem)
-target_link_libraries(notify PRIVATE LibGfx LibGUI)
+target_link_libraries(notify PRIVATE LibGfx LibGUI LibURL)
 target_link_libraries(open PRIVATE LibDesktop LibFileSystem LibURL)
 target_link_libraries(passwd PRIVATE LibCrypt)
 target_link_libraries(paste PRIVATE LibGUI)
@@ -131,14 +359,17 @@ target_link_libraries(pdf PRIVATE LibGfx LibPDF)
 target_link_libraries(pgrep PRIVATE LibRegex)
 target_link_libraries(pixelflut PRIVATE LibImageDecoderClient LibIPC LibGfx)
 target_link_libraries(pkill PRIVATE LibRegex)
+target_link_libraries(pledge PRIVATE LibELF)
 target_link_libraries(pls PRIVATE LibCrypt)
 target_link_libraries(pro PRIVATE LibFileSystem LibProtocol LibHTTP LibURL)
+target_link_libraries(readelf PRIVATE LibELF)
 target_link_libraries(readlink PRIVATE LibFileSystem)
 target_link_libraries(realpath PRIVATE LibFileSystem)
-target_link_libraries(run-tests PRIVATE LibCoredump LibDebug LibFileSystem LibRegex)
+target_link_libraries(run-tests PRIVATE LibCoredump LibDebug LibELF LibFileSystem LibRegex)
 target_link_libraries(rm PRIVATE LibFileSystem)
 target_link_libraries(sed PRIVATE LibRegex LibFileSystem)
 target_link_libraries(shot PRIVATE LibFileSystem LibGfx LibGUI LibIPC LibURL)
+target_link_libraries(shred PRIVATE LibFileSystem)
 target_link_libraries(slugify PRIVATE LibUnicode)
 target_link_libraries(sql PRIVATE LibFileSystem LibIPC LibLine LibSQL)
 target_link_libraries(su PRIVATE LibCrypt)
@@ -178,3 +409,4 @@ foreach(name IN LISTS FUZZER_TARGETS)
 endforeach()
 
 add_subdirectory(pkg)
+add_subdirectory(runc)

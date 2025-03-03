@@ -105,20 +105,18 @@ ErrorOr<ByteString> JsonParser::consume_and_unescape_string()
         case 'u': {
             ignore(); // 'u'
 
-            if (tell_remaining() < 4)
-                return Error::from_string_literal("JsonParser: EOF while parsing Unicode escape");
-            auto escaped_string = consume(4);
-            auto code_point = AK::StringUtils::convert_to_uint_from_hex(escaped_string);
-            if (!code_point.has_value()) {
-                dbgln("JsonParser: Error while parsing Unicode escape {}", escaped_string);
+            // https://ecma-international.org/wp-content/uploads/ECMA-404_2nd_edition_december_2017.pdf
+            //
+            // To escape a code point that is not in the Basic Multilingual Plane, the character may be represented as a
+            // twelve-character sequence, encoding the UTF-16 surrogate pair corresponding to the code point. So for
+            // example, a string containing only the G clef character (U+1D11E) may be represented as "\uD834\uDD1E".
+            // However, whether a processor of JSON texts interprets such a surrogate pair as a single code point or as an
+            // explicit surrogate pair is a semantic decision that is determined by the specific processor.
+            auto code_point = decode_single_or_paired_surrogate();
+
+            if (code_point.is_error())
                 return Error::from_string_literal("JsonParser: Error while parsing Unicode escape");
-            }
-            // Note/FIXME: "To escape a code point that is not in the Basic Multilingual Plane, the character may be represented as a
-            //              twelve-character sequence, encoding the UTF-16 surrogate pair corresponding to the code point. So for
-            //              example, a string containing only the G clef character (U+1D11E) may be represented as "\uD834\uDD1E".
-            //              However, whether a processor of JSON texts interprets such a surrogate pair as a single code point or as an
-            //              explicit surrogate pair is a semantic decision that is determined by the specific processor."
-            //             ~ECMA-404, 2nd Edition Dec. 2017, page 5
+
             final_sb.append_code_point(code_point.value());
             break;
         }
@@ -278,19 +276,10 @@ ErrorOr<JsonValue> JsonParser::parse_number()
 
     StringView number_string(number_buffer.data(), number_buffer.size());
 
-    auto to_unsigned_result = number_string.to_number<u64>();
-    if (to_unsigned_result.has_value()) {
-        if (*to_unsigned_result <= NumericLimits<u32>::max())
-            return JsonValue((u32)*to_unsigned_result);
-
-        return JsonValue(*to_unsigned_result);
-    } else if (auto signed_number = number_string.to_number<i64>(); signed_number.has_value()) {
-
-        if (*signed_number <= NumericLimits<i32>::max())
-            return JsonValue((i32)*signed_number);
-
-        return JsonValue(*signed_number);
-    }
+    if (auto number = number_string.to_number<u64>(); number.has_value())
+        return JsonValue(*number);
+    if (auto number = number_string.to_number<i64>(); number.has_value())
+        return JsonValue(*number);
 
     // It's possible the unsigned value is bigger than u64 max
     return fallback_to_double_parse();

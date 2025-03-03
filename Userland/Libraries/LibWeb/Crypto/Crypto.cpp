@@ -8,6 +8,7 @@
 #include <AK/Random.h>
 #include <AK/StringBuilder.h>
 #include <LibJS/Runtime/TypedArray.h>
+#include <LibWeb/Bindings/CryptoPrototype.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Crypto/Crypto.h>
@@ -47,9 +48,13 @@ WebIDL::ExceptionOr<JS::Handle<WebIDL::ArrayBufferView>> Crypto::get_random_valu
 {
     // 1. If array is not an Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, or BigUint64Array, then throw a TypeMismatchError and terminate the algorithm.
     if (!array->is_typed_array_base())
-        return WebIDL::TypeMismatchError::create(realm(), "array must be one of Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, or BigUint64Array"_fly_string);
+        return WebIDL::TypeMismatchError::create(realm(), "array must be one of Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, or BigUint64Array"_string);
 
     auto const& typed_array = *array->bufferable_object().get<JS::NonnullGCPtr<JS::TypedArrayBase>>();
+    // Still need to exclude Float32Array, and potential future siblings like Float16Array:
+    if (!typed_array.element_name().is_one_of("Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "BigInt64Array", "BigUint64Array"))
+        return WebIDL::TypeMismatchError::create(realm(), "array must be one of Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, or BigUint64Array"_string);
+
     auto typed_array_record = JS::make_typed_array_with_buffer_witness_record(typed_array, JS::ArrayBuffer::Order::SeqCst);
 
     // IMPLEMENTATION DEFINED: If the viewed array buffer is out-of-bounds, throw a InvalidStateError and terminate the algorithm.
@@ -58,12 +63,12 @@ WebIDL::ExceptionOr<JS::Handle<WebIDL::ArrayBufferView>> Crypto::get_random_valu
 
     // 2. If the byteLength of array is greater than 65536, throw a QuotaExceededError and terminate the algorithm.
     if (JS::typed_array_byte_length(typed_array_record) > 65536)
-        return WebIDL::QuotaExceededError::create(realm(), "array's byteLength may not be greater than 65536"_fly_string);
+        return WebIDL::QuotaExceededError::create(realm(), "array's byteLength may not be greater than 65536"_string);
 
     // FIXME: Handle SharedArrayBuffers
 
     // 3. Overwrite all elements of array with cryptographically strong random values of the appropriate type.
-    fill_with_random(array->viewed_array_buffer()->buffer());
+    fill_with_random(array->viewed_array_buffer()->buffer().bytes().slice(array->byte_offset(), array->byte_length()));
 
     // 4. Return array.
     return array;

@@ -7,11 +7,14 @@
 #pragma once
 
 #include <AK/HashMap.h>
+#include <AK/SourceLocation.h>
 #include <LibIPC/ConnectionToServer.h>
+#include <LibWeb/CSS/StyleSheetIdentifier.h>
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWeb/HTML/FileFilter.h>
 #include <LibWeb/HTML/SelectItem.h>
 #include <LibWeb/HTML/WebViewHints.h>
+#include <LibWeb/Page/EventResult.h>
 #include <WebContent/WebContentClientEndpoint.h>
 #include <WebContent/WebContentServerEndpoint.h>
 
@@ -32,6 +35,8 @@ public:
 
     Function<void()> on_web_content_process_crash;
 
+    void set_pid(pid_t pid) { m_process_handle.pid = pid; }
+
 private:
     virtual void die() override;
 
@@ -43,9 +48,10 @@ private:
     virtual void did_request_cursor_change(u64 page_id, i32) override;
     virtual void did_layout(u64 page_id, Gfx::IntSize) override;
     virtual void did_change_title(u64 page_id, ByteString const&) override;
-    virtual void did_request_scroll(u64 page_id, i32, i32) override;
-    virtual void did_request_scroll_to(u64 page_id, Gfx::IntPoint) override;
-    virtual void did_enter_tooltip_area(u64 page_id, Gfx::IntPoint, ByteString const&) override;
+    virtual void did_change_url(u64 page_id, URL::URL const&) override;
+    virtual void did_request_tooltip_override(u64 page_id, Gfx::IntPoint, ByteString const&) override;
+    virtual void did_stop_tooltip_override(u64 page_id) override;
+    virtual void did_enter_tooltip_area(u64 page_id, ByteString const&) override;
     virtual void did_leave_tooltip_area(u64 page_id) override;
     virtual void did_hover_link(u64 page_id, URL::URL const&) override;
     virtual void did_unhover_link(u64 page_id) override;
@@ -56,14 +62,15 @@ private:
     virtual void did_request_link_context_menu(u64 page_id, Gfx::IntPoint, URL::URL const&, ByteString const&, unsigned) override;
     virtual void did_request_image_context_menu(u64 page_id, Gfx::IntPoint, URL::URL const&, ByteString const&, unsigned, Gfx::ShareableBitmap const&) override;
     virtual void did_request_media_context_menu(u64 page_id, Gfx::IntPoint, ByteString const&, unsigned, Web::Page::MediaContextMenu const&) override;
-    virtual void did_get_source(u64 page_id, URL::URL const&, ByteString const&) override;
+    virtual void did_get_source(u64 page_id, URL::URL const&, URL::URL const&, String const&) override;
     virtual void did_inspect_dom_tree(u64 page_id, ByteString const&) override;
-    virtual void did_inspect_dom_node(u64 page_id, bool has_style, ByteString const& computed_style, ByteString const& resolved_style, ByteString const& custom_properties, ByteString const& node_box_sizing, ByteString const& aria_properties_state) override;
+    virtual void did_inspect_dom_node(u64 page_id, bool has_style, ByteString const& computed_style, ByteString const& resolved_style, ByteString const& custom_properties, ByteString const& node_box_sizing, ByteString const& aria_properties_state, ByteString const& fonts) override;
     virtual void did_inspect_accessibility_tree(u64 page_id, ByteString const&) override;
     virtual void did_get_hovered_node_id(u64 page_id, i32 node_id) override;
     virtual void did_finish_editing_dom_node(u64 page_id, Optional<i32> const& node_id) override;
     virtual void did_get_dom_node_html(u64 page_id, String const& html) override;
     virtual void did_take_screenshot(u64 page_id, Gfx::ShareableBitmap const& screenshot) override;
+    virtual void did_get_internal_page_info(u64 page_id, PageInfoType, String const&) override;
     virtual void did_output_js_console_message(u64 page_id, i32 message_index) override;
     virtual void did_get_js_console_messages(u64 page_id, i32 start_index, Vector<ByteString> const& message_types, Vector<ByteString> const& messages) override;
     virtual void did_change_favicon(u64 page_id, Gfx::ShareableBitmap const&) override;
@@ -92,10 +99,13 @@ private:
     virtual void did_request_color_picker(u64 page_id, Color const& current_color) override;
     virtual void did_request_file_picker(u64 page_id, Web::HTML::FileFilter const& accepted_file_types, Web::HTML::AllowMultipleFiles) override;
     virtual void did_request_select_dropdown(u64 page_id, Gfx::IntPoint content_position, i32 minimum_width, Vector<Web::HTML::SelectItem> const& items) override;
-    virtual void did_finish_handling_input_event(u64 page_id, bool event_was_accepted) override;
-    virtual void did_finish_text_test(u64 page_id) override;
+    virtual void did_finish_handling_input_event(u64 page_id, Web::EventResult event_result) override;
+    virtual void did_finish_text_test(u64 page_id, String const& text) override;
+    virtual void did_find_in_page(u64 page_id, size_t current_match_index, Optional<size_t> const& total_match_count) override;
     virtual void did_change_theme_color(u64 page_id, Gfx::Color color) override;
     virtual void did_insert_clipboard_entry(u64 page_id, String const& data, String const& presentation_style, String const& mime_type) override;
+    virtual void did_change_audio_play_state(u64 page_id, Web::HTML::AudioPlayState) override;
+    virtual void did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled) override;
     virtual void inspector_did_load(u64 page_id) override;
     virtual void inspector_did_select_dom_node(u64 page_id, i32 node_id, Optional<Web::CSS::Selector::PseudoElement::Type> const& pseudo_element) override;
     virtual void inspector_did_set_dom_node_text(u64 page_id, i32 node_id, String const& text) override;
@@ -104,10 +114,18 @@ private:
     virtual void inspector_did_replace_dom_node_attribute(u64 page_id, i32 node_id, size_t attribute_index, Vector<Attribute> const& replacement_attributes) override;
     virtual void inspector_did_request_dom_tree_context_menu(u64 page_id, i32 node_id, Gfx::IntPoint position, String const& type, Optional<String> const& tag, Optional<size_t> const& attribute_index) override;
     virtual void inspector_did_execute_console_script(u64 page_id, String const& script) override;
+    virtual void inspector_did_export_inspector_html(u64 page_id, String const& html) override;
     virtual Messages::WebContentClient::RequestWorkerAgentResponse request_worker_agent(u64 page_id) override;
+    virtual void inspector_did_list_style_sheets(u64 page_id, Vector<Web::CSS::StyleSheetIdentifier> const& stylesheets) override;
+    virtual void inspector_did_request_style_sheet_source(u64 page_id, Web::CSS::StyleSheetIdentifier const& identifier) override;
+    virtual void did_get_style_sheet_source(u64 page_id, Web::CSS::StyleSheetIdentifier const& identifier, URL::URL const&, String const& source) override;
+
+    Optional<ViewImplementation&> view_for_page_id(u64, SourceLocation = SourceLocation::current());
 
     // FIXME: Does a HashMap holding references make sense?
     HashMap<u64, ViewImplementation*> m_views;
+
+    ProcessHandle m_process_handle;
 };
 
 }

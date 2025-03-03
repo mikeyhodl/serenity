@@ -34,14 +34,17 @@ Optional<CSSNumericType::BaseType> CSSNumericType::base_type_from_value_type(Val
         return BaseType::Time;
 
     case ValueType::BackgroundPosition:
+    case ValueType::BasicShape:
     case ValueType::Color:
+    case ValueType::Counter:
     case ValueType::CustomIdent:
     case ValueType::EasingFunction:
     case ValueType::FilterValueList:
     case ValueType::Image:
     case ValueType::Integer:
-    case ValueType::Paint:
     case ValueType::Number:
+    case ValueType::OpenTypeTag:
+    case ValueType::Paint:
     case ValueType::Position:
     case ValueType::Ratio:
     case ValueType::Rect:
@@ -347,7 +350,7 @@ bool CSSNumericType::matches_percentage() const
         auto base_type = static_cast<BaseType>(i);
         auto type_exponent = exponent(base_type);
         if (base_type == BaseType::Percent) {
-            if (!type_exponent.has_value() || type_exponent == 0)
+            if (type_exponent != 1)
                 return false;
         } else {
             if (type_exponent.has_value() && type_exponent != 0)
@@ -406,8 +409,9 @@ bool CSSNumericType::matches_number_percentage() const
         auto base_type = static_cast<BaseType>(i);
         auto type_exponent = exponent(base_type);
 
-        if (base_type == BaseType::Percent && type_exponent.has_value() && type_exponent != 0 && type_exponent != 1) {
-            return false;
+        if (base_type == BaseType::Percent) {
+            if (type_exponent.has_value() && type_exponent != 0 && type_exponent != 1)
+                return false;
         } else if (type_exponent.has_value() && type_exponent != 0) {
             return false;
         }

@@ -31,14 +31,12 @@ public:
     virtual StringView device_name() const override { return "NVMeController"sv; }
 
 protected:
-    ErrorOr<void> reset() override;
-    ErrorOr<void> shutdown() override;
+    ErrorOr<void> reset();
     void complete_current_request(AsyncDeviceRequest::RequestResult result) override;
 
 public:
     ErrorOr<void> reset_controller();
     ErrorOr<void> start_controller();
-    u32 get_admin_q_dept();
 
     u16 submit_admin_command(NVMeSubmission& sub, bool sync = false)
     {
@@ -61,6 +59,7 @@ private:
 
     NVMeController(PCI::DeviceIdentifier const&, u32 hardware_relative_controller_id);
 
+    void set_admin_q_depth();
     ErrorOr<void> identify_and_init_namespaces();
     ErrorOr<void> identify_and_init_controller();
     NSFeatures get_ns_features(IdentifyNamespace& identify_data_struct);
@@ -75,10 +74,10 @@ private:
 private:
     LockRefPtr<NVMeQueue> m_admin_queue;
     Vector<NonnullLockRefPtr<NVMeQueue>> m_queues;
-    Vector<NonnullLockRefPtr<NVMeNameSpace>> m_namespaces;
+    Vector<NonnullRefPtr<NVMeNameSpace>> m_namespaces;
     Memory::TypedMapping<ControllerRegister volatile> m_controller_regs;
-    RefPtr<Memory::PhysicalPage> m_dbbuf_shadow_page;
-    RefPtr<Memory::PhysicalPage> m_dbbuf_eventidx_page;
+    RefPtr<Memory::PhysicalRAMPage> m_dbbuf_shadow_page;
+    RefPtr<Memory::PhysicalRAMPage> m_dbbuf_eventidx_page;
     bool m_admin_queue_ready { false };
     size_t m_device_count { 0 };
     AK::Duration m_ready_timeout;

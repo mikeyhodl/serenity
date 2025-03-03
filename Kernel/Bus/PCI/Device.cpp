@@ -8,6 +8,7 @@
 #include <Kernel/Arch/Interrupts.h>
 #include <Kernel/Arch/PCIMSI.h>
 #include <Kernel/Bus/PCI/API.h>
+#include <Kernel/Bus/PCI/BarMapping.h>
 #include <Kernel/Bus/PCI/Device.h>
 #include <Kernel/Memory/TypedMapping.h>
 
@@ -23,10 +24,21 @@ Device::Device(DeviceIdentifier const& pci_identifier)
 
 bool Device::is_msi_capable() const
 {
+    // FIXME: Support MSI on aarch64 and riscv64
+#if ARCH(AARCH64) || ARCH(RISCV64)
+    return false;
+#endif
+
     return m_pci_identifier->is_msi_capable();
 }
+
 bool Device::is_msix_capable() const
 {
+    // FIXME: Support MSIx on aarch64 and riscv64
+#if ARCH(AARCH64) || ARCH(RISCV64)
+    return false;
+#endif
+
     return m_pci_identifier->is_msix_capable();
 }
 
@@ -110,10 +122,10 @@ PhysicalAddress Device::msix_table_entry_address(u8 irq)
 
     VERIFY(index < m_interrupt_range.m_irq_count);
     VERIFY(index >= 0);
-    auto table_bar_ptr = PCI::get_BAR(device_identifier(), static_cast<PCI::HeaderType0BaseRegister>(m_pci_identifier->get_msix_table_bar())) & PCI::bar_address_mask;
+    auto table_bar_paddr = PCI::get_bar_address(device_identifier(), static_cast<PCI::HeaderType0BaseRegister>(m_pci_identifier->get_msix_table_bar())).release_value_but_fixme_should_propagate_errors();
     auto table_offset = m_pci_identifier->get_msix_table_offset();
 
-    return PhysicalAddress(table_bar_ptr + table_offset + (index * 16));
+    return table_bar_paddr.offset(table_offset + (index * 16));
 }
 
 // This function is used to allocate an irq at an index and returns

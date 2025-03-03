@@ -19,12 +19,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     }
 
     ByteString host;
-    int port;
+    int port = 0;
     bool tls { false };
 
     ByteString username;
     Core::SecretString password;
-    bool interactive_password;
+    bool interactive_password = false;
 
     Core::ArgsParser args_parser;
     args_parser.add_option(interactive_password, "Prompt for password with getpass", "interactive", 'i');
@@ -86,7 +86,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     outln("[SEARCH] Number of results: {}", search_results.size());
 
     response = TRY(client->status("INBOX"sv, { IMAP::StatusItemType::Recent, IMAP::StatusItemType::Messages })->await());
-    outln("[STATUS] Recent items: {}", response.data().status_item().get(IMAP::StatusItemType::Recent));
+    if (response.data().status_items().size() > 0)
+        outln("[STATUS] Recent items: {}", response.data().status_items()[0].get(IMAP::StatusItemType::Recent));
 
     for (auto item : search_results) {
         // clang-format off
@@ -126,7 +127,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 .get<IMAP::FetchResponseData>()
                 .body_data()
                 .find_if([](Tuple<IMAP::FetchCommand::DataItem, ByteString>& data) {
-                    const auto data_item = data.get<0>();
+                    auto const data_item = data.get<0>();
                     return data_item.section.has_value() && data_item.section->type == IMAP::FetchCommand::DataItem::SectionType::HeaderFields;
                 })
                 ->get<1>());

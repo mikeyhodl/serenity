@@ -41,7 +41,7 @@ if (ENABLE_QT)
     endif()
 else()
     set(LIB_TYPE STATIC)
-    if (ANDROID OR IOS)
+    if (IOS)
         set(LIB_TYPE SHARED)
     endif()
     add_library(webcontent ${LIB_TYPE} ${WEBCONTENT_SOURCES})
@@ -64,16 +64,6 @@ else()
               ${WEBCONTENT_SOURCE_DIR}/WebDriverConnection.h
     )
 
-    if (ANDROID)
-        target_sources(webcontent PRIVATE
-          ../Android/src/main/cpp/WebContentService.cpp
-          ../Android/src/main/cpp/WebContentServiceJNI.cpp
-          ../Android/src/main/cpp/LadybirdServiceBaseJNI.cpp
-          ../Android/src/main/cpp/JNIHelpers.cpp
-        )
-        target_link_libraries(webcontent PRIVATE android)
-    endif()
-
     add_executable(WebContent main.cpp)
     target_link_libraries(WebContent PRIVATE webcontent)
 endif()
@@ -81,7 +71,7 @@ endif()
 target_include_directories(WebContent PRIVATE ${SERENITY_SOURCE_DIR}/Userland/Services/)
 target_include_directories(WebContent PRIVATE ${SERENITY_SOURCE_DIR}/Userland/)
 target_include_directories(WebContent PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
-target_link_libraries(WebContent PRIVATE LibAudio LibCore LibFileSystem LibGfx LibImageDecoderClient LibIPC LibJS LibMain LibWeb LibWebSocket LibProtocol LibWebView LibURL)
+target_link_libraries(WebContent PRIVATE LibAudio LibCore LibFileSystem LibGfx LibImageDecoderClient LibIPC LibJS LibMain LibSQL LibWeb LibWebSocket LibProtocol LibWebView LibURL)
 
 if (HAVE_PULSEAUDIO)
     target_compile_definitions(WebContent PRIVATE HAVE_PULSEAUDIO=1)

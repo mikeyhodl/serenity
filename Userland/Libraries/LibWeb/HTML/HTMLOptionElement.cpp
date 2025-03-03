@@ -7,6 +7,7 @@
 
 #include <AK/StringBuilder.h>
 #include <LibWeb/ARIA/Roles.h>
+#include <LibWeb/Bindings/HTMLOptionElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/Text.h>
@@ -33,9 +34,9 @@ void HTMLOptionElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(HTMLOptionElement);
 }
 
-void HTMLOptionElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLOptionElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    HTMLElement::attribute_changed(name, value);
+    HTMLElement::attribute_changed(name, old_value, value);
 
     if (name == HTML::AttributeNames::selected) {
         if (!value.has_value()) {
@@ -56,9 +57,14 @@ void HTMLOptionElement::attribute_changed(FlyString const& name, Optional<String
 void HTMLOptionElement::set_selected(bool selected)
 {
     // On setting, it must set the element's selectedness to the new value, set its dirtiness to true, and then cause the element to ask for a reset.
-    m_selected = selected;
+    set_selected_internal(selected);
     m_dirty = true;
     ask_for_a_reset();
+}
+
+void HTMLOptionElement::set_selected_internal(bool selected)
+{
+    m_selected = selected;
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-value
@@ -84,6 +90,7 @@ static void concatenate_descendants_text_content(DOM::Node const* node, StringBu
         builder.append(verify_cast<DOM::Text>(node)->data());
     node->for_each_child([&](auto const& node) {
         concatenate_descendants_text_content(&node, builder);
+        return IterationDecision::Continue;
     });
 }
 
@@ -97,6 +104,7 @@ String HTMLOptionElement::text() const
     // script or SVG script elements.
     for_each_child([&](auto const& node) {
         concatenate_descendants_text_content(&node, builder);
+        return IterationDecision::Continue;
     });
 
     // Return the result of stripping and collapsing ASCII whitespace from the above concatenation.
@@ -129,7 +137,10 @@ int HTMLOptionElement::index() const
 // https://html.spec.whatwg.org/multipage/form-elements.html#ask-for-a-reset
 void HTMLOptionElement::ask_for_a_reset()
 {
-    // FIXME: Implement this operation.
+    // If an option element in the list of options asks for a reset, then run that select element's selectedness setting algorithm.
+    if (is<HTMLSelectElement>(parent_element())) {
+        static_cast<HTMLSelectElement*>(parent())->update_selectedness();
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-disabled
@@ -138,6 +149,25 @@ bool HTMLOptionElement::disabled() const
     // An option element is disabled if its disabled attribute is present or if it is a child of an optgroup element whose disabled attribute is present.
     return has_attribute(AttributeNames::disabled)
         || (parent() && is<HTMLOptGroupElement>(parent()) && static_cast<HTMLOptGroupElement const&>(*parent()).has_attribute(AttributeNames::disabled));
+}
+
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form
+JS::GCPtr<HTMLFormElement> HTMLOptionElement::form() const
+{
+    // The form IDL attribute's behavior depends on whether the option element is in a select element or not.
+    // If the option has a select element as its parent, or has an optgroup element as its parent and that optgroup element has a select element as its parent,
+    // then the form IDL attribute must return the same value as the form IDL attribute on that select element.
+    // Otherwise, it must return null.
+    auto const* parent = parent_element();
+    if (is<HTMLOptGroupElement>(parent))
+        parent = parent->parent_element();
+
+    if (is<HTML::HTMLSelectElement>(parent)) {
+        auto const* select_element = verify_cast<HTMLSelectElement>(parent);
+        return const_cast<HTMLFormElement*>(select_element->form());
+    }
+
+    return {};
 }
 
 Optional<ARIA::Role> HTMLOptionElement::default_role() const

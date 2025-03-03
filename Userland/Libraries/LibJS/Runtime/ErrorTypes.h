@@ -70,6 +70,7 @@
     M(InvalidLength, "Invalid {} length")                                                                                               \
     M(InvalidOrAmbiguousExportEntry, "Invalid or ambiguous export entry '{}'")                                                          \
     M(InvalidPrecision, "Precision must be an integer no less than 1, and no greater than 100")                                         \
+    M(InvalidRestrictedFloatingPointParameter, "Expected {} to be a finite floating-point number")                                      \
     M(InvalidTimeValue, "Invalid time value")                                                                                           \
     M(InvalidRadix, "Radix must be an integer no less than 2, and no greater than 36")                                                  \
     M(IsNotA, "{} is not a {}")                                                                                                         \
@@ -230,6 +231,7 @@
     M(StringNonGlobalRegExp, "RegExp argument is non-global")                                                                           \
     M(StringRawCannotConvert, "Cannot convert property 'raw' to object from {}")                                                        \
     M(StringRepeatCountMustBe, "repeat count must be a {} number")                                                                      \
+    M(StringRepeatCountMustNotOverflow, "repeat count must not overflow")                                                               \
     M(TemporalAmbiguousMonthOfPlainMonthDay, "Accessing month of PlainMonthDay is ambiguous, use monthCode instead")                    \
     M(TemporalDifferentCalendars, "Cannot compare dates from two different calendars")                                                  \
     M(TemporalDifferentTimeZones, "Cannot compare dates from two different time zones")                                                 \
@@ -302,6 +304,9 @@
     M(ThisHasNotBeenInitialized, "|this| has not been initialized")                                                                     \
     M(ThisIsAlreadyInitialized, "|this| is already initialized")                                                                        \
     M(ToObjectNullOrUndefined, "ToObject on null or undefined")                                                                         \
+    M(ToObjectNullOrUndefinedWithName, "\"{}\" is {}")                                                                                  \
+    M(ToObjectNullOrUndefinedWithProperty, "Cannot access property \"{}\" on {} object")                                                \
+    M(ToObjectNullOrUndefinedWithPropertyAndName, "Cannot access property \"{}\" on {} object \"{}\"")                                  \
     M(TopLevelVariableAlreadyDeclared, "Redeclaration of top level variable '{}'")                                                      \
     M(ToPrimitiveReturnedObject, "Can't convert {} to primitive with hint \"{}\", its @@toPrimitive method returned an object")         \
     M(TypedArrayContentTypeMismatch, "Can't create {} from {}")                                                                         \

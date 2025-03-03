@@ -124,7 +124,7 @@ void MoveTool::on_mouseup(Layer* layer, MouseEvent& event)
         return;
 
     if (m_scaling) {
-        auto scaled_layer_or_error = m_editor->active_layer()->scale(m_new_layer_rect, Gfx::Painter::ScalingMode::BilinearBlend);
+        auto scaled_layer_or_error = m_editor->active_layer()->scale(m_new_layer_rect, Gfx::ScalingMode::BilinearBlend);
         if (scaled_layer_or_error.is_error())
             GUI::MessageBox::show_error(m_editor->window(), MUST(String::formatted("Failed to resize layer: {}", scaled_layer_or_error.release_error())));
         else
@@ -140,10 +140,10 @@ void MoveTool::on_mouseup(Layer* layer, MouseEvent& event)
 
 bool MoveTool::on_keydown(GUI::KeyEvent& event)
 {
-    if (event.key() == Key_Shift)
+    if (event.key() == Key_LeftShift)
         m_keep_aspect_ratio = true;
 
-    if (event.key() == Key_Alt)
+    if (event.key() == Key_LeftAlt)
         toggle_selection_mode();
 
     if (m_scaling)
@@ -182,10 +182,10 @@ bool MoveTool::on_keydown(GUI::KeyEvent& event)
 
 void MoveTool::on_keyup(GUI::KeyEvent& event)
 {
-    if (event.key() == Key_Shift)
+    if (event.key() == Key_LeftShift)
         m_keep_aspect_ratio = false;
 
-    if (event.key() == Key_Alt)
+    if (event.key() == Key_LeftAlt)
         toggle_selection_mode();
 }
 
@@ -199,7 +199,7 @@ void MoveTool::on_second_paint(Layer const* layer, GUI::PaintEvent& event)
     if (m_scaling && (!m_cached_preview_bitmap.is_null() || !update_cached_preview_bitmap(layer).is_error())) {
         Gfx::PainterStateSaver saver(painter);
         painter.add_clip_rect(m_editor->content_rect());
-        painter.draw_scaled_bitmap(rect_in_editor, *m_cached_preview_bitmap, m_cached_preview_bitmap->rect(), 1.0f, Gfx::Painter::ScalingMode::BilinearBlend);
+        painter.draw_scaled_bitmap(rect_in_editor, *m_cached_preview_bitmap, m_cached_preview_bitmap->rect(), 1.0f, Gfx::ScalingMode::BilinearBlend);
     }
     painter.draw_rect_with_thickness(rect_in_editor, Color::Black, 3);
     painter.draw_rect_with_thickness(rect_in_editor, Color::White, 1);
@@ -247,7 +247,7 @@ ErrorOr<void> MoveTool::update_cached_preview_bitmap(Layer const* layer)
 
     m_cached_preview_bitmap = TRY(Gfx::Bitmap::create(source_bitmap.format(), preview_bitmap_size));
     GUI::Painter preview_painter(*m_cached_preview_bitmap);
-    preview_painter.draw_scaled_bitmap(m_cached_preview_bitmap->rect(), source_bitmap, source_bitmap.rect(), 0.8f, Gfx::Painter::ScalingMode::BilinearBlend);
+    preview_painter.draw_scaled_bitmap(m_cached_preview_bitmap->rect(), source_bitmap, source_bitmap.rect(), 0.8f, Gfx::ScalingMode::BilinearBlend);
     Gfx::ContrastFilter preview_filter(0.5f);
     preview_filter.apply(*m_cached_preview_bitmap, m_cached_preview_bitmap->rect(), *m_cached_preview_bitmap, m_cached_preview_bitmap->rect());
     return {};

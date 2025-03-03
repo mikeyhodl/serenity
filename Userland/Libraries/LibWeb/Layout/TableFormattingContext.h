@@ -20,12 +20,12 @@ enum class TableDimension {
 
 class TableFormattingContext final : public FormattingContext {
 public:
-    explicit TableFormattingContext(LayoutState&, Box const&, FormattingContext* parent);
+    explicit TableFormattingContext(LayoutState&, LayoutMode, Box const&, FormattingContext* parent);
     ~TableFormattingContext();
 
-    void run_until_width_calculation(Box const&, AvailableSpace const& available_space);
+    void run_until_width_calculation(AvailableSpace const& available_space);
 
-    virtual void run(Box const&, LayoutMode, AvailableSpace const&) override;
+    virtual void run(AvailableSpace const&) override;
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
 
@@ -38,7 +38,7 @@ public:
     static bool border_is_less_specific(const CSS::BorderData& a, const CSS::BorderData& b);
 
 private:
-    CSSPixels run_caption_layout(LayoutMode, CSS::CaptionSide);
+    CSSPixels run_caption_layout(CSS::CaptionSide);
     CSSPixels compute_capmin();
     void compute_constrainedness();
     void compute_cell_measures();
@@ -53,7 +53,7 @@ private:
     void distribute_width_to_columns();
     void distribute_excess_width_to_columns(CSSPixels available_width);
     void distribute_excess_width_to_columns_fixed_mode(CSSPixels excess_width);
-    void compute_table_height(LayoutMode layout_mode);
+    void compute_table_height();
     void distribute_height_to_rows();
     void position_row_boxes();
     void position_cell_boxes();
@@ -138,7 +138,7 @@ private:
     };
 
     struct ConflictingEdge {
-        Node const* element;
+        JS::GCPtr<Node const> element;
         Painting::PaintableBox::ConflictingElementKind element_kind;
         ConflictingSide side;
         Optional<size_t> row;
@@ -166,12 +166,12 @@ private:
         void collect_table_box_conflicting_edges(Vector<ConflictingEdge>&, Cell const&, ConflictingSide) const;
 
         struct RowGroupInfo {
-            Node const* row_group;
+            JS::GCPtr<Node const> row_group;
             size_t start_index;
             size_t row_count;
         };
 
-        Vector<Node const*> m_col_elements_by_index;
+        Vector<JS::GCPtr<Node const>> m_col_elements_by_index;
         Vector<Optional<RowGroupInfo>> m_row_group_elements_by_index;
         TableFormattingContext const* m_context;
     };

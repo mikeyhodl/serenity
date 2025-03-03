@@ -12,14 +12,6 @@ lagom_tool("GenerateAriaRoles") {
   ]
 }
 
-lagom_tool("GenerateCSSEasingFunctions") {
-  sources = [ "GenerateCSSEasingFunctions.cpp" ]
-  deps = [
-    ":headers",
-    "//Userland/Libraries/LibMain",
-  ]
-}
-
 lagom_tool("GenerateCSSEnums") {
   sources = [ "GenerateCSSEnums.cpp" ]
   deps = [
@@ -60,6 +52,14 @@ lagom_tool("GenerateCSSPseudoClass") {
   ]
 }
 
+lagom_tool("GenerateCSSStyleProperties") {
+  sources = [ "GenerateCSSStyleProperties.cpp" ]
+  deps = [
+    ":headers",
+    "//Userland/Libraries/LibMain",
+  ]
+}
+
 lagom_tool("GenerateCSSTransformFunctions") {
   sources = [ "GenerateCSSTransformFunctions.cpp" ]
   deps = [
@@ -68,8 +68,8 @@ lagom_tool("GenerateCSSTransformFunctions") {
   ]
 }
 
-lagom_tool("GenerateCSSValueID") {
-  sources = [ "GenerateCSSValueID.cpp" ]
+lagom_tool("GenerateCSSKeyword") {
+  sources = [ "GenerateCSSKeyword.cpp" ]
   deps = [
     ":headers",
     "//Userland/Libraries/LibMain",

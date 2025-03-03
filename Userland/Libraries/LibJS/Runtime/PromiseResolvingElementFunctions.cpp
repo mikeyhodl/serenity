@@ -17,14 +17,14 @@ JS_DEFINE_ALLOCATOR(RemainingElements);
 JS_DEFINE_ALLOCATOR(PromiseValueList);
 JS_DEFINE_ALLOCATOR(PromiseResolvingElementFunction);
 JS_DEFINE_ALLOCATOR(PromiseAllResolveElementFunction);
+JS_DEFINE_ALLOCATOR(PromiseAllSettledResolveElementFunction);
 JS_DEFINE_ALLOCATOR(PromiseAllSettledRejectElementFunction);
 JS_DEFINE_ALLOCATOR(PromiseAnyRejectElementFunction);
 
 void PromiseValueList::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    for (auto& val : m_values)
-        visitor.visit(val);
+    visitor.visit(m_values);
 }
 
 PromiseResolvingElementFunction::PromiseResolvingElementFunction(size_t index, PromiseValueList& values, NonnullGCPtr<PromiseCapability const> capability, RemainingElements& remaining_elements, Object& prototype)

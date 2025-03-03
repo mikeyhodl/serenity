@@ -8,21 +8,21 @@
 
 #include <Kernel/Devices/Storage/SD/Registers.h>
 #include <Kernel/Devices/Storage/SD/SDHostController.h>
+#include <Kernel/Memory/TypedMapping.h>
 
 namespace Kernel::RPi {
 
 class SDHostController : public ::SDHostController {
 public:
-    static SDHostController& the();
-    SDHostController();
+    SDHostController(Memory::TypedMapping<SD::HostControlRegisterMap volatile>);
     virtual ~SDHostController() override = default;
 
 protected:
     // ^SDHostController
-    virtual SD::HostControlRegisterMap volatile* get_register_map_base_address() override { return m_registers; }
+    virtual SD::HostControlRegisterMap volatile* get_register_map_base_address() override { return m_registers.ptr(); }
 
 private:
-    SD::HostControlRegisterMap volatile* m_registers;
+    Memory::TypedMapping<SD::HostControlRegisterMap volatile> m_registers;
 };
 
 }

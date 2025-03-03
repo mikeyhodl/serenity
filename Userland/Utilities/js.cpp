@@ -7,6 +7,7 @@
  */
 
 #include <AK/JsonValue.h>
+#include <AK/NeverDestroyed.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/ConfigFile.h>
@@ -31,7 +32,10 @@
 #include <LibTextCodec/Decoder.h>
 #include <signal.h>
 
-RefPtr<JS::VM> g_vm;
+// FIXME: https://github.com/LadybirdBrowser/ladybird/issues/2412
+//    We should be able to destroy the VM on process exit.
+NeverDestroyed<RefPtr<JS::VM>> g_vm_storage;
+JS::VM* g_vm;
 Vector<String> g_repl_statements;
 JS::Handle<JS::Value> g_last_value = JS::make_handle(JS::js_undefined());
 
@@ -101,10 +105,13 @@ static ErrorOr<void> print(JS::Value value, PrintTarget target = PrintTarget::St
     return print(value, *stream);
 }
 
+static size_t s_ctrl_c_hit_count = 0;
 static ErrorOr<String> prompt_for_level(int level)
 {
     static StringBuilder prompt_builder;
     prompt_builder.clear();
+    if (s_ctrl_c_hit_count > 0)
+        prompt_builder.append("(Use Ctrl+C again to exit)\n"sv);
     prompt_builder.append("> "sv);
 
     for (auto i = 0; i < level; ++i)
@@ -122,6 +129,7 @@ static ErrorOr<String> read_next_piece()
     do {
         auto line_result = s_editor->get_line(TRY(prompt_for_level(s_repl_line_level)).to_byte_string());
 
+        s_ctrl_c_hit_count = 0;
         line_level_delta_for_next_line = 0;
 
         if (line_result.is_error()) {
@@ -222,7 +230,7 @@ static ErrorOr<bool> parse_and_run(JS::Realm& realm, StringView source, StringVi
             if (!hint.is_empty())
                 outln("{}", hint);
 
-            auto error_string = TRY(error.to_string());
+            auto error_string = error.to_string();
             outln("{}", error_string);
             result = vm.throw_completion<JS::SyntaxError>(move(error_string));
         } else {
@@ -236,7 +244,7 @@ static ErrorOr<bool> parse_and_run(JS::Realm& realm, StringView source, StringVi
             if (!hint.is_empty())
                 outln("{}", hint);
 
-            auto error_string = TRY(error.to_string());
+            auto error_string = error.to_string();
             outln("{}", error_string);
             result = vm.throw_completion<JS::SyntaxError>(move(error_string));
         } else {
@@ -444,13 +452,9 @@ static ErrorOr<void> repl(JS::Realm& realm)
     return {};
 }
 
-static Function<void()> interrupt_interpreter;
-static void sigint_handler()
-{
-    interrupt_interpreter();
-}
-
 class ReplConsoleClient final : public JS::ConsoleClient {
+    JS_CELL(ReplConsoleClient, JS::ConsoleClient);
+
 public:
     ReplConsoleClient(JS::Console& console)
         : ConsoleClient(console)
@@ -497,7 +501,7 @@ public:
 
         auto output = TRY(generically_format_values(arguments.get<JS::MarkedVector<JS::Value>>()));
 #ifdef AK_OS_SERENITY
-        m_console.output_debug_message(log_level, output);
+        m_console->output_debug_message(log_level, output);
 #endif
 
         switch (log_level) {
@@ -561,7 +565,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     AK::set_debug_enabled(!disable_debug_printing);
     s_history_path = TRY(String::formatted("{}/.js-history", Core::StandardPaths::home_directory()));
 
-    g_vm = TRY(JS::VM::create());
+    g_vm_storage.get() = TRY(JS::VM::create());
+    g_vm = g_vm_storage->ptr();
     g_vm->set_dynamic_imports_allowed(true);
 
     if (!disable_debug_printing) {
@@ -603,8 +608,20 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         signal(SIGINT, [](int) {
             if (!s_editor->is_editing())
-                sigint_handler();
+                exit(0);
             s_editor->save_history(s_history_path.to_byte_string());
+        });
+
+        s_editor->register_key_input_callback(Line::ctrl('C'), [](Line::Editor& editor) -> bool {
+            if (editor.buffer_view().length() == 0 || s_ctrl_c_hit_count > 0) {
+                if (++s_ctrl_c_hit_count == 2) {
+                    s_keep_running_repl = false;
+                    editor.finish_edit();
+                    return false;
+                }
+            }
+
+            return true;
         });
 
         s_editor->on_display_refresh = [syntax_highlight](Line::Editor& editor) {
@@ -812,10 +829,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         ReplConsoleClient console_client(console_object.console());
         console_object.console().set_client(console_client);
         g_vm->heap().set_should_collect_on_every_allocation(gc_on_every_allocation);
-
-        signal(SIGINT, [](int) {
-            sigint_handler();
-        });
 
         StringBuilder builder;
         StringView source_name;

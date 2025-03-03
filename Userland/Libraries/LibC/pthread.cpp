@@ -53,11 +53,15 @@ static thread_local SinglyLinkedList<CleanupHandler> cleanup_handlers;
 
 static __thread bool pending_cancellation = false;
 
+[[gnu::weak]] extern ErrorOr<FlatPtr> __create_new_tls_region() asm("__create_new_tls_region");
+[[gnu::weak]] extern ErrorOr<void> __free_tls_region(FlatPtr thread_pointer) asm("__free_tls_region");
+
 extern "C" {
 
 [[noreturn]] static void exit_thread(void* code, void* stack_location, size_t stack_size)
 {
     __pthread_key_destroy_for_current_thread();
+    MUST(__free_tls_region(bit_cast<FlatPtr>(__builtin_thread_pointer())));
     syscall(SC_exit_thread, code, stack_location, stack_size);
     VERIFY_NOT_REACHED();
 }
@@ -94,14 +98,25 @@ static int create_thread(pthread_t* thread, void* (*entry)(void*), void* argumen
     thread_params->entry = entry;
     thread_params->entry_argument = argument;
 
+    auto maybe_thread_pointer = __create_new_tls_region();
+    if (maybe_thread_pointer.is_error())
+        return maybe_thread_pointer.error().code();
+
+    thread_params->tls_pointer = bit_cast<void*>(maybe_thread_pointer.release_value());
+
     VERIFY((uintptr_t)stack % 16 == 0);
 
+#if ARCH(X86_64)
     // Push a fake return address
     push_on_stack(nullptr);
+#endif
 
     int rc = syscall(SC_create_thread, pthread_create_helper, thread_params);
     if (rc >= 0)
         *thread = rc;
+    else
+        MUST(__free_tls_region(bit_cast<FlatPtr>(thread_params->tls_pointer)));
+
     __RETURN_PTHREAD_ERROR(rc);
 }
 
@@ -148,6 +163,7 @@ void pthread_exit(void* value_ptr)
     pthread_exit_without_cleanup_handlers(value_ptr);
 }
 
+#ifndef _DYNAMIC_LOADER
 void __pthread_maybe_cancel()
 {
     // Check if we have cancellations enabled.
@@ -162,6 +178,7 @@ void __pthread_maybe_cancel()
     // return value and calling the cleanup handlers for us.
     pthread_exit(PTHREAD_CANCELED);
 }
+#endif
 
 // https://pubs.opengroup.org/onlinepubs/009695399/functions/pthread_cleanup_push.html
 void pthread_cleanup_push(void (*routine)(void*), void* arg)

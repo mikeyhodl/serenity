@@ -198,8 +198,9 @@ IntRect ClassicWindowTheme::frame_rect_for_window(WindowType window_type, Window
     }
 }
 
-Vector<IntRect> ClassicWindowTheme::layout_buttons(WindowType window_type, WindowMode window_mode, IntRect const& window_rect, Palette const& palette, size_t buttons) const
+Vector<IntRect> ClassicWindowTheme::layout_buttons(WindowType window_type, WindowMode window_mode, IntRect const& window_rect, Palette const& palette, size_t buttons, bool is_maximized) const
 {
+    (void)is_maximized;
     int window_button_width = palette.window_title_button_width();
     int window_button_height = palette.window_title_button_height();
     int pos;
@@ -240,6 +241,17 @@ int ClassicWindowTheme::titlebar_height(WindowType window_type, WindowMode windo
     default:
         return 0;
     }
+}
+
+void ClassicWindowTheme::paint_taskbar(Painter& painter, IntRect const& taskbar_rect, Palette const& palette) const
+{
+    painter.fill_rect(taskbar_rect, palette.button());
+    painter.draw_line({ 0, 1 }, { taskbar_rect.width() - 1, 1 }, palette.threed_highlight());
+}
+
+void ClassicWindowTheme::paint_button(Painter& painter, IntRect const& rect, Palette const& palette, ButtonStyle button_style, bool pressed, bool hovered, bool checked, bool enabled, bool focused, bool default_button) const
+{
+    StylePainter::current().paint_button(painter, rect, palette, button_style, pressed, hovered, checked, enabled, focused, default_button);
 }
 
 }

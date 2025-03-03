@@ -23,6 +23,7 @@ public:
     FlyString() = default;
 
     static ErrorOr<FlyString> from_utf8(StringView);
+    static FlyString from_utf8_without_validation(ReadonlyBytes);
     template<typename T>
     requires(IsOneOf<RemoveCVReference<T>, ByteString, DeprecatedFlyString, FlyString, String>)
     static ErrorOr<String> from_utf8(T&&) = delete;
@@ -48,7 +49,7 @@ public:
 
     [[nodiscard]] int operator<=>(FlyString const& other) const;
 
-    static void did_destroy_fly_string_data(Badge<Detail::StringData>, StringView);
+    static void did_destroy_fly_string_data(Badge<Detail::StringData>, Detail::StringData const&);
     [[nodiscard]] Detail::StringBase data(Badge<String>) const;
 
     // This is primarily interesting to unit tests.
@@ -65,17 +66,25 @@ public:
     [[nodiscard]] bool equals_ignoring_ascii_case(FlyString const&) const;
     [[nodiscard]] bool equals_ignoring_ascii_case(StringView) const;
 
+    [[nodiscard]] FlyString to_ascii_lowercase() const;
+    [[nodiscard]] FlyString to_ascii_uppercase() const;
+
     [[nodiscard]] bool starts_with_bytes(StringView, CaseSensitivity = CaseSensitivity::CaseSensitive) const;
 
     [[nodiscard]] bool ends_with_bytes(StringView, CaseSensitivity = CaseSensitivity::CaseSensitive) const;
 
     template<typename... Ts>
-    [[nodiscard]] ALWAYS_INLINE constexpr bool is_one_of(Ts... strings) const
+    [[nodiscard]] ALWAYS_INLINE constexpr bool is_one_of(Ts&&... strings) const
     {
         return (... || this->operator==(forward<Ts>(strings)));
     }
 
 private:
+    explicit FlyString(Detail::StringBase data)
+        : m_data(move(data))
+    {
+    }
+
     Detail::StringBase m_data;
 };
 
@@ -91,7 +100,7 @@ struct Formatter<FlyString> : Formatter<StringView> {
 
 struct ASCIICaseInsensitiveFlyStringTraits : public Traits<String> {
     static unsigned hash(FlyString const& s) { return s.ascii_case_insensitive_hash(); }
-    static bool equals(FlyString const& a, FlyString const& b) { return a.bytes().data() == b.bytes().data() || a.bytes_as_string_view().equals_ignoring_ascii_case(b.bytes_as_string_view()); }
+    static bool equals(FlyString const& a, FlyString const& b) { return a.equals_ignoring_ascii_case(b); }
 };
 
 }

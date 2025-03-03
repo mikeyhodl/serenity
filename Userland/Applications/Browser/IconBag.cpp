@@ -11,6 +11,7 @@ ErrorOr<IconBag> IconBag::try_create()
 {
     IconBag icon_bag;
 
+    icon_bag.default_favicon = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-browser.png"sv));
     icon_bag.filetype_html = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-html.png"sv));
     icon_bag.filetype_text = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-text.png"sv));
     icon_bag.filetype_javascript = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-javascript.png"sv));
@@ -49,6 +50,7 @@ ErrorOr<IconBag> IconBag::try_create()
     icon_bag.mute = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/audio-volume-muted.png"sv));
     icon_bag.unmute = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/audio-volume-high.png"sv));
     icon_bag.search = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/find.png"sv));
+    icon_bag.task_manager = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/app-system-monitor.png"sv));
 
     return icon_bag;
 }

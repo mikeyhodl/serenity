@@ -1,10 +1,11 @@
 /*
- * Copyright (c) 2023, Kenneth Myhra <kennethmyhra@serenityos.org>
+ * Copyright (c) 2023-2024, Kenneth Myhra <kennethmyhra@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/TransformStreamDefaultControllerPrototype.h>
 #include <LibWeb/Streams/TransformStream.h>
 #include <LibWeb/Streams/TransformStreamDefaultController.h>
 
@@ -29,6 +30,8 @@ void TransformStreamDefaultController::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_stream);
+    visitor.visit(m_cancel_algorithm);
+    visitor.visit(m_finish_promise);
     visitor.visit(m_flush_algorithm);
     visitor.visit(m_transform_algorithm);
 }
@@ -55,21 +58,17 @@ WebIDL::ExceptionOr<void> TransformStreamDefaultController::enqueue(Optional<JS:
 }
 
 // https://streams.spec.whatwg.org/#ts-default-controller-error
-WebIDL::ExceptionOr<void> TransformStreamDefaultController::error(Optional<JS::Value> reason)
+void TransformStreamDefaultController::error(Optional<JS::Value> reason)
 {
     // 1. Perform ? TransformStreamDefaultControllerError(this, e).
-    TRY(transform_stream_default_controller_error(*this, reason.has_value() ? reason.value() : JS::js_undefined()));
-
-    return {};
+    transform_stream_default_controller_error(*this, reason.has_value() ? reason.value() : JS::js_undefined());
 }
 
 // https://streams.spec.whatwg.org/#ts-default-controller-terminate
-WebIDL::ExceptionOr<void> TransformStreamDefaultController::terminate()
+void TransformStreamDefaultController::terminate()
 {
     // 1. Perform ? TransformStreamDefaultControllerTerminate(this).
-    TRY(transform_stream_default_controller_terminate(*this));
-
-    return {};
+    transform_stream_default_controller_terminate(*this);
 }
 
 }

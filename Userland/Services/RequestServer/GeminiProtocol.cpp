@@ -17,7 +17,7 @@ GeminiProtocol::GeminiProtocol()
 {
 }
 
-OwnPtr<Request> GeminiProtocol::start_request(i32 request_id, ConnectionFromClient& client, ByteString const&, const URL::URL& url, HashMap<ByteString, ByteString> const&, ReadonlyBytes, Core::ProxyData proxy_data)
+OwnPtr<Request> GeminiProtocol::start_request(i32 request_id, ConnectionFromClient& client, ByteString const&, const URL::URL& url, HTTP::HeaderMap const&, ReadonlyBytes, Core::ProxyData proxy_data)
 {
     Gemini::GeminiRequest request;
     request.set_url(url);
@@ -32,7 +32,7 @@ OwnPtr<Request> GeminiProtocol::start_request(i32 request_id, ConnectionFromClie
     protocol_request->set_request_fd(pipe_result.value().read_fd);
 
     Core::EventLoop::current().deferred_invoke([=] {
-        ConnectionCache::get_or_create_connection(ConnectionCache::g_tls_connection_cache, url, job, proxy_data);
+        ConnectionCache::ensure_connection(ConnectionCache::g_tls_connection_cache, url, job, proxy_data);
     });
 
     return protocol_request;

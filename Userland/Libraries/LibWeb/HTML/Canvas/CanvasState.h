@@ -11,6 +11,7 @@
 #include <AK/Vector.h>
 #include <LibGfx/AffineTransform.h>
 #include <LibGfx/Color.h>
+#include <LibGfx/Font/Font.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/PathClipper.h>
 #include <LibWeb/Bindings/CanvasRenderingContext2DPrototype.h>
@@ -58,7 +59,7 @@ public:
         {
             return m_fill_or_stroke_style.visit(
                 [&](Gfx::Color color) -> JsFillOrStrokeStyle {
-                    return MUST(String::from_byte_string(color.to_byte_string()));
+                    return color.to_string(Gfx::Color::HTMLCompatibleSerialization::Yes);
                 },
                 [&](auto handle) -> JsFillOrStrokeStyle {
                     return handle;
@@ -76,11 +77,16 @@ public:
         FillOrStrokeStyle fill_style { Gfx::Color::Black };
         FillOrStrokeStyle stroke_style { Gfx::Color::Black };
         float line_width { 1 };
+        Bindings::CanvasLineCap line_cap { Bindings::CanvasLineCap::Butt };
+        Bindings::CanvasLineJoin line_join { Bindings::CanvasLineJoin::Miter };
+        float miter_limit { 10 };
+        Vector<double> dash_list;
+        float line_dash_offset { 0 };
         bool image_smoothing_enabled { true };
         Bindings::ImageSmoothingQuality image_smoothing_quality { Bindings::ImageSmoothingQuality::Low };
         float global_alpha = { 1 };
         Optional<Gfx::ClipPath> clip;
-        RefPtr<CSS::StyleValue> font_style_value { nullptr };
+        RefPtr<CSS::CSSStyleValue> font_style_value { nullptr };
         RefPtr<Gfx::Font const> current_font { nullptr };
         Bindings::CanvasTextAlign text_align { Bindings::CanvasTextAlign::Start };
         Bindings::CanvasTextBaseline text_baseline { Bindings::CanvasTextBaseline::Alphabetic };

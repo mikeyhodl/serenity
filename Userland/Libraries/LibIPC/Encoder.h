@@ -13,6 +13,7 @@
 #include <AK/Variant.h>
 #include <LibCore/SharedCircularQueue.h>
 #include <LibIPC/Concepts.h>
+#include <LibIPC/File.h>
 #include <LibIPC/Forward.h>
 #include <LibIPC/Message.h>
 #include <LibURL/Forward.h>
@@ -104,6 +105,9 @@ template<>
 ErrorOr<void> encode(Encoder&, URL::URL const&);
 
 template<>
+ErrorOr<void> encode(Encoder&, URL::Origin const&);
+
+template<>
 ErrorOr<void> encode(Encoder&, File const&);
 
 template<>
@@ -148,7 +152,8 @@ ErrorOr<void> encode(Encoder& encoder, T const& hashmap)
 template<Concepts::SharedSingleProducerCircularQueue T>
 ErrorOr<void> encode(Encoder& encoder, T const& queue)
 {
-    return encoder.encode(IPC::File { queue.fd() });
+    TRY(encoder.encode(TRY(IPC::File::clone_fd(queue.fd()))));
+    return {};
 }
 
 template<Concepts::Optional T>

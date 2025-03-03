@@ -3,7 +3,7 @@ set -e
 
 # Feature options
 
-LLVM_VERSION=${LLVM_VERSION:-16}
+LLVM_VERSION=${LLVM_VERSION:-18}
 ENABLE_LADYBIRD=${ENABLE_LADYBIRD:-true}
 ENABLE_SERENITY=${ENABLE_SERENITY:-true}
 
@@ -53,10 +53,10 @@ if [ "${LLVM_VERSION}" = "trunk" ]; then
     apt install -y llvm clang clangd clang-tools lld lldb clang-tidy clang-format
 elif [ "${MAJOR_VERSION}" -lt "${LLVM_VERSION}" ]; then
     FAILED_INSTALL=0
-    apt install -y "llvm-${LLVM_VERSION}" "clang-${LLVM_VERSION}" "clangd-${LLVM_VERSION}" "clang-tools-${LLVM_VERSION}" "lld-${LLVM_VERSION}" "lldb-${LLVM_VERSION}" "clang-tidy-${LLVM_VERSION}" "clang-format-${LLVM_VERSION}"  || FAILED_INSTALL=1
+    apt install -y "llvm-${LLVM_VERSION}" "clang-${LLVM_VERSION}" "clangd-${LLVM_VERSION}" "clang-tools-${LLVM_VERSION}" "lld-${LLVM_VERSION}" "lldb-${LLVM_VERSION}" "clang-tidy-${LLVM_VERSION}" "clang-format-${LLVM_VERSION}" "libclang-${LLVM_VERSION}-dev" || FAILED_INSTALL=1
 
     if [ "${FAILED_INSTALL}" -ne 0 ]; then
         install_llvm_key
-        apt install -y "llvm-${LLVM_VERSION}" "clang-${LLVM_VERSION}" "clangd-${LLVM_VERSION}" "clang-tools-${LLVM_VERSION}" "lld-${LLVM_VERSION}" "lldb-${LLVM_VERSION}" "clang-tidy-${LLVM_VERSION}" "clang-format-${LLVM_VERSION}"
+        apt install -y "llvm-${LLVM_VERSION}" "clang-${LLVM_VERSION}" "clangd-${LLVM_VERSION}" "clang-tools-${LLVM_VERSION}" "lld-${LLVM_VERSION}" "lldb-${LLVM_VERSION}" "clang-tidy-${LLVM_VERSION}" "clang-format-${LLVM_VERSION}" "libclang-${LLVM_VERSION}-dev"
     fi
 fi

@@ -39,10 +39,8 @@ void CustomElementRegistry::initialize(JS::Realm& realm)
 void CustomElementRegistry::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    for (auto& definition : m_custom_element_definitions)
-        visitor.visit(definition);
-    for (auto& [name, promise] : m_when_defined_promise_map)
-        visitor.visit(promise);
+    visitor.visit(m_custom_element_definitions);
+    visitor.visit(m_when_defined_promise_map);
 }
 
 // https://webidl.spec.whatwg.org/#es-callback-function
@@ -62,7 +60,7 @@ static JS::ThrowCompletionOr<Vector<String>> convert_value_to_sequence_of_string
 {
     // FIXME: De-duplicate this from the IDL generator.
     // An ECMAScript value V is converted to an IDL sequence<T> value as follows:
-    // 1. If Type(V) is not Object, throw a TypeError.
+    // 1. If V is not an Object, throw a TypeError.
     if (!value.is_object())
         return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObject, value.to_string_without_side_effects());
 
@@ -141,7 +139,7 @@ JS::ThrowCompletionOr<void> CustomElementRegistry::define(String const& name, We
     });
 
     if (existing_definition_with_constructor_iterator != m_custom_element_definitions.end())
-        return JS::throw_completion(WebIDL::NotSupportedError::create(realm, "The given constructor is already in use by another custom element"_fly_string));
+        return JS::throw_completion(WebIDL::NotSupportedError::create(realm, "The given constructor is already in use by another custom element"_string));
 
     // 5. Let localName be name.
     String local_name = name;
@@ -165,7 +163,7 @@ JS::ThrowCompletionOr<void> CustomElementRegistry::define(String const& name, We
 
     // 8. If this CustomElementRegistry's element definition is running flag is set, then throw a "NotSupportedError" DOMException.
     if (m_element_definition_is_running)
-        return JS::throw_completion(WebIDL::NotSupportedError::create(realm, "Cannot recursively define custom elements"_fly_string));
+        return JS::throw_completion(WebIDL::NotSupportedError::create(realm, "Cannot recursively define custom elements"_string));
 
     // 9. Set this CustomElementRegistry's element definition is running flag.
     m_element_definition_is_running = true;
@@ -190,7 +188,7 @@ JS::ThrowCompletionOr<void> CustomElementRegistry::define(String const& name, We
         // 1. Let prototype be ? Get(constructor, "prototype").
         auto prototype_value = TRY(constructor->callback->get(vm.names.prototype));
 
-        // 2. If Type(prototype) is not Object, then throw a TypeError exception.
+        // 2. If prototype is not an Object, then throw a TypeError exception.
         if (!prototype_value.is_object())
             return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObject, prototype_value.to_string_without_side_effects());
 
@@ -294,14 +292,14 @@ JS::ThrowCompletionOr<void> CustomElementRegistry::define(String const& name, We
 
     document.for_each_shadow_including_descendant([&](DOM::Node& inclusive_descendant) {
         if (!is<DOM::Element>(inclusive_descendant))
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
 
         auto& inclusive_descendant_element = static_cast<DOM::Element&>(inclusive_descendant);
 
         if (inclusive_descendant_element.namespace_uri() == Namespace::HTML && inclusive_descendant_element.local_name() == local_name && (!extends.has_value() || inclusive_descendant_element.is_value() == name))
             upgrade_candidates.append(JS::make_handle(inclusive_descendant_element));
 
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     // 19. For each element element in upgrade candidates, enqueue a custom element upgrade reaction given element and definition.
@@ -337,6 +335,21 @@ Variant<JS::Handle<WebIDL::CallbackType>, JS::Value> CustomElementRegistry::get(
 
     // 2. Otherwise, return undefined.
     return JS::js_undefined();
+}
+
+// https://html.spec.whatwg.org/multipage/custom-elements.html#dom-customelementregistry-getname
+Optional<String> CustomElementRegistry::get_name(JS::Handle<WebIDL::CallbackType> const& constructor) const
+{
+    // 1. If this CustomElementRegistry contains an entry with constructor constructor, then return that entry's name.
+    auto existing_definition_iterator = m_custom_element_definitions.find_if([&constructor](auto const& definition) {
+        return definition->constructor().callback == constructor.cell()->callback;
+    });
+
+    if (!existing_definition_iterator.is_end())
+        return (*existing_definition_iterator)->name();
+
+    // 2. Return null.
+    return {};
 }
 
 // https://html.spec.whatwg.org/multipage/custom-elements.html#dom-customelementregistry-whendefined
@@ -390,12 +403,12 @@ void CustomElementRegistry::upgrade(JS::NonnullGCPtr<DOM::Node> root) const
 
     root->for_each_shadow_including_inclusive_descendant([&](DOM::Node& inclusive_descendant) {
         if (!is<DOM::Element>(inclusive_descendant))
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
 
         auto& inclusive_descendant_element = static_cast<DOM::Element&>(inclusive_descendant);
         candidates.append(JS::make_handle(inclusive_descendant_element));
 
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     // 2. For each candidate of candidates, try to upgrade candidate.

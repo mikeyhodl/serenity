@@ -199,7 +199,7 @@ bool validate_elf_header(Elf_Ehdr const& elf_header, size_t file_size, bool verb
     return true;
 }
 
-ErrorOr<bool> validate_program_headers(Elf_Ehdr const& elf_header, size_t file_size, ReadonlyBytes buffer, StringBuilder* interpreter_path_builder, Optional<size_t>* requested_stack_size, bool verbose)
+bool validate_program_headers(Elf_Ehdr const& elf_header, size_t file_size, ReadonlyBytes buffer, Optional<Elf_Phdr>& interpreter_path_program_header, Optional<size_t>* requested_stack_size, bool verbose)
 {
     Checked<size_t> total_size_of_program_headers = elf_header.e_phnum;
     total_size_of_program_headers *= elf_header.e_phentsize;
@@ -250,9 +250,9 @@ ErrorOr<bool> validate_program_headers(Elf_Ehdr const& elf_header, size_t file_s
                 return false;
             }
 
-            if (program_header.p_type == PT_LOAD && program_header.p_align % (size_t)PAGE_SIZE != 0) {
+            if (program_header.p_type == PT_LOAD && program_header.p_align % (size_t)SERENITY_PAGE_SIZE != 0) {
                 if (verbose)
-                    dbgln("Program header ({}) with p_type PT_LOAD has p_align ({}) not divisible by page size ({})", header_index, program_header.p_align, PAGE_SIZE);
+                    dbgln("Program header ({}) with p_type PT_LOAD has p_align ({}) not divisible by page size ({})", header_index, program_header.p_align, SERENITY_PAGE_SIZE);
                 return false;
             }
 
@@ -271,9 +271,9 @@ ErrorOr<bool> validate_program_headers(Elf_Ehdr const& elf_header, size_t file_s
                     dbgln("Integer overflow while validating PT_INTERP header");
                 return false;
             }
-            if (program_header.p_offset + program_header.p_filesz > buffer.size()) {
+            if (program_header.p_offset + program_header.p_filesz > file_size) {
                 if (verbose)
-                    dbgln("Found PT_INTERP header ({}), but the .interp section was not within the buffer :(", header_index);
+                    dbgln("SHENANIGANS! PT_INTERP header segment leaks beyond end of file!");
                 return false;
             }
             if (program_header.p_filesz <= 1) {
@@ -281,8 +281,7 @@ ErrorOr<bool> validate_program_headers(Elf_Ehdr const& elf_header, size_t file_s
                     dbgln("Found PT_INTERP header ({}), but p_filesz is invalid ({})", header_index, program_header.p_filesz);
                 return false;
             }
-            if (interpreter_path_builder)
-                TRY(interpreter_path_builder->try_append({ buffer.offset(program_header.p_offset), static_cast<size_t>(program_header.p_filesz) - 1 }));
+            interpreter_path_program_header = program_header;
             break;
         case PT_LOAD:
         case PT_DYNAMIC:
@@ -323,7 +322,7 @@ ErrorOr<bool> validate_program_headers(Elf_Ehdr const& elf_header, size_t file_s
                     return false;
                 }
 
-                if (program_header.p_memsz % PAGE_SIZE != 0) {
+                if (program_header.p_memsz % SERENITY_PAGE_SIZE != 0) {
                     if (verbose)
                         dbgln("PT_GNU_STACK size is not page-aligned.");
                     return false;

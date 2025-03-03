@@ -15,7 +15,7 @@
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Page/Page.h>
-#include <LibWeb/Painting/CommandExecutorCPU.h>
+#include <LibWeb/Painting/DisplayListPlayerCPU.h>
 #include <LibWeb/Painting/PaintContext.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/SVG/SVGDecodedImageData.h>
@@ -24,39 +24,7 @@
 namespace Web::SVG {
 
 JS_DEFINE_ALLOCATOR(SVGDecodedImageData);
-
-class SVGDecodedImageData::SVGPageClient final : public PageClient {
-    JS_CELL(SVGDecodedImageData::SVGPageClient, PageClient);
-
-public:
-    static JS::NonnullGCPtr<SVGPageClient> create(JS::VM& vm, Page& page)
-    {
-        return vm.heap().allocate_without_realm<SVGPageClient>(page);
-    }
-
-    virtual ~SVGPageClient() override = default;
-
-    Page& m_host_page;
-    Page* m_svg_page { nullptr };
-
-    virtual Page& page() override { return *m_svg_page; }
-    virtual Page const& page() const override { return *m_svg_page; }
-    virtual bool is_connection_open() const override { return false; }
-    virtual Gfx::Palette palette() const override { return m_host_page.client().palette(); }
-    virtual DevicePixelRect screen_rect() const override { return {}; }
-    virtual double device_pixels_per_css_pixel() const override { return 1.0; }
-    virtual CSS::PreferredColorScheme preferred_color_scheme() const override { return m_host_page.client().preferred_color_scheme(); }
-    virtual void request_file(FileRequest) override { }
-    virtual void paint(DevicePixelRect const&, Gfx::Bitmap&, Web::PaintOptions = {}) override { }
-    virtual void schedule_repaint() override { }
-    virtual bool is_ready_to_paint() const override { return true; }
-
-private:
-    explicit SVGPageClient(Page& host_page)
-        : m_host_page(host_page)
-    {
-    }
-};
+JS_DEFINE_ALLOCATOR(SVGDecodedImageData::SVGPageClient);
 
 ErrorOr<JS::NonnullGCPtr<SVGDecodedImageData>> SVGDecodedImageData::create(JS::Realm& realm, JS::NonnullGCPtr<Page> host_page, URL::URL const& url, ByteBuffer data)
 {
@@ -67,26 +35,19 @@ ErrorOr<JS::NonnullGCPtr<SVGDecodedImageData>> SVGDecodedImageData::create(JS::R
     JS::NonnullGCPtr<HTML::Navigable> navigable = page->top_level_traversable();
     auto response = Fetch::Infrastructure::Response::create(navigable->vm());
     response->url_list().append(url);
-    HTML::NavigationParams navigation_params {
-        .id = {},
-        .navigable = navigable,
-        .request = nullptr,
-        .response = response,
-        .fetch_controller = nullptr,
-        .commit_early_hints = nullptr,
-        .coop_enforcement_result = HTML::CrossOriginOpenerPolicyEnforcementResult {},
-        .reserved_environment = {},
-        .origin = HTML::Origin {},
-        .policy_container = HTML::PolicyContainer {},
-        .final_sandboxing_flag_set = HTML::SandboxingFlagSet {},
-        .cross_origin_opener_policy = HTML::CrossOriginOpenerPolicy {},
-        .about_base_url = {},
-    };
+    auto navigation_params = navigable->heap().allocate_without_realm<HTML::NavigationParams>();
+    navigation_params->navigable = navigable;
+    navigation_params->response = response;
+    navigation_params->origin = URL::Origin {};
+    navigation_params->policy_container = HTML::PolicyContainer {};
+    navigation_params->final_sandboxing_flag_set = HTML::SandboxingFlagSet {};
+    navigation_params->opener_policy = HTML::OpenerPolicy {};
+
     // FIXME: Use Navigable::navigate() instead of manually replacing the navigable's document.
     auto document = DOM::Document::create_and_initialize(DOM::Document::Type::HTML, "text/html"_string, navigation_params).release_value_but_fixme_should_propagate_errors();
     navigable->set_ongoing_navigation({});
     navigable->active_document()->destroy();
-    navigable->active_session_history_entry()->document_state->set_document(document);
+    navigable->active_session_history_entry()->document_state()->set_document(document);
 
     auto parser = HTML::HTMLParser::create_with_uncertain_encoding(document, data);
     parser->run(document->url());
@@ -128,17 +89,26 @@ RefPtr<Gfx::Bitmap> SVGDecodedImageData::render(Gfx::IntSize size) const
 {
     auto bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, size).release_value_but_fixme_should_propagate_errors();
     VERIFY(m_document->navigable());
-    m_document->navigable()->set_viewport_rect({ 0, 0, size.width(), size.height() });
+    m_document->navigable()->set_viewport_size(size.to_type<CSSPixels>());
     m_document->update_layout();
 
-    Painting::CommandList painting_commands;
-    Painting::RecordingPainter recording_painter(painting_commands);
-    PaintContext context(recording_painter, m_page_client->palette(), m_page_client->device_pixels_per_css_pixel());
+    Painting::DisplayList display_list;
+    Painting::DisplayListRecorder display_list_recorder(display_list);
 
-    m_document->paintable()->paint_all_phases(context);
+    m_document->navigable()->record_display_list(display_list_recorder, {});
 
-    Painting::CommandExecutorCPU executor { *bitmap };
-    painting_commands.execute(executor);
+    auto painting_command_executor_type = m_page_client->display_list_player_type();
+    switch (painting_command_executor_type) {
+    case DisplayListPlayerType::CPU:
+    case DisplayListPlayerType::CPUWithExperimentalTransformSupport:
+    case DisplayListPlayerType::GPU: { // GPU painter does not have any path rasterization support so we always fall back to CPU painter
+        Painting::DisplayListPlayerCPU executor { *bitmap };
+        display_list.execute(executor);
+        break;
+    }
+    default:
+        VERIFY_NOT_REACHED();
+    }
 
     return bitmap;
 }
@@ -196,10 +166,26 @@ Optional<CSSPixelFraction> SVGDecodedImageData::intrinsic_aspect_ratio() const
     if (width.has_value() && height.has_value())
         return *width / *height;
 
-    if (auto const& viewbox = m_root_element->view_box(); viewbox.has_value())
-        return CSSPixels::nearest_value_for(viewbox->width) / CSSPixels::nearest_value_for(viewbox->height);
+    if (auto const& viewbox = m_root_element->view_box(); viewbox.has_value()) {
+        auto viewbox_width = CSSPixels::nearest_value_for(viewbox->width);
 
+        if (viewbox_width == 0)
+            return {};
+
+        auto viewbox_height = CSSPixels::nearest_value_for(viewbox->height);
+        if (viewbox_height == 0)
+            return {};
+
+        return viewbox_width / viewbox_height;
+    }
     return {};
+}
+
+void SVGDecodedImageData::SVGPageClient::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_host_page);
+    visitor.visit(m_svg_page);
 }
 
 }

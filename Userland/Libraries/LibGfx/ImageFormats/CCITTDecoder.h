@@ -26,6 +26,11 @@ namespace Gfx::CCITT {
 // Section 10: Modified Huffman Compression
 ErrorOr<ByteBuffer> decode_ccitt_rle(ReadonlyBytes bytes, u32 image_width, u32 image_height);
 
+enum class EncodedByteAligned : u8 {
+    No = 0,
+    Yes = 1,
+};
+
 // While this is named for a CCITT context, this struct holds data like TIFF's T4Options tag
 struct Group3Options {
     enum class Mode : u8 {
@@ -49,11 +54,6 @@ struct Group3Options {
         Yes = 1,
     };
 
-    enum class EncodedByteAligned : u8 {
-        No = 0,
-        Yes = 1,
-    };
-
     Mode dimensions = Mode::OneDimension;
     Compression compression = Compression::Compressed;
     UseFillBits use_fill_bits = UseFillBits::No;
@@ -65,6 +65,16 @@ struct Group3Options {
 
 ErrorOr<ByteBuffer> decode_ccitt_group3(ReadonlyBytes bytes, u32 image_width, u32 image_height, Group3Options const& options);
 
-ErrorOr<ByteBuffer> decode_ccitt_group4(ReadonlyBytes bytes, u32 image_width, u32 image_height);
+struct Group4Options {
+    enum class HasEndOfBlock : u8 {
+        No = 0,
+        Yes = 1,
+    };
+
+    HasEndOfBlock has_end_of_block = HasEndOfBlock::No;
+    EncodedByteAligned encoded_byte_aligned = EncodedByteAligned::No;
+};
+
+ErrorOr<ByteBuffer> decode_ccitt_group4(ReadonlyBytes bytes, u32 image_width, u32 image_height, Group4Options const& = {});
 
 }

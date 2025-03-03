@@ -55,10 +55,52 @@ public:
     Gfx::IntSize visible_size() const { return m_visible_size; }
     void set_visible_size(Gfx::IntSize visible_size) { m_visible_size = visible_size; }
 
+    [[nodiscard]] bool is_volatile() const { return m_volatile; }
+
+    void set_volatile()
+    {
+        if (m_volatile)
+            return;
+#ifdef AK_OS_SERENITY
+        int rc = madvise(m_bitmap->scanline_u8(0), m_bitmap->data_size(), MADV_SET_VOLATILE);
+        if (rc < 0) {
+            perror("madvise(MADV_SET_VOLATILE)");
+            VERIFY_NOT_REACHED();
+        }
+#endif
+        m_volatile = true;
+    }
+
+    // Returns true if making the bitmap non-volatile succeeded. `was_purged` indicates status of contents.
+    // Returns false if there was not enough memory.
+    [[nodiscard]] bool set_nonvolatile(bool& was_purged)
+    {
+        if (!m_volatile) {
+            was_purged = false;
+            return true;
+        }
+
+#ifdef AK_OS_SERENITY
+        int rc = madvise(m_bitmap->scanline_u8(0), m_bitmap->data_size(), MADV_SET_NONVOLATILE);
+        if (rc < 0) {
+            if (errno == ENOMEM) {
+                was_purged = true;
+                return false;
+            }
+            perror("madvise(MADV_SET_NONVOLATILE)");
+            VERIFY_NOT_REACHED();
+        }
+        was_purged = rc != 0;
+#endif
+        m_volatile = false;
+        return true;
+    }
+
 private:
     NonnullRefPtr<Gfx::Bitmap> m_bitmap;
-    const i32 m_serial;
+    i32 const m_serial;
     Gfx::IntSize m_visible_size;
+    bool m_volatile { false };
 };
 
 static NeverDestroyed<HashTable<Window*>> all_windows;
@@ -390,7 +432,7 @@ void Window::handle_drop_event(DropEvent& event)
     if (!m_main_widget)
         return;
     auto result = m_main_widget->hit_test(event.position());
-    auto local_event = make<DropEvent>(result.local_position, event.text(), event.mime_data());
+    auto local_event = make<DropEvent>(Event::Type::Drop, result.local_position, event.button(), event.buttons(), event.modifiers(), event.text(), event.mime_data());
     VERIFY(result.widget);
     result.widget->dispatch_event(*local_event, this);
 
@@ -465,7 +507,7 @@ void Window::handle_multi_paint_event(MultiPaintEvent& event)
         created_new_backing_store = true;
     } else if (m_double_buffering_enabled) {
         bool was_purged = false;
-        bool bitmap_has_memory = m_back_store->bitmap().set_nonvolatile(was_purged);
+        bool bitmap_has_memory = m_back_store->set_nonvolatile(was_purged);
         if (!bitmap_has_memory) {
             // We didn't have enough memory to make the bitmap non-volatile!
             // Fall back to single-buffered mode for this window.
@@ -724,14 +766,14 @@ void Window::handle_drag_move_event(DragEvent& event)
     auto result = m_main_widget->hit_test(event.position());
     VERIFY(result.widget);
 
-    Application::the()->set_drag_hovered_widget({}, result.widget, result.local_position, event.mime_types());
+    Application::the()->set_drag_hovered_widget({}, result.widget, result.local_position, event);
 
     // NOTE: Setting the drag hovered widget may have executed arbitrary code, so re-check that the widget is still there.
     if (!result.widget)
         return;
 
     if (result.widget->has_pending_drop()) {
-        DragEvent drag_move_event(static_cast<Event::Type>(event.type()), result.local_position, event.mime_types());
+        DragEvent drag_move_event(static_cast<Event::Type>(event.type()), result.local_position, event.button(), event.buttons(), event.modifiers(), event.text(), event.mime_data());
         result.widget->dispatch_event(drag_move_event, this);
     }
 }
@@ -983,7 +1025,7 @@ void Window::set_current_backing_store(WindowBackingStore& backing_store, bool f
         m_window_id,
         32,
         bitmap.pitch(),
-        bitmap.anonymous_buffer().fd(),
+        MUST(IPC::File::clone_fd(bitmap.anonymous_buffer().fd())),
         backing_store.serial(),
         bitmap.has_alpha_channel(),
         bitmap.size(),
@@ -1000,7 +1042,7 @@ void Window::flip(Vector<Gfx::IntRect, 32> const& dirty_rects)
     if (!m_back_store || m_back_store->size() != m_front_store->size()) {
         m_back_store = create_backing_store(m_front_store->size()).release_value_but_fixme_should_propagate_errors();
         memcpy(m_back_store->bitmap().scanline(0), m_front_store->bitmap().scanline(0), m_front_store->bitmap().size_in_bytes());
-        m_back_store->bitmap().set_volatile();
+        m_back_store->set_volatile();
         return;
     }
 
@@ -1009,7 +1051,7 @@ void Window::flip(Vector<Gfx::IntRect, 32> const& dirty_rects)
     for (auto& dirty_rect : dirty_rects)
         painter.blit(dirty_rect.location(), m_front_store->bitmap(), dirty_rect, 1.0f, false);
 
-    m_back_store->bitmap().set_volatile();
+    m_back_store->set_volatile();
 }
 
 ErrorOr<NonnullOwnPtr<WindowBackingStore>> Window::create_backing_store(Gfx::IntSize size)
@@ -1246,10 +1288,10 @@ void Window::notify_state_changed(Badge<ConnectionToWindowServer>, bool minimize
     if (!store)
         return;
     if (minimized || occluded) {
-        store->bitmap().set_volatile();
+        store->set_volatile();
     } else {
         bool was_purged = false;
-        bool bitmap_has_memory = store->bitmap().set_nonvolatile(was_purged);
+        bool bitmap_has_memory = store->set_nonvolatile(was_purged);
         if (!bitmap_has_memory) {
             // Not enough memory to make the bitmap non-volatile. Lose the bitmap and schedule an update.
             // Let the paint system figure out what to do.

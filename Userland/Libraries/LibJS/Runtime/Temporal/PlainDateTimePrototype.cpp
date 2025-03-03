@@ -38,6 +38,7 @@ void PlainDateTimePrototype::initialize(Realm& realm)
     define_direct_property(vm.well_known_symbol_to_string_tag(), PrimitiveString::create(vm, "Temporal.PlainDateTime"_string), Attribute::Configurable);
 
     define_native_accessor(realm, vm.names.calendar, calendar_getter, {}, Attribute::Configurable);
+    define_native_accessor(realm, vm.names.calendarId, calendar_id_getter, {}, Attribute::Configurable);
     define_native_accessor(realm, vm.names.year, year_getter, {}, Attribute::Configurable);
     define_native_accessor(realm, vm.names.month, month_getter, {}, Attribute::Configurable);
     define_native_accessor(realm, vm.names.monthCode, month_code_getter, {}, Attribute::Configurable);
@@ -570,13 +571,31 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::round)
     // 7. Let roundingMode be ? ToTemporalRoundingMode(roundTo, "halfExpand").
     auto rounding_mode = TRY(to_temporal_rounding_mode(vm, *round_to, "halfExpand"sv));
 
-    // 8. Let roundingIncrement be ? ToTemporalDateTimeRoundingIncrement(roundTo, smallestUnit).
-    auto rounding_increment = TRY(to_temporal_date_time_rounding_increment(vm, *round_to, *smallest_unit));
+    // 8. If smallestUnit is "day", then
+    Optional<u16> maximum;
+    if (smallest_unit == "day"sv) {
+        // a. Let maximum be 1.
+        maximum = 1;
+    }
+    // 9. Else
+    else {
+        // a. Let maximum be ! MaximumTemporalDurationRoundingIncrement(smallestUnit)
+        maximum = maximum_temporal_duration_rounding_increment(*smallest_unit);
 
-    // 9. Let result be ! RoundISODateTime(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]], roundingIncrement, smallestUnit, roundingMode).
+        // b. Assert: maximum is not undefined
+        VERIFY(maximum.has_value());
+    }
+
+    // 10. Let roundingIncrement be ? ToTemporalDateTimeRoundingIncrement(roundTo).
+    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *round_to));
+
+    // 11. Perform ? ValidateTemporalRoundingIncrement(roundingIncrement, maximum, false).
+    TRY(validate_temporal_rounding_increment(vm, rounding_increment, *maximum, false));
+
+    // 12. Let result be ! RoundISODateTime(dateTime.[[ISOYear]], dateTime.[[ISOMonth]], dateTime.[[ISODay]], dateTime.[[ISOHour]], dateTime.[[ISOMinute]], dateTime.[[ISOSecond]], dateTime.[[ISOMillisecond]], dateTime.[[ISOMicrosecond]], dateTime.[[ISONanosecond]], roundingIncrement, smallestUnit, roundingMode).
     auto result = round_iso_date_time(date_time->iso_year(), date_time->iso_month(), date_time->iso_day(), date_time->iso_hour(), date_time->iso_minute(), date_time->iso_second(), date_time->iso_millisecond(), date_time->iso_microsecond(), date_time->iso_nanosecond(), rounding_increment, *smallest_unit, rounding_mode);
 
-    // 10. Return ? CreateTemporalDateTime(result.[[Year]], result.[[Month]], result.[[Day]], result.[[Hour]], result.[[Minute]], result.[[Second]], result.[[Millisecond]], result.[[Microsecond]], result.[[Nanosecond]], dateTime.[[Calendar]]).
+    // 13. Return ? CreateTemporalDateTime(result.[[Year]], result.[[Month]], result.[[Day]], result.[[Hour]], result.[[Minute]], result.[[Second]], result.[[Millisecond]], result.[[Microsecond]], result.[[Nanosecond]], dateTime.[[Calendar]]).
     return TRY(create_temporal_date_time(vm, result.year, result.month, result.day, result.hour, result.minute, result.second, result.millisecond, result.microsecond, result.nanosecond, date_time->calendar()));
 }
 
@@ -611,8 +630,8 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::to_string)
     // 3. Set options to ? GetOptionsObject(options).
     auto* options = TRY(get_options_object(vm, vm.argument(0)));
 
-    // 4. Let precision be ? ToSecondsStringPrecision(options).
-    auto precision = TRY(to_seconds_string_precision(vm, *options));
+    // 4. Let precision be ? ToSecondsStringPrecisionRecord(options).
+    auto precision = TRY(to_seconds_string_precision_record(vm, *options));
 
     // 5. Let roundingMode be ? ToTemporalRoundingMode(options, "trunc").
     auto rounding_mode = TRY(to_temporal_rounding_mode(vm, *options, "trunc"sv));
@@ -786,6 +805,18 @@ JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::get_iso_fields)
 
     // 14. Return fields.
     return fields;
+}
+
+// 5.3.3 get Temporal.PlainDateTime.prototype.calendarId, https://tc39.es/proposal-temporal/#sec-get-temporal.plaindatetime.prototype.calendarid
+JS_DEFINE_NATIVE_FUNCTION(PlainDateTimePrototype::calendar_id_getter)
+{
+    // 1. Let dateTime be the this value.
+    // 2. Perform ? RequireInternalSlot(dateTime, [[InitializedTemporalDateTime]]).
+    auto temporal_date = TRY(typed_this_object(vm));
+
+    // 3. Return dateTime.[[Calendar]].
+    auto& calendar = static_cast<Calendar&>(temporal_date->calendar());
+    return PrimitiveString::create(vm, calendar.identifier());
 }
 
 }

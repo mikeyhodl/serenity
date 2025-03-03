@@ -63,7 +63,7 @@ ModelIndex Model::index(int row, int column, ModelIndex const&) const
     return create_index(row, column);
 }
 
-bool Model::accepts_drag(ModelIndex const&, Vector<String> const&) const
+bool Model::accepts_drag(ModelIndex const&, Core::MimeData const&) const
 {
     return false;
 }
@@ -437,13 +437,13 @@ void Model::handle_move(Operation const& operation)
     auto replace_handle = [&](ModelIndex const& current_index, int new_dimension, bool relative) {
         int new_row = is_row
             ? (relative
-                    ? current_index.row() + new_dimension
-                    : new_dimension)
+                      ? current_index.row() + new_dimension
+                      : new_dimension)
             : current_index.row();
         int new_column = !is_row
             ? (relative
-                    ? current_index.column() + new_dimension
-                    : new_dimension)
+                      ? current_index.column() + new_dimension
+                      : new_dimension)
             : current_index.column();
         auto new_index = index(new_row, new_column, operation.target_parent);
 

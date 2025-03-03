@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ByteReader.h>
 #include <AK/MemoryStream.h>
 #include <LibCore/Socket.h>
 #include <LibCore/System.h>
@@ -19,6 +20,7 @@
 #include <LibWeb/HTML/MessageEvent.h>
 #include <LibWeb/HTML/MessagePort.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+#include <LibWeb/HTML/StructuredSerializeOptions.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 
 namespace Web::HTML {
@@ -26,6 +28,12 @@ namespace Web::HTML {
 constexpr u8 IPC_FILE_TAG = 0xA5;
 
 JS_DEFINE_ALLOCATOR(MessagePort);
+
+static HashTable<JS::RawGCPtr<MessagePort>>& all_message_ports()
+{
+    static HashTable<JS::RawGCPtr<MessagePort>> ports;
+    return ports;
+}
 
 JS::NonnullGCPtr<MessagePort> MessagePort::create(JS::Realm& realm)
 {
@@ -35,11 +43,19 @@ JS::NonnullGCPtr<MessagePort> MessagePort::create(JS::Realm& realm)
 MessagePort::MessagePort(JS::Realm& realm)
     : DOM::EventTarget(realm)
 {
+    all_message_ports().set(this);
 }
 
 MessagePort::~MessagePort()
 {
+    all_message_ports().remove(this);
     disentangle();
+}
+
+void MessagePort::for_each_message_port(Function<void(MessagePort&)> callback)
+{
+    for (auto port : all_message_ports())
+        callback(*port);
 }
 
 void MessagePort::initialize(JS::Realm& realm)
@@ -52,6 +68,7 @@ void MessagePort::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_remote_port);
+    visitor.visit(m_worker_event_target);
 }
 
 void MessagePort::set_worker_event_target(JS::NonnullGCPtr<DOM::EventTarget> target)
@@ -76,12 +93,7 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_steps(HTML::TransferDataHolder& 
         // 2. Set dataHolder.[[RemotePort]] to remotePort.
         auto fd = MUST(m_socket->release_fd());
         m_socket = nullptr;
-        data_holder.fds.append(fd);
-        data_holder.data.append(IPC_FILE_TAG);
-
-        auto fd_passing_socket = MUST(m_fd_passing_socket->release_fd());
-        m_fd_passing_socket = nullptr;
-        data_holder.fds.append(fd_passing_socket);
+        data_holder.fds.append(IPC::File::adopt_fd(fd));
         data_holder.data.append(IPC_FILE_TAG);
     }
 
@@ -107,12 +119,7 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(HTML::TransferDa
     auto fd_tag = data_holder.data.take_first();
     if (fd_tag == IPC_FILE_TAG) {
         auto fd = data_holder.fds.take_first();
-        m_socket = MUST(Core::LocalSocket::adopt_fd(fd.take_fd(), Core::LocalSocket::PreventSIGPIPE::Yes));
-
-        fd_tag = data_holder.data.take_first();
-        VERIFY(fd_tag == IPC_FILE_TAG);
-        fd = data_holder.fds.take_first();
-        m_fd_passing_socket = MUST(Core::LocalSocket::adopt_fd(fd.take_fd(), Core::LocalSocket::PreventSIGPIPE::Yes));
+        m_socket = MUST(Core::LocalSocket::adopt_fd(fd.take_fd()));
 
         m_socket->on_ready_to_read = [strong_this = JS::make_handle(this)]() {
             strong_this->read_from_socket();
@@ -132,7 +139,8 @@ void MessagePort::disentangle()
     m_remote_port = nullptr;
 
     m_socket = nullptr;
-    m_fd_passing_socket = nullptr;
+
+    m_worker_event_target = nullptr;
 }
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#entangle
@@ -155,10 +163,10 @@ void MessagePort::entangle_with(MessagePort& remote_port)
     auto create_paired_sockets = []() -> Array<NonnullOwnPtr<Core::LocalSocket>, 2> {
         int fds[2] = {};
         MUST(Core::System::socketpair(AF_LOCAL, SOCK_STREAM, 0, fds));
-        auto socket0 = MUST(Core::LocalSocket::adopt_fd(fds[0], Core::LocalSocket::PreventSIGPIPE::Yes));
+        auto socket0 = MUST(Core::LocalSocket::adopt_fd(fds[0]));
         MUST(socket0->set_blocking(false));
         MUST(socket0->set_close_on_exec(true));
-        auto socket1 = MUST(Core::LocalSocket::adopt_fd(fds[1], Core::LocalSocket::PreventSIGPIPE::Yes));
+        auto socket1 = MUST(Core::LocalSocket::adopt_fd(fds[1]));
         MUST(socket1->set_blocking(false));
         MUST(socket1->set_close_on_exec(true));
 
@@ -176,10 +184,6 @@ void MessagePort::entangle_with(MessagePort& remote_port)
     m_remote_port->m_socket->on_ready_to_read = [remote_port = JS::make_handle(m_remote_port)]() {
         remote_port->read_from_socket();
     };
-
-    auto fd_sockets = create_paired_sockets();
-    m_fd_passing_socket = move(fd_sockets[0]);
-    m_remote_port->m_fd_passing_socket = move(fd_sockets[1]);
 }
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-postmessage-options
@@ -217,7 +221,7 @@ WebIDL::ExceptionOr<void> MessagePort::message_port_post_message_steps(JS::GCPtr
     // 2. If transfer contains this MessagePort, then throw a "DataCloneError" DOMException.
     for (auto const& handle : transfer) {
         if (handle == this)
-            return WebIDL::DataCloneError::create(realm, "Cannot transfer a MessagePort to itself"_fly_string);
+            return WebIDL::DataCloneError::create(realm, "Cannot transfer a MessagePort to itself"_string);
     }
 
     // 3. Let doomed be false.
@@ -255,58 +259,93 @@ ErrorOr<void> MessagePort::send_message_on_socket(SerializedTransferRecord const
     IPC::Encoder encoder(buffer);
     MUST(encoder.encode(serialize_with_transfer_result));
 
-    TRY(buffer.transfer_message(*m_fd_passing_socket, *m_socket));
+    TRY(buffer.transfer_message(*m_socket));
     return {};
 }
 
 void MessagePort::post_port_message(SerializedTransferRecord serialize_with_transfer_result)
 {
     // FIXME: Use the correct task source?
-    queue_global_task(Task::Source::PostedMessage, relevant_global_object(*this), [this, serialize_with_transfer_result = move(serialize_with_transfer_result)]() mutable {
+    queue_global_task(Task::Source::PostedMessage, relevant_global_object(*this), JS::create_heap_function(heap(), [this, serialize_with_transfer_result = move(serialize_with_transfer_result)]() mutable {
         if (!m_socket || !m_socket->is_open())
             return;
         if (auto result = send_message_on_socket(serialize_with_transfer_result); result.is_error()) {
             dbgln("Failed to post message: {}", result.error());
             disentangle();
         }
-    });
+    }));
 }
 
-void MessagePort::read_from_socket()
+ErrorOr<MessagePort::ParseDecision> MessagePort::parse_message()
 {
-    auto num_bytes_ready = MUST(m_socket->pending_bytes());
+    static constexpr size_t HEADER_SIZE = sizeof(u32);
+
+    auto num_bytes_ready = m_buffered_data.size();
     switch (m_socket_state) {
     case SocketState::Header: {
-        if (num_bytes_ready < sizeof(u32))
-            break;
-        m_socket_incoming_message_size = MUST(m_socket->read_value<u32>());
-        num_bytes_ready -= sizeof(u32);
+        if (num_bytes_ready < HEADER_SIZE)
+            return ParseDecision::NotEnoughData;
+
+        m_socket_incoming_message_size = ByteReader::load32(m_buffered_data.data());
+        // NOTE: We don't decrement the number of ready bytes because we want to remove the entire
+        //       message + header from the buffer in one go on success
         m_socket_state = SocketState::Data;
-    }
         [[fallthrough]];
+    }
     case SocketState::Data: {
-        if (num_bytes_ready < m_socket_incoming_message_size)
-            break;
+        if (num_bytes_ready < HEADER_SIZE + m_socket_incoming_message_size)
+            return ParseDecision::NotEnoughData;
 
-        Vector<u8, 1024> data;
-        data.resize(m_socket_incoming_message_size, true);
-        MUST(m_socket->read_until_filled(data));
+        auto payload = m_buffered_data.span().slice(HEADER_SIZE, m_socket_incoming_message_size);
 
-        FixedMemoryStream stream { data, FixedMemoryStream::Mode::ReadOnly };
-        IPC::Decoder decoder(stream, *m_fd_passing_socket);
+        FixedMemoryStream stream { payload, FixedMemoryStream::Mode::ReadOnly };
+        IPC::Decoder decoder { stream, m_unprocessed_fds };
 
-        auto serialize_with_transfer_result = MUST(decoder.decode<SerializedTransferRecord>());
+        auto serialized_transfer_record = TRY(decoder.decode<SerializedTransferRecord>());
 
         // Make sure to advance our state machine before dispatching the MessageEvent,
         // as dispatching events can run arbitrary JS (and cause us to receive another message!)
         m_socket_state = SocketState::Header;
 
-        post_message_task_steps(serialize_with_transfer_result);
+        m_buffered_data.remove(0, HEADER_SIZE + m_socket_incoming_message_size);
+
+        post_message_task_steps(serialized_transfer_record);
+
         break;
     }
     case SocketState::Error:
-        VERIFY_NOT_REACHED();
-        break;
+        return Error::from_errno(ENOMSG);
+    }
+
+    return ParseDecision::ParseNextMessage;
+}
+
+void MessagePort::read_from_socket()
+{
+    u8 buffer[4096] {};
+
+    Vector<int> fds;
+    // FIXME: What if pending bytes is > 4096? Should we loop here?
+    auto maybe_bytes = m_socket->receive_message(buffer, MSG_NOSIGNAL, fds);
+    if (maybe_bytes.is_error()) {
+        dbgln("MessagePort::read_from_socket(): Failed to receive message: {}", maybe_bytes.error());
+        return;
+    }
+    auto bytes = maybe_bytes.release_value();
+
+    m_buffered_data.append(bytes.data(), bytes.size());
+
+    for (auto fd : fds)
+        m_unprocessed_fds.enqueue(IPC::File::adopt_fd(fd));
+
+    while (true) {
+        auto parse_decision_or_error = parse_message();
+        if (parse_decision_or_error.is_error()) {
+            dbgln("MessagePort::read_from_socket(): Failed to parse message: {}", parse_decision_or_error.error());
+            return;
+        }
+        if (parse_decision_or_error.value() == ParseDecision::NotEnoughData)
+            break;
     }
 }
 
@@ -347,10 +386,10 @@ void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_wi
 
     // 5. Let newPorts be a new frozen array consisting of all MessagePort objects in deserializeRecord.[[TransferredValues]], if any, maintaining their relative order.
     // FIXME: Use a FrozenArray
-    Vector<JS::Handle<JS::Object>> new_ports;
+    Vector<JS::Handle<MessagePort>> new_ports;
     for (auto const& object : deserialize_record.transferred_values) {
         if (is<HTML::MessagePort>(*object)) {
-            new_ports.append(object);
+            new_ports.append(verify_cast<MessagePort>(*object));
         }
     }
 
@@ -358,7 +397,9 @@ void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_wi
     MessageEventInit event_init {};
     event_init.data = message_clone;
     event_init.ports = move(new_ports);
-    message_event_target->dispatch_event(MessageEvent::create(target_realm, HTML::EventNames::message, event_init));
+    auto event = MessageEvent::create(target_realm, HTML::EventNames::message, event_init);
+    event->set_is_trusted(true);
+    message_event_target->dispatch_event(event);
 }
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-start
@@ -368,7 +409,6 @@ void MessagePort::start()
         return;
 
     VERIFY(m_socket);
-    VERIFY(m_fd_passing_socket);
 
     // TODO: The start() method steps are to enable this's port message queue, if it is not already enabled.
 }

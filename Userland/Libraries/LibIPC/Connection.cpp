@@ -7,6 +7,7 @@
 
 #include <LibCore/System.h>
 #include <LibIPC/Connection.h>
+#include <LibIPC/File.h>
 #include <LibIPC/Stub.h>
 #include <sys/select.h>
 
@@ -27,7 +28,7 @@ ConnectionBase::ConnectionBase(IPC::Stub& local_stub, NonnullOwnPtr<Core::LocalS
     , m_local_endpoint_magic(local_endpoint_magic)
     , m_deferred_invoker(make<CoreEventLoopDeferredInvoker>())
 {
-    m_responsiveness_timer = Core::Timer::create_single_shot(3000, [this] { may_have_become_unresponsive(); }).release_value_but_fixme_should_propagate_errors();
+    m_responsiveness_timer = Core::Timer::create_single_shot(3000, [this] { may_have_become_unresponsive(); });
 }
 
 void ConnectionBase::set_deferred_invoker(NonnullOwnPtr<DeferredInvoker> deferred_invoker)
@@ -35,31 +36,19 @@ void ConnectionBase::set_deferred_invoker(NonnullOwnPtr<DeferredInvoker> deferre
     m_deferred_invoker = move(deferred_invoker);
 }
 
-void ConnectionBase::set_fd_passing_socket(NonnullOwnPtr<Core::LocalSocket> socket)
+ErrorOr<void> ConnectionBase::post_message(Message const& message, MessageKind kind)
 {
-    m_fd_passing_socket = move(socket);
+    return post_message(TRY(message.encode()), kind);
 }
 
-Core::LocalSocket& ConnectionBase::fd_passing_socket()
-{
-    if (m_fd_passing_socket)
-        return *m_fd_passing_socket;
-    return *m_socket;
-}
-
-ErrorOr<void> ConnectionBase::post_message(Message const& message)
-{
-    return post_message(TRY(message.encode()));
-}
-
-ErrorOr<void> ConnectionBase::post_message(MessageBuffer buffer)
+ErrorOr<void> ConnectionBase::post_message(MessageBuffer buffer, MessageKind kind)
 {
     // NOTE: If this connection is being shut down, but has not yet been destroyed,
     //       the socket will be closed. Don't try to send more messages.
     if (!m_socket->is_open())
         return Error::from_string_literal("Trying to post_message during IPC shutdown");
 
-    if (auto result = buffer.transfer_message(fd_passing_socket(), *m_socket); result.is_error()) {
+    if (auto result = buffer.transfer_message(*m_socket, kind == MessageKind::Sync); result.is_error()) {
         shutdown_with_error(result.error());
         return result.release_error();
     }
@@ -92,7 +81,7 @@ void ConnectionBase::handle_messages()
             }
 
             if (auto response = handler_result.release_value()) {
-                if (auto post_result = post_message(*response); post_result.is_error()) {
+                if (auto post_result = post_message(*response, MessageKind::Async); post_result.is_error()) {
                     dbgln("IPC::ConnectionBase::handle_messages: {}", post_result.error());
                 }
             }
@@ -122,6 +111,7 @@ ErrorOr<Vector<u8>> ConnectionBase::read_as_much_as_possible_from_socket_without
     }
 
     u8 buffer[4096];
+    Vector<int> received_fds;
 
     bool should_shut_down = false;
     auto schedule_shutdown = [this, &should_shut_down]() {
@@ -132,7 +122,7 @@ ErrorOr<Vector<u8>> ConnectionBase::read_as_much_as_possible_from_socket_without
     };
 
     while (m_socket->is_open()) {
-        auto maybe_bytes_read = m_socket->read_without_waiting({ buffer, 4096 });
+        auto maybe_bytes_read = m_socket->receive_message({ buffer, 4096 }, MSG_DONTWAIT, received_fds);
         if (maybe_bytes_read.is_error()) {
             auto error = maybe_bytes_read.release_error();
             if (error.is_syscall() && error.code() == EAGAIN) {
@@ -156,6 +146,8 @@ ErrorOr<Vector<u8>> ConnectionBase::read_as_much_as_possible_from_socket_without
         }
 
         bytes.append(bytes_read.data(), bytes_read.size());
+        for (auto const& fd : received_fds)
+            m_unprocessed_fds.enqueue(IPC::File::adopt_fd(fd));
     }
 
     if (!bytes.is_empty()) {

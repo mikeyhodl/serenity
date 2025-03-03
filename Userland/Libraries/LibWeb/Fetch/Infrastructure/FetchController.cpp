@@ -9,6 +9,7 @@
 #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
 #include <LibWeb/Fetch/Infrastructure/FetchController.h>
 #include <LibWeb/Fetch/Infrastructure/FetchParams.h>
+#include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/WebIDL/DOMException.h>
 
 namespace Web::Fetch::Infrastructure {
@@ -78,7 +79,7 @@ void FetchController::abort(JS::Realm& realm, Optional<JS::Value> error)
     m_state = State::Aborted;
 
     // 2. Let fallbackError be an "AbortError" DOMException.
-    auto fallback_error = WebIDL::AbortError::create(realm, "Fetch was aborted"_fly_string);
+    auto fallback_error = WebIDL::AbortError::create(realm, "Fetch was aborted"_string);
 
     // 3. Set error to fallbackError if it is not given.
     if (!error.has_value())
@@ -105,11 +106,29 @@ void FetchController::stop_fetch()
     // AD-HOC: Some HTML elements need to stop an ongoing fetching process without causing any network error to be raised
     //         (which abort() and terminate() will both do). This is tricky because the fetch process runs across several
     //         nested Platform::EventLoopPlugin::deferred_invoke() invocations. For now, we "stop" the fetch process by
-    //         ignoring any callbacks.
+    //         cancelling any queued fetch tasks and then ignoring any callbacks.
+    auto ongoing_fetch_tasks = move(m_ongoing_fetch_tasks);
+
+    HTML::main_thread_event_loop().task_queue().remove_tasks_matching([&](auto const& task) {
+        return ongoing_fetch_tasks.remove_all_matching([&](u64, HTML::TaskID task_id) {
+            return task.id() == task_id;
+        });
+    });
+
     if (m_fetch_params) {
         auto fetch_algorithms = FetchAlgorithms::create(vm, {});
         m_fetch_params->set_algorithms(fetch_algorithms);
     }
+}
+
+void FetchController::fetch_task_queued(u64 fetch_task_id, HTML::TaskID event_id)
+{
+    m_ongoing_fetch_tasks.set(fetch_task_id, event_id);
+}
+
+void FetchController::fetch_task_complete(u64 fetch_task_id)
+{
+    m_ongoing_fetch_tasks.remove(fetch_task_id);
 }
 
 }

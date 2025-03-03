@@ -16,6 +16,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(abbr)                       \
     __ENUMERATE_HTML_ATTRIBUTE(accept)                     \
     __ENUMERATE_HTML_ATTRIBUTE(accept_charset)             \
+    __ENUMERATE_HTML_ATTRIBUTE(accesskey)                  \
     __ENUMERATE_HTML_ATTRIBUTE(action)                     \
     __ENUMERATE_HTML_ATTRIBUTE(align)                      \
     __ENUMERATE_HTML_ATTRIBUTE(alink)                      \
@@ -24,6 +25,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(alt)                        \
     __ENUMERATE_HTML_ATTRIBUTE(archive)                    \
     __ENUMERATE_HTML_ATTRIBUTE(async)                      \
+    __ENUMERATE_HTML_ATTRIBUTE(as)                         \
     __ENUMERATE_HTML_ATTRIBUTE(autocomplete)               \
     __ENUMERATE_HTML_ATTRIBUTE(autofocus)                  \
     __ENUMERATE_HTML_ATTRIBUTE(autoplay)                   \
@@ -43,6 +45,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(classid)                    \
     __ENUMERATE_HTML_ATTRIBUTE(clear)                      \
     __ENUMERATE_HTML_ATTRIBUTE(code)                       \
+    __ENUMERATE_HTML_ATTRIBUTE(codebase)                   \
     __ENUMERATE_HTML_ATTRIBUTE(codetype)                   \
     __ENUMERATE_HTML_ATTRIBUTE(color)                      \
     __ENUMERATE_HTML_ATTRIBUTE(cols)                       \
@@ -66,6 +69,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(enctype)                    \
     __ENUMERATE_HTML_ATTRIBUTE(event)                      \
     __ENUMERATE_HTML_ATTRIBUTE(face)                       \
+    __ENUMERATE_HTML_ATTRIBUTE(fetchpriority)              \
     __ENUMERATE_HTML_ATTRIBUTE(for_)                       \
     __ENUMERATE_HTML_ATTRIBUTE(form)                       \
     __ENUMERATE_HTML_ATTRIBUTE(formaction)                 \
@@ -91,6 +95,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(is)                         \
     __ENUMERATE_HTML_ATTRIBUTE(ismap)                      \
     __ENUMERATE_HTML_ATTRIBUTE(itemscope)                  \
+    __ENUMERATE_HTML_ATTRIBUTE(kind)                       \
     __ENUMERATE_HTML_ATTRIBUTE(label)                      \
     __ENUMERATE_HTML_ATTRIBUTE(lang)                       \
     __ENUMERATE_HTML_ATTRIBUTE(language)                   \
@@ -100,6 +105,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(longdesc)                   \
     __ENUMERATE_HTML_ATTRIBUTE(loop)                       \
     __ENUMERATE_HTML_ATTRIBUTE(low)                        \
+    __ENUMERATE_HTML_ATTRIBUTE(lowsrc)                     \
     __ENUMERATE_HTML_ATTRIBUTE(marginheight)               \
     __ENUMERATE_HTML_ATTRIBUTE(marginwidth)                \
     __ENUMERATE_HTML_ATTRIBUTE(max)                        \
@@ -113,6 +119,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(name)                       \
     __ENUMERATE_HTML_ATTRIBUTE(nohref)                     \
     __ENUMERATE_HTML_ATTRIBUTE(nomodule)                   \
+    __ENUMERATE_HTML_ATTRIBUTE(noresize)                   \
     __ENUMERATE_HTML_ATTRIBUTE(noshade)                    \
     __ENUMERATE_HTML_ATTRIBUTE(novalidate)                 \
     __ENUMERATE_HTML_ATTRIBUTE(nowrap)                     \
@@ -207,6 +214,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(ping)                       \
     __ENUMERATE_HTML_ATTRIBUTE(placeholder)                \
     __ENUMERATE_HTML_ATTRIBUTE(playsinline)                \
+    __ENUMERATE_HTML_ATTRIBUTE(popover)                    \
     __ENUMERATE_HTML_ATTRIBUTE(poster)                     \
     __ENUMERATE_HTML_ATTRIBUTE(preload)                    \
     __ENUMERATE_HTML_ATTRIBUTE(readonly)                   \
@@ -219,8 +227,15 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(rowspan)                    \
     __ENUMERATE_HTML_ATTRIBUTE(rules)                      \
     __ENUMERATE_HTML_ATTRIBUTE(scheme)                     \
+    __ENUMERATE_HTML_ATTRIBUTE(scope)                      \
+    __ENUMERATE_HTML_ATTRIBUTE(scrollamount)               \
+    __ENUMERATE_HTML_ATTRIBUTE(scrolldelay)                \
     __ENUMERATE_HTML_ATTRIBUTE(scrolling)                  \
     __ENUMERATE_HTML_ATTRIBUTE(selected)                   \
+    __ENUMERATE_HTML_ATTRIBUTE(shadowrootclonable)         \
+    __ENUMERATE_HTML_ATTRIBUTE(shadowrootdelegatesfocus)   \
+    __ENUMERATE_HTML_ATTRIBUTE(shadowrootmode)             \
+    __ENUMERATE_HTML_ATTRIBUTE(shadowrootserializable)     \
     __ENUMERATE_HTML_ATTRIBUTE(shape)                      \
     __ENUMERATE_HTML_ATTRIBUTE(size)                       \
     __ENUMERATE_HTML_ATTRIBUTE(sizes)                      \
@@ -239,6 +254,7 @@ namespace AttributeNames {
     __ENUMERATE_HTML_ATTRIBUTE(target)                     \
     __ENUMERATE_HTML_ATTRIBUTE(text)                       \
     __ENUMERATE_HTML_ATTRIBUTE(title)                      \
+    __ENUMERATE_HTML_ATTRIBUTE(truespeed)                  \
     __ENUMERATE_HTML_ATTRIBUTE(type)                       \
     __ENUMERATE_HTML_ATTRIBUTE(usemap)                     \
     __ENUMERATE_HTML_ATTRIBUTE(valign)                     \

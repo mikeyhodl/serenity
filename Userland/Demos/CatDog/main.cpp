@@ -24,6 +24,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto app = TRY(GUI::Application::create(arguments));
     auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-catdog"sv));
 
+    auto catdog_icon_sleep = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/catdog-sleeping.png"sv));
+    auto catdog_icon_wake = TRY(Gfx::Bitmap::load_from_file("/res/icons/16x16/catdog-wake-up.png"sv));
+
     TRY(Core::System::pledge("stdio recvfd sendfd rpath"));
     TRY(Core::System::unveil("/res", "r"));
     TRY(Core::System::unveil("/sys/kernel/processes", "r"));
@@ -46,8 +49,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto context_menu = GUI::Menu::construct();
     context_menu->add_action(GUI::CommonActions::make_about_action("CatDog Demo"_string, app_icon, window));
+    auto sleep_action = GUI::Action::create("Put CatDog to sleep...", catdog_icon_sleep, [&](GUI::Action&) {
+        catdog_widget->set_sleeping(!catdog_widget->is_sleeping());
+    });
+    context_menu->add_action(sleep_action);
+
     context_menu->add_separator();
-    context_menu->add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }));
+    context_menu->add_action(GUI::CommonActions::make_quit_action([&](auto&) { app->quit(); }, GUI::CommonActions::QuitAltShortcut::None));
 
     window->show();
     window->set_always_on_top();
@@ -64,20 +72,29 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto advice_widget = advice_window->set_main_widget<SpeechBubble>(catdog_widget);
     advice_widget->set_layout<GUI::VerticalBoxLayout>(GUI::Margins {}, 0);
 
-    auto advice_timer = TRY(Core::Timer::create_single_shot(15'000, [&] {
+    auto advice_timer = Core::Timer::create_single_shot(15'000, [&] {
         window->move_to_front();
         advice_window->move_to_front();
         catdog_widget->set_roaming(false);
         advice_window->move_to(window->x() - advice_window->width() / 2, window->y() - advice_window->height());
         advice_window->show();
         advice_window->set_always_on_top();
-    }));
+    });
     advice_timer->start();
 
     advice_widget->on_dismiss = [&] {
         catdog_widget->set_roaming(true);
         advice_window->hide();
         advice_timer->start();
+    };
+
+    catdog_widget->on_state_change = [&] {
+        sleep_action->set_text(catdog_widget->is_sleeping() ? "Wake CatDog..." : "Put CatDog to sleep...");
+        sleep_action->set_icon(catdog_widget->is_sleeping() ? catdog_icon_wake : catdog_icon_sleep);
+
+        // Reset advice timer to prevent waking too quickly.
+        if (catdog_widget->is_sleeping())
+            advice_timer->start();
     };
 
     // Let users toggle the advice functionality by clicking on catdog.

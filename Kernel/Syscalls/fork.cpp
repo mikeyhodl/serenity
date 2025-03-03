@@ -12,6 +12,7 @@
 #include <Kernel/Tasks/PerformanceManager.h>
 #include <Kernel/Tasks/Process.h>
 #include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/Tasks/ScopedProcessList.h>
 
 namespace Kernel {
 
@@ -21,7 +22,7 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
     TRY(require_promise(Pledge::proc));
 
     auto credentials = this->credentials();
-    auto child_and_first_thread = TRY(Process::create_with_forked_name(credentials->uid(), credentials->gid(), pid(), m_is_kernel_process, current_directory(), executable(), tty(), this));
+    auto child_and_first_thread = TRY(Process::create_with_forked_name(credentials->uid(), credentials->gid(), pid(), m_is_kernel_process, vfs_root_context(), hostname_context(), current_directory(), executable(), tty(), this));
     auto& child = child_and_first_thread.process;
     auto& child_first_thread = child_and_first_thread.first_thread;
 
@@ -50,46 +51,6 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
         });
     }));
 
-    // Note: We take the spinlock of Process::all_instances list because we need
-    // to ensure that when we take the jail spinlock of two processes that we don't
-    // run into a deadlock situation because both processes compete over each other Jail's
-    // spinlock. Such pattern of taking 3 spinlocks in the same order happens in
-    // Process::for_each* methods.
-    TRY(Process::all_instances().with([&](auto const&) -> ErrorOr<void> {
-        TRY(m_attached_jail.with([&](auto& parent_jail) -> ErrorOr<void> {
-            return child->m_attached_jail.with([&](auto& child_jail) -> ErrorOr<void> {
-                child_jail = parent_jail;
-                if (child_jail) {
-                    child_jail->attach_count().with([&](auto& attach_count) {
-                        attach_count++;
-                    });
-                }
-                return {};
-            });
-        }));
-        return {};
-    }));
-
-    ArmedScopeGuard remove_from_jail_process_list = [&]() {
-        m_jail_process_list.with([&](auto& list_ptr) {
-            if (list_ptr) {
-                list_ptr->attached_processes().with([&](auto& list) {
-                    list.remove(*child);
-                });
-            }
-        });
-    };
-    m_jail_process_list.with([&](auto& list_ptr) {
-        if (list_ptr) {
-            child->m_jail_process_list.with([&](auto& child_list_ptr) {
-                child_list_ptr = list_ptr;
-            });
-            list_ptr->attached_processes().with([&](auto& list) {
-                list.append(child);
-            });
-        }
-    });
-
     TRY(child->m_fds.with_exclusive([&](auto& child_fds) {
         return m_fds.with_exclusive([&](auto& parent_fds) {
             return child_fds.try_clone(parent_fds);
@@ -107,6 +68,12 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
             child_protected_data.signal_trampoline = my_protected_data.signal_trampoline;
             child_protected_data.dumpable = my_protected_data.dumpable;
             child_protected_data.process_group = my_protected_data.process_group;
+            // NOTE: Propagate jailed_until_exit property to child processes.
+            // The jailed_until_exec property is also propagated, but will be
+            // set to false once the child process is calling the execve syscall.
+            if (my_protected_data.jailed_until_exit.was_set())
+                child_protected_data.jailed_until_exit.set();
+            child_protected_data.jailed_until_exec = my_protected_data.jailed_until_exec;
         });
     });
 
@@ -149,42 +116,44 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
     child_regs.spsr_el1 = regs.spsr_el1;
     child_regs.elr_el1 = regs.elr_el1;
     child_regs.sp_el0 = regs.sp_el0;
+    child_regs.tpidr_el0 = regs.tpidr_el0;
 #elif ARCH(RISCV64)
-    (void)child_regs;
-    (void)regs;
-    TODO_RISCV64();
+    for (size_t i = 0; i < array_size(child_regs.x); ++i)
+        child_regs.x[i] = regs.x[i];
+    child_regs.x[9] = 0; // fork() returns 0 in the child :^)
+    child_regs.sstatus = regs.sstatus;
+    child_regs.pc = regs.sepc;
+    dbgln_if(FORK_DEBUG, "fork: child will begin executing at {:p} with stack {:p}, kstack {:p}",
+        child_regs.pc, child_regs.sp(), child_regs.kernel_sp);
 #else
 #    error Unknown architecture
 #endif
 
     TRY(address_space().with([&](auto& parent_space) {
-        return m_master_tls.with([&](auto& parent_master_tls) -> ErrorOr<void> {
-            return child->address_space().with([&](auto& child_space) -> ErrorOr<void> {
-                child_space->set_enforces_syscall_regions(parent_space->enforces_syscall_regions());
-                for (auto& region : parent_space->region_tree().regions()) {
-                    dbgln_if(FORK_DEBUG, "fork: cloning Region '{}' @ {}", region.name(), region.vaddr());
-                    auto region_clone = TRY(region.try_clone());
-                    TRY(region_clone->map(child_space->page_directory(), Memory::ShouldFlushTLB::No));
-                    TRY(child_space->region_tree().place_specifically(*region_clone, region.range()));
-                    auto* child_region = region_clone.leak_ptr();
-
-                    if (&region == parent_master_tls.region.unsafe_ptr()) {
-                        TRY(child->m_master_tls.with([&](auto& child_master_tls) -> ErrorOr<void> {
-                            child_master_tls.region = TRY(child_region->try_make_weak_ptr());
-                            child_master_tls.size = parent_master_tls.size;
-                            child_master_tls.alignment = parent_master_tls.alignment;
-                            return {};
-                        }));
-                    }
-                }
-                return {};
-            });
+        return child->address_space().with([&](auto& child_space) -> ErrorOr<void> {
+            if (parent_space->enforces_syscall_regions())
+                child_space->set_enforces_syscall_regions();
+            for (auto& region : parent_space->region_tree().regions()) {
+                dbgln_if(FORK_DEBUG, "fork: cloning Region '{}' @ {}", region.name(), region.vaddr());
+                auto region_clone = TRY(region.try_clone());
+                TRY(region_clone->map(child_space->page_directory(), Memory::ShouldFlushTLB::No));
+                TRY(child_space->region_tree().place_specifically(*region_clone, region.range()));
+                (void)region_clone.leak_ptr();
+            }
             return {};
         });
     }));
 
     thread_finalizer_guard.disarm();
-    remove_from_jail_process_list.disarm();
+
+    m_scoped_process_list.with([&](auto& list_ptr) {
+        if (list_ptr) {
+            child->m_scoped_process_list.with([&](auto& child_list_ptr) {
+                child_list_ptr = list_ptr;
+            });
+            list_ptr->attach(*child);
+        }
+    });
 
     Process::register_new(*child);
 

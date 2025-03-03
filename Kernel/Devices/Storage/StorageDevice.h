@@ -15,10 +15,9 @@
 
 namespace Kernel {
 
-class RamdiskDevice;
 class StorageDevice : public BlockDevice {
     friend class StorageManagement;
-    friend class DeviceManagement;
+    friend class Device;
 
 public:
     // Note: this attribute describes the internal command set of a Storage device.
@@ -68,9 +67,9 @@ public:
     virtual bool can_write(OpenFileDescription const&, u64) const override { return true; }
     virtual void prepare_for_unplug() { m_partitions.clear(); }
 
-    Vector<NonnullLockRefPtr<StorageDevicePartition>> const& partitions() const { return m_partitions; }
+    Vector<NonnullRefPtr<StorageDevicePartition>> const& partitions() const { return m_partitions; }
 
-    void add_partition(NonnullLockRefPtr<StorageDevicePartition> disk_partition) { MUST(m_partitions.try_append(disk_partition)); }
+    void add_partition(NonnullRefPtr<StorageDevicePartition> disk_partition) { MUST(m_partitions.try_append(disk_partition)); }
 
     LUNAddress const& logical_unit_number_address() const { return m_logical_unit_number_address; }
 
@@ -86,10 +85,6 @@ public:
 protected:
     StorageDevice(LUNAddress, u32 hardware_relative_controller_id, size_t sector_size, u64);
 
-    // Note: We want to be able to put distinction between Storage devices and Ramdisk-based devices.
-    // We do this because it will make selecting ramdisk devices much more easier in boot time in the kernel commandline.
-    StorageDevice(Badge<RamdiskDevice>, LUNAddress, u32 hardware_relative_controller_id, MajorNumber, MinorNumber, size_t sector_size, u64);
-
     // ^DiskDevice
     virtual StringView class_name() const override;
 
@@ -98,7 +93,9 @@ private:
     virtual void will_be_destroyed() override;
 
     mutable IntrusiveListNode<StorageDevice, LockRefPtr<StorageDevice>> m_list_node;
-    Vector<NonnullLockRefPtr<StorageDevicePartition>> m_partitions;
+    // NOTE: This probably need a better locking once we support hotplug and
+    // refresh of the partition table.
+    Vector<NonnullRefPtr<StorageDevicePartition>> m_partitions;
 
     LUNAddress const m_logical_unit_number_address;
 

@@ -58,70 +58,6 @@ static Optional<LegacyConstructor> const& lookup_legacy_constructor(IDL::Interfa
     return s_legacy_constructors.get(interface.name).value();
 }
 
-static ErrorOr<void> generate_forwarding_header(StringView output_path, Vector<IDL::Interface&>& exposed_interfaces)
-{
-    StringBuilder builder;
-    SourceGenerator generator(builder);
-
-    generator.append(R"~~~(
-#pragma once
-
-namespace Web::Bindings {
-)~~~");
-
-    auto add_namespace = [](SourceGenerator& gen, StringView namespace_class) {
-        gen.set("namespace_class", namespace_class);
-
-        gen.append(R"~~~(
-class @namespace_class@;)~~~");
-    };
-
-    auto add_interface = [](SourceGenerator& gen, StringView prototype_class, StringView constructor_class, Optional<LegacyConstructor> const& legacy_constructor, StringView named_properties_class) {
-        gen.set("prototype_class", prototype_class);
-        gen.set("constructor_class", constructor_class);
-
-        gen.append(R"~~~(
-class @prototype_class@;
-class @constructor_class@;)~~~");
-
-        if (legacy_constructor.has_value()) {
-            gen.set("legacy_constructor_class", legacy_constructor->constructor_class);
-            gen.append(R"~~~(
-class @legacy_constructor_class@;)~~~");
-        }
-        if (!named_properties_class.is_empty()) {
-            gen.set("named_properties_class", named_properties_class);
-            gen.append(R"~~~(
-class @named_properties_class@;)~~~");
-        }
-    };
-
-    for (auto& interface : exposed_interfaces) {
-        auto gen = generator.fork();
-
-        String named_properties_class;
-        if (interface.extended_attributes.contains("Global") && interface.supports_named_properties()) {
-            named_properties_class = MUST(String::formatted("{}Properties", interface.name));
-        }
-
-        if (interface.is_namespace)
-            add_namespace(gen, interface.namespace_class);
-        else
-            add_interface(gen, interface.prototype_class, interface.constructor_class, lookup_legacy_constructor(interface), named_properties_class);
-    }
-
-    generator.append(R"~~~(
-
-}
-)~~~");
-
-    auto generated_forward_path = LexicalPath(output_path).append("Forward.h"sv).string();
-    auto generated_forward_file = TRY(Core::File::open(generated_forward_path, Core::File::OpenMode::Write));
-    TRY(generated_forward_file->write_until_depleted(generator.as_string_view().bytes()));
-
-    return {};
-}
-
 static ErrorOr<void> generate_intrinsic_definitions(StringView output_path, Vector<IDL::Interface&>& exposed_interfaces)
 {
     StringBuilder builder;
@@ -374,7 +310,7 @@ void add_@global_object_snake_name@_exposed_interfaces(JS::Object& global)
             add_namespace(gen, interface.name, interface.namespace_class);
         } else if (!interface.extended_attributes.contains("LegacyNamespace"sv)) {
             if (class_name == "Window") {
-                add_interface(gen, interface.namespaced_name, interface.prototype_class, lookup_legacy_constructor(interface), interface.extended_attributes.get("LegacyWindowAlias"sv));
+                add_interface(gen, interface.namespaced_name, interface.prototype_class, lookup_legacy_constructor(interface), interface.extended_attributes.get("LegacyWindowAlias"sv).copy());
             } else {
                 add_interface(gen, interface.namespaced_name, interface.prototype_class, lookup_legacy_constructor(interface), {});
             }
@@ -399,18 +335,32 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     Core::ArgsParser args_parser;
 
     StringView output_path;
-    StringView base_path;
+    Vector<ByteString> base_paths;
     Vector<ByteString> paths;
 
     args_parser.add_option(output_path, "Path to output generated files into", "output-path", 'o', "output-path");
-    args_parser.add_option(base_path, "Path to root of IDL file tree", "base-path", 'b', "base-path");
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Path to root of IDL file tree(s)",
+        .long_name = "base-path",
+        .short_name = 'b',
+        .value_name = "base-path",
+        .accept_value = [&](StringView s) {
+            base_paths.append(s);
+            return true;
+        },
+    });
     args_parser.add_positional_argument(paths, "Paths of every IDL file that could be Exposed", "paths");
     args_parser.parse(arguments);
 
     VERIFY(!paths.is_empty());
-    VERIFY(!base_path.is_empty());
+    VERIFY(!base_paths.is_empty());
 
-    LexicalPath const lexical_base(base_path);
+    Vector<ByteString> lexical_bases;
+    for (auto const& base_path : base_paths) {
+        VERIFY(!base_path.is_empty());
+        lexical_bases.append(base_path);
+    }
 
     // Read in all IDL files, we must own the storage for all of these for the lifetime of the program
     Vector<ByteString> file_contents;
@@ -434,12 +384,18 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     // TODO: service_worker_exposed
 
     for (size_t i = 0; i < paths.size(); ++i) {
-        IDL::Parser parser(paths[i], file_contents[i], lexical_base.string());
-        TRY(add_to_interface_sets(parser.parse(), intrinsics, window_exposed, dedicated_worker_exposed, shared_worker_exposed));
+        auto const& path = paths[i];
+        IDL::Parser parser(path, file_contents[i], lexical_bases);
+        auto& interface = parser.parse();
+        if (interface.name.is_empty()) {
+            s_error_string = ByteString::formatted("Interface for file {} missing", path);
+            return Error::from_string_view(s_error_string.view());
+        }
+
+        TRY(add_to_interface_sets(interface, intrinsics, window_exposed, dedicated_worker_exposed, shared_worker_exposed));
         parsers.append(move(parser));
     }
 
-    TRY(generate_forwarding_header(output_path, intrinsics));
     TRY(generate_intrinsic_definitions(output_path, intrinsics));
 
     TRY(generate_exposed_interface_header("Window"sv, output_path));
@@ -486,6 +442,12 @@ static ErrorOr<ExposedTo> parse_exposure_set(IDL::Interface& interface)
         return ExposedTo::Window;
     if (exposed == "Worker"sv)
         return ExposedTo::AllWorkers;
+    if (exposed == "DedicatedWorker"sv)
+        return ExposedTo::DedicatedWorker;
+    if (exposed == "SharedWorker"sv)
+        return ExposedTo::SharedWorker;
+    if (exposed == "ServiceWorker"sv)
+        return ExposedTo::ServiceWorker;
     if (exposed == "AudioWorklet"sv)
         return ExposedTo::AudioWorklet;
 

@@ -4,10 +4,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/AnimationEventPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/AnimationEvent.h>
 
 namespace Web::CSS {
+
+JS_DEFINE_ALLOCATOR(AnimationEvent);
 
 JS::NonnullGCPtr<AnimationEvent> AnimationEvent::create(JS::Realm& realm, FlyString const& type, AnimationEventInit const& event_init)
 {

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Platform.h>
 #include <Kernel/API/Syscall.h>
 #include <Kernel/Arch/Processor.h>
 #include <Kernel/Arch/TrapFrame.h>
@@ -18,7 +19,7 @@
 using namespace Kernel;
 
 extern "C" void syscall_entry();
-extern "C" [[gnu::naked]] void syscall_entry()
+extern "C" NO_SANITIZE_COVERAGE [[gnu::naked]] void syscall_entry()
 {
     // clang-format off
     asm(
@@ -51,12 +52,19 @@ extern "C" [[gnu::naked]] void syscall_entry()
         "    pushq %%rsi \n"
         "    pushq %%rdi \n"
 
+        "    movq %%rax, %%rbx \n" // Move the syscall function to a callee-saved register.
+
         "    pushq %%rsp \n" // TrapFrame::regs
         "    subq $" __STRINGIFY(TRAP_FRAME_SIZE - 8) ", %%rsp \n"
         "    movq %%rsp, %%rdi \n"
         "    call enter_trap_no_irq \n"
         "    movq %%rsp, %%rdi \n"
         "    call syscall_handler \n"
+
+        // We have to use iretq for sys$sigreturn, as signals would otherwise clobber rcx and r11 when using sysretq.
+        "    cmpq %[sc_sigreturn], %%rbx \n"
+        "    je common_trap_exit \n"
+
         "    movq %%rsp, %%rdi \n"
         "    call exit_trap \n"
         "    addq $" __STRINGIFY(TRAP_FRAME_SIZE) ", %%rsp \n" // Pop TrapFrame
@@ -79,13 +87,14 @@ extern "C" [[gnu::naked]] void syscall_entry()
         "    popq %%r15 \n"
         "    addq $8, %%rsp \n"
         "    popq %%rcx \n"
-        "    addq $16, %%rsp \n"
+        "    addq $8, %%rsp \n"
+        "    popq %%r11 \n"
 
         // Disable interrupts before we restore the user stack pointer. sysret will re-enable interrupts when it restores
         // rflags.
         "    cli \n"
         "    popq %%rsp \n"
         "    sysretq \n"
-    :: [user_stack] "i"(Kernel::Processor::user_stack_offset()), [kernel_stack] "i"(Kernel::Processor::kernel_stack_offset()));
+    :: [user_stack] "i"(Kernel::Processor::user_stack_offset()), [kernel_stack] "i"(Kernel::Processor::kernel_stack_offset()), [sc_sigreturn] "i"(SC_sigreturn));
     // clang-format on
 }

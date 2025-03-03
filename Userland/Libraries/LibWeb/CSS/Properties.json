@@ -1,9 +1,131 @@
 {
+  "-webkit-align-content": {
+    "legacy-alias-for": "align-content"
+  },
+  "-webkit-align-items": {
+    "legacy-alias-for": "align-items"
+  },
+  "-webkit-align-self": {
+    "legacy-alias-for": "align-self"
+  },
+  "-webkit-animation": {
+    "legacy-alias-for": "animation"
+  },
+  "-webkit-animation-delay": {
+    "legacy-alias-for": "animation-delay"
+  },
+  "-webkit-animation-direction": {
+    "legacy-alias-for": "animation-direction"
+  },
+  "-webkit-animation-duration": {
+    "legacy-alias-for": "animation-duration"
+  },
+  "-webkit-animation-fill-mode": {
+    "legacy-alias-for": "animation-fill-mode"
+  },
+  "-webkit-animation-iteration-count": {
+    "legacy-alias-for": "animation-iteration-count"
+  },
+  "-webkit-animation-name": {
+    "legacy-alias-for": "animation-name"
+  },
+  "-webkit-animation-play-state": {
+    "legacy-alias-for": "animation-play-state"
+  },
+  "-webkit-animation-timing-function": {
+    "legacy-alias-for": "animation-timing-function"
+  },
   "-webkit-appearance": {
-    "logical-alias-for": [
-      "appearance"
-    ],
-    "max-values": 1
+    "legacy-alias-for": "appearance"
+  },
+  "-webkit-background-clip": {
+    "legacy-alias-for": "background-clip"
+  },
+  "-webkit-background-origin": {
+    "legacy-alias-for": "background-origin"
+  },
+  "-webkit-background-size": {
+    "legacy-alias-for": "background-size"
+  },
+  "-webkit-border-bottom-left-radius": {
+    "legacy-alias-for": "border-bottom-left-radius"
+  },
+  "-webkit-border-bottom-right-radius": {
+    "legacy-alias-for": "border-bottom-right-radius"
+  },
+  "-webkit-border-radius": {
+    "legacy-alias-for": "border-radius"
+  },
+  "-webkit-border-top-left-radius": {
+    "legacy-alias-for": "border-top-left-radius"
+  },
+  "-webkit-border-top-right-radius": {
+    "legacy-alias-for": "border-top-right-radius"
+  },
+  "-webkit-box-shadow": {
+    "legacy-alias-for": "box-shadow"
+  },
+  "-webkit-box-sizing": {
+    "legacy-alias-for": "box-sizing"
+  },
+  "-webkit-flex": {
+    "legacy-alias-for": "flex"
+  },
+  "-webkit-flex-basis": {
+    "legacy-alias-for": "flex-basis"
+  },
+  "-webkit-flex-direction": {
+    "legacy-alias-for": "flex-direction"
+  },
+  "-webkit-flex-flow": {
+    "legacy-alias-for": "flex-flow"
+  },
+  "-webkit-flex-grow": {
+    "legacy-alias-for": "flex-grow"
+  },
+  "-webkit-flex-shrink": {
+    "legacy-alias-for": "flex-shrink"
+  },
+  "-webkit-flex-wrap": {
+    "legacy-alias-for": "flex-wrap"
+  },
+  "-webkit-justify-content": {
+    "legacy-alias-for": "justify-content"
+  },
+  "-webkit-mask": {
+    "legacy-alias-for": "mask"
+  },
+  "-webkit-order": {
+    "legacy-alias-for": "order"
+  },
+  "-webkit-text-fill-color": {
+    "animation-type": "by-computed-value",
+    "inherited": true,
+    "initial": "currentColor",
+    "valid-types": [
+      "color"
+    ]
+  },
+  "-webkit-transform": {
+    "legacy-alias-for": "transform"
+  },
+  "-webkit-transform-origin": {
+    "legacy-alias-for": "transform-origin"
+  },
+  "-webkit-transition": {
+    "legacy-alias-for": "transition"
+  },
+  "-webkit-transition-delay": {
+    "legacy-alias-for": "transition-delay"
+  },
+  "-webkit-transition-duration": {
+    "legacy-alias-for": "transition-duration"
+  },
+  "-webkit-transition-property": {
+    "legacy-alias-for": "transition-property"
+  },
+  "-webkit-transition-timing-function": {
+    "legacy-alias-for": "transition-timing-function"
   },
   "accent-color": {
     "animation-type": "by-computed-value",
@@ -339,8 +461,8 @@
     ]
   },
   "border-bottom-color": {
-      "affects-layout": false,
-      "animation-type": "by-computed-value",
+    "affects-layout": false,
+    "animation-type": "by-computed-value",
     "initial": "currentcolor",
     "inherited": false,
     "valid-types": [
@@ -702,11 +824,35 @@
       "unitless-length"
     ]
   },
+  "clip-path": {
+    "animation-type": "none",
+    "affects-layout": false,
+    "affects-stacking-context": true,
+    "inherited": false,
+    "valid-identifiers": [
+      "none"
+    ],
+    "__comment": "FIXME: This should be a <clip-source> | [ <basic-shape> || <geometry-box> ]",
+    "valid-types": [
+      "basic-shape",
+      "url"
+    ],
+    "initial": "none"
+  },
+  "clip-rule": {
+    "affects-layout": false,
+    "animation-type": "discrete",
+    "inherited": true,
+    "initial": "nonzero",
+    "valid-types": [
+      "fill-rule"
+    ]
+  },
   "color": {
     "affects-layout": false,
     "animation-type": "by-computed-value",
     "inherited": true,
-    "initial": "-libweb-palette-base-text",
+    "initial": "canvastext",
     "valid-types": [
       "color"
     ],
@@ -738,12 +884,40 @@
     ],
     "percentages-resolve-to": "length"
   },
+  "column-span": {
+    "animation-type": "discrete",
+    "inherited": false,
+    "initial": "none",
+    "valid-types": [
+      "column-span"
+    ]
+  },
+  "column-width": {
+    "animation-type": "by-computed-value",
+    "inherited": false,
+    "initial": "auto",
+    "valid-types": [
+      "length [0,∞]"
+    ],
+    "valid-identifiers": [
+      "auto"
+    ]
+  },
+  "columns": {
+    "inherited": false,
+    "initial": "auto auto",
+    "longhands": [
+      "column-width",
+      "column-count"
+    ]
+  },
   "content": {
     "animation-type": "discrete",
     "inherited": false,
     "initial": "normal",
     "__comment": "FIXME: This accepts a whole lot of other types and identifiers!",
     "valid-types": [
+      "counter",
       "string"
     ],
     "valid-identifiers": [
@@ -753,6 +927,51 @@
       "close-quote",
       "no-open-quote",
       "no-close-quote"
+    ]
+  },
+  "content-visibility": {
+    "animation-type": "none",
+    "__comment": "FIXME: Implement animation https://drafts.csswg.org/css-contain/#content-visibility-animation",
+    "inherited": false,
+    "initial": "visible",
+    "valid-types": [
+      "content-visibility"
+    ]
+  },
+  "counter-increment": {
+    "animation-type": "by-computed-value",
+    "inherited": false,
+    "initial": "none",
+    "valid-types": [
+      "custom-ident",
+      "integer [-∞,∞]"
+    ],
+    "valid-identifiers": [
+      "none"
+    ]
+  },
+  "counter-reset": {
+    "animation-type": "by-computed-value",
+    "inherited": false,
+    "initial": "none",
+    "valid-types": [
+      "custom-ident",
+      "integer [-∞,∞]"
+    ],
+    "valid-identifiers": [
+      "none"
+    ]
+  },
+  "counter-set": {
+    "animation-type": "by-computed-value",
+    "inherited": false,
+    "initial": "none",
+    "valid-types": [
+      "custom-ident",
+      "integer [-∞,∞]"
+    ],
+    "valid-identifiers": [
+      "none"
     ]
   },
   "cursor": {
@@ -797,9 +1016,8 @@
     "animation-type": "none",
     "inherited": true,
     "initial": "ltr",
-    "valid-identifiers": [
-      "ltr",
-      "rtl"
+    "valid-types": [
+      "direction"
     ]
   },
   "display": {
@@ -843,9 +1061,18 @@
     "animation-type": "discrete",
     "inherited": true,
     "initial": "nonzero",
+    "valid-types": [
+      "fill-rule"
+    ]
+  },
+  "filter": {
+    "affects-layout": false,
+    "animation-type": "custom",
+    "inherited": false,
+    "initial": "none",
+    "__comment": "FIXME: List `filter-value-list` as a valid-type once it's generically supported.",
     "valid-identifiers": [
-      "nonzero",
-      "evenodd"
+      "none"
     ]
   },
   "flex": {
@@ -870,7 +1097,10 @@
     ],
     "valid-identifiers": [
       "auto",
-      "content"
+      "content",
+      "fit-content",
+      "max-content",
+      "min-content"
     ],
     "percentages-resolve-to": "length"
   },
@@ -924,11 +1154,12 @@
   },
   "font": {
     "inherited": true,
-    "initial": "normal medium sans-serif",
+    "initial": "normal medium serif",
+    "__comment": "FIXME: Handle properties that are reset implicitly. https://drafts.csswg.org/css-fonts/#reset-implicitly",
     "longhands": [
       "font-family",
       "font-size",
-      "font-stretch",
+      "font-width",
       "font-style",
       "font-variant",
       "font-weight",
@@ -938,10 +1169,35 @@
   "font-family": {
     "animation-type": "discrete",
     "inherited": true,
-    "initial": "sans-serif",
+    "initial": "serif",
     "valid-types": [
       "custom-ident",
       "string"
+    ]
+  },
+  "font-feature-settings": {
+    "animation-type": "discrete",
+    "inherited": true,
+    "initial": "normal",
+    "valid-types": [
+      "integer [0,∞]",
+      "opentype-tag"
+    ],
+    "valid-identifiers": [
+      "normal",
+      "on",
+      "off"
+    ]
+  },
+  "font-language-override": {
+    "animation-type": "discrete",
+    "inherited": true,
+    "initial": "normal",
+    "valid-types": [
+      "string"
+    ],
+    "valid-identifiers": [
+      "normal"
     ]
   },
   "font-size": {
@@ -971,23 +1227,7 @@
     ]
   },
   "font-stretch": {
-    "animation-type": "custom",
-    "inherited": true,
-    "initial": "normal",
-    "valid-types": [
-      "percentage [0,∞]"
-    ],
-    "valid-identifiers": [
-      "normal",
-      "ultra-condensed",
-      "extra-condensed",
-      "condensed",
-      "semi-condensed",
-      "semi-expanded",
-      "expanded",
-      "extra-expanded",
-      "ultra-expanded"
-    ]
+    "legacy-alias-for": "font-width"
   },
   "font-style": {
     "animation-type": "custom",
@@ -1007,6 +1247,18 @@
       "font-variant"
     ]
   },
+  "font-variation-settings": {
+    "animation-type": "custom",
+    "inherited": true,
+    "initial": "normal",
+    "valid-types": [
+      "number",
+      "opentype-tag"
+    ],
+    "valid-identifiers": [
+      "normal"
+    ]
+  },
   "font-weight": {
     "animation-type": "by-computed-value",
     "inherited": true,
@@ -1019,6 +1271,15 @@
       "bolder",
       "lighter",
       "normal"
+    ]
+  },
+  "font-width": {
+    "animation-type": "by-computed-value",
+    "inherited": true,
+    "initial": "normal",
+    "valid-types": [
+      "percentage [0,∞]",
+      "font-width"
     ]
   },
   "gap": {
@@ -1131,17 +1392,7 @@
     ]
   },
   "grid-column-gap": {
-    "animation-type": "by-computed-value",
-    "inherited": false,
-    "initial": "auto",
-    "valid-types": [
-      "length [0,∞]",
-      "percentage [0,∞]"
-    ],
-    "valid-identifiers": [
-      "auto"
-    ],
-    "percentages-resolve-to": "length"
+    "legacy-alias-for": "column-gap"
   },
   "grid-column-start": {
     "animation-type": "discrete",
@@ -1155,21 +1406,7 @@
     ]
   },
   "grid-gap": {
-    "inherited": false,
-    "initial": "auto",
-    "valid-types": [
-      "length [0,∞]",
-      "percentage [0,∞]"
-    ],
-    "max-values": 2,
-    "valid-identifiers": [
-      "auto"
-    ],
-    "percentages-resolve-to": "length",
-    "longhands": [
-      "grid-row-gap",
-      "grid-column-gap"
-    ]
+    "legacy-alias-for": "gap"
   },
   "grid-row": {
     "inherited": false,
@@ -1197,17 +1434,7 @@
     ]
   },
   "grid-row-gap": {
-    "animation-type": "by-computed-value",
-    "inherited": false,
-    "initial": "auto",
-    "valid-types": [
-      "length [0,∞]",
-      "percentage [0,∞]"
-    ],
-    "valid-identifiers": [
-      "auto"
-    ],
-    "percentages-resolve-to": "length"
+    "legacy-alias-for": "row-gap"
   },
   "grid-row-start": {
     "animation-type": "discrete",
@@ -1308,11 +1535,11 @@
     ]
   },
   "inline-size": {
-      "logical-alias-for": [
-        "width"
-      ],
-      "initial": "auto",
-      "max-values": 1
+    "logical-alias-for": [
+      "width"
+    ],
+    "initial": "auto",
+    "max-values": 1
   },
   "inset": {
     "inherited": false,
@@ -2070,6 +2297,13 @@
       "unitless-length"
     ]
   },
+  "rotate": {
+    "animation-type": "custom",
+    "inherited": false,
+    "initial": "none",
+    "affects-layout": false,
+    "affects-stacking-context": true
+  },
   "row-gap": {
     "animation-type": "by-computed-value",
     "inherited": false,
@@ -2117,12 +2351,21 @@
       "unitless-length"
     ]
   },
+  "scrollbar-gutter": {
+    "affects-layout": false,
+    "animation-type": "discrete",
+    "__comment": "This property should affect layout per-spec, but ladybird always uses overlay scrollbars so it doesn't in practice.",
+    "inherited": false,
+    "initial": "auto"
+  },
   "scrollbar-width": {
     "affects-layout": false,
     "animation-type": "by-computed-value",
     "inherited": false,
     "initial": "auto",
-    "valid-types": [ "scrollbar-width" ],
+    "valid-types": [
+      "scrollbar-width"
+    ],
     "valid-identifiers": [
       "auto",
       "thin",
@@ -2158,6 +2401,33 @@
       "paint"
     ]
   },
+  "stroke-linecap": {
+    "affects-layout": false,
+    "animation-type": "discrete",
+    "inherited": true,
+    "initial": "butt",
+    "valid-types": [
+      "stroke-linecap"
+    ]
+  },
+  "stroke-linejoin": {
+    "affects-layout": false,
+    "animation-type": "discrete",
+    "inherited": true,
+    "initial": "miter",
+    "valid-types": [
+      "stroke-linejoin"
+    ]
+  },
+  "stroke-miterlimit": {
+    "affects-layout": false,
+    "animation-type": "by-computed-value",
+    "inherited": true,
+    "initial": "4",
+    "valid-types": [
+      "number [0,∞]"
+    ]
+  },
   "stroke-opacity": {
     "affects-layout": false,
     "animation-type": "by-computed-value",
@@ -2181,6 +2451,15 @@
     ],
     "percentages-resolve-to": "length"
   },
+  "tab-size": {
+    "animation-type": "by-computed-value",
+    "inherited": true,
+    "initial": "8",
+    "valid-types": [
+      "length [0,∞]",
+      "number [0,∞]"
+    ]
+  },
   "table-layout": {
     "animation-type": "discrete",
     "inherited": false,
@@ -2192,7 +2471,7 @@
   "text-align": {
     "animation-type": "discrete",
     "inherited": true,
-    "initial": "left",
+    "initial": "start",
     "valid-types": [
       "text-align"
     ]
@@ -2280,6 +2559,15 @@
       "text-justify"
     ]
   },
+  "text-overflow": {
+    "affects-layout": false,
+    "animation-type": "discrete",
+    "inherited": false,
+    "initial": "clip",
+    "valid-types": [
+      "text-overflow"
+    ]
+  },
   "text-shadow": {
     "affects-layout": false,
     "animation-type": "custom",
@@ -2348,12 +2636,64 @@
     ],
     "percentages-resolve-to": "length"
   },
+  "transition": {
+    "affects-layout": true,
+    "inherited": false,
+    "initial": "none",
+    "longhands": [
+      "transition-property",
+      "transition-duration",
+      "transition-timing-function",
+      "transition-delay"
+    ]
+  },
   "transition-delay": {
+    "affects-layout": true,
     "animation-type": "none",
     "inherited": false,
     "initial": "0s",
     "valid-types": [
       "time"
+    ]
+  },
+  "transition-duration": {
+    "affects-layout": true,
+    "animation-type": "none",
+    "inherited": false,
+    "initial": "0s",
+    "valid-types": [
+      "time"
+    ]
+  },
+  "transition-property": {
+    "affects-layout": true,
+    "animation-type": "none",
+    "inherited": false,
+    "initial": "all",
+    "valid-types": [
+      "string",
+      "custom-ident"
+    ],
+    "valid-identifiers": [
+      "all",
+      "none"
+    ]
+  },
+  "transition-timing-function": {
+    "affects-layout": true,
+    "animation-type": "none",
+    "inherited": false,
+    "initial": "ease",
+    "valid-types": [
+      "easing-function"
+    ]
+  },
+  "unicode-bidi": {
+    "animation-type": "none",
+    "inherited": false,
+    "initial": "normal",
+    "valid-types": [
+      "unicode-bidi"
     ]
   },
   "user-select": {
@@ -2418,6 +2758,17 @@
       "unitless-length"
     ]
   },
+  "word-break": {
+    "animation-type": "discrete",
+    "initial": "normal",
+    "inherited": true,
+    "valid-identifiers": [
+      "normal",
+      "keep-all",
+      "break-all",
+      "break-word"
+    ]
+  },
   "word-spacing": {
     "animation-type": "by-computed-value",
     "inherited": true,
@@ -2442,6 +2793,14 @@
       "anywhere",
       "break-word",
       "normal"
+    ]
+  },
+  "writing-mode": {
+    "animation-type": "none",
+    "inherited": true,
+    "initial": "horizontal-tb",
+    "valid-types": [
+      "writing-mode"
     ]
   },
   "x": {

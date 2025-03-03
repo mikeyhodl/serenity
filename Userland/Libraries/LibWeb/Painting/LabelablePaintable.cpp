@@ -5,10 +5,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGUI/Event.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/Layout/Label.h>
 #include <LibWeb/Painting/LabelablePaintable.h>
+#include <LibWeb/UIEvents/MouseButton.h>
 
 namespace Web::Painting {
 
@@ -37,18 +37,18 @@ Layout::FormAssociatedLabelableNode& LabelablePaintable::layout_box()
 
 LabelablePaintable::DispatchEventOfSameName LabelablePaintable::handle_mousedown(Badge<EventHandler>, CSSPixelPoint, unsigned button, unsigned)
 {
-    if (button != GUI::MouseButton::Primary || !layout_box().dom_node().enabled())
+    if (button != UIEvents::MouseButton::Primary || !layout_box().dom_node().enabled())
         return DispatchEventOfSameName::No;
 
     set_being_pressed(true);
     m_tracking_mouse = true;
-    browsing_context().event_handler().set_mouse_event_tracking_paintable(this);
+    navigable()->event_handler().set_mouse_event_tracking_paintable(this);
     return DispatchEventOfSameName::Yes;
 }
 
 LabelablePaintable::DispatchEventOfSameName LabelablePaintable::handle_mouseup(Badge<EventHandler>, CSSPixelPoint position, unsigned button, unsigned)
 {
-    if (!m_tracking_mouse || button != GUI::MouseButton::Primary || !layout_box().dom_node().enabled())
+    if (!m_tracking_mouse || button != UIEvents::MouseButton::Primary || !layout_box().dom_node().enabled())
         return DispatchEventOfSameName::No;
 
     bool is_inside_node_or_label = absolute_rect().contains(position);
@@ -57,7 +57,7 @@ LabelablePaintable::DispatchEventOfSameName LabelablePaintable::handle_mouseup(B
 
     set_being_pressed(false);
     m_tracking_mouse = false;
-    browsing_context().event_handler().set_mouse_event_tracking_paintable(nullptr);
+    navigable()->event_handler().set_mouse_event_tracking_paintable(nullptr);
     return DispatchEventOfSameName::Yes;
 }
 

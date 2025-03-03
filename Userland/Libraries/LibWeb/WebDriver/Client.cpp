@@ -3,7 +3,7 @@
  * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
  * Copyright (c) 2022, Tobias Christiansen <tobyase@serenityos.org>
  * Copyright (c) 2022, Linus Groh <linusg@serenityos.org>
- * Copyright (c) 2022-2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2022-2024, Tim Flynn <trflynn89@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -64,11 +64,14 @@ static constexpr auto s_webdriver_endpoints = Array {
     ROUTE(POST, "/session/:session_id/window"sv, switch_to_window),
     ROUTE(GET, "/session/:session_id/window/handles"sv, get_window_handles),
     ROUTE(POST, "/session/:session_id/window/new"sv, new_window),
+    ROUTE(POST, "/session/:session_id/frame"sv, switch_to_frame),
+    ROUTE(POST, "/session/:session_id/frame/parent"sv, switch_to_parent_frame),
     ROUTE(GET, "/session/:session_id/window/rect"sv, get_window_rect),
     ROUTE(POST, "/session/:session_id/window/rect"sv, set_window_rect),
     ROUTE(POST, "/session/:session_id/window/maximize"sv, maximize_window),
     ROUTE(POST, "/session/:session_id/window/minimize"sv, minimize_window),
     ROUTE(POST, "/session/:session_id/window/fullscreen"sv, fullscreen_window),
+    ROUTE(POST, "/session/:session_id/window/consume-user-activation"sv, consume_user_activation),
     ROUTE(POST, "/session/:session_id/element"sv, find_element),
     ROUTE(POST, "/session/:session_id/elements"sv, find_elements),
     ROUTE(POST, "/session/:session_id/element/:element_id/element"sv, find_element_from_element),
@@ -88,6 +91,8 @@ static constexpr auto s_webdriver_endpoints = Array {
     ROUTE(GET, "/session/:session_id/element/:element_id/computedrole"sv, get_computed_role),
     ROUTE(GET, "/session/:session_id/element/:element_id/computedlabel"sv, get_computed_label),
     ROUTE(POST, "/session/:session_id/element/:element_id/click"sv, element_click),
+    ROUTE(POST, "/session/:session_id/element/:element_id/clear"sv, element_clear),
+    ROUTE(POST, "/session/:session_id/element/:element_id/value"sv, element_send_keys),
     ROUTE(GET, "/session/:session_id/source"sv, get_source),
     ROUTE(POST, "/session/:session_id/execute/sync"sv, execute_script),
     ROUTE(POST, "/session/:session_id/execute/async"sv, execute_async_script),
@@ -96,6 +101,7 @@ static constexpr auto s_webdriver_endpoints = Array {
     ROUTE(POST, "/session/:session_id/cookie"sv, add_cookie),
     ROUTE(DELETE, "/session/:session_id/cookie/:name"sv, delete_cookie),
     ROUTE(DELETE, "/session/:session_id/cookie"sv, delete_all_cookies),
+    ROUTE(POST, "/session/:session_id/actions"sv, perform_actions),
     ROUTE(DELETE, "/session/:session_id/actions"sv, release_actions),
     ROUTE(POST, "/session/:session_id/alert/dismiss"sv, dismiss_alert),
     ROUTE(POST, "/session/:session_id/alert/accept"sv, accept_alert),
@@ -176,23 +182,8 @@ Client::Client(NonnullOwnPtr<Core::BufferedTCPSocket> socket, Core::EventReceive
     , m_socket(move(socket))
 {
     m_socket->on_ready_to_read = [this] {
-        if (auto result = on_ready_to_read(); result.is_error()) {
-            result.error().visit(
-                [](AK::Error const& error) {
-                    warnln("Internal error: {}", error);
-                },
-                [](HTTP::HttpRequest::ParseError const& error) {
-                    warnln("HTTP request parsing error: {}", HTTP::HttpRequest::parse_error_to_string(error));
-                },
-                [this](WebDriver::Error const& error) {
-                    if (send_error_response(error).is_error())
-                        warnln("Could not send error response");
-                });
-
-            die();
-        }
-
-        m_request = {};
+        if (auto result = on_ready_to_read(); result.is_error())
+            handle_error({}, result.release_error());
     };
 }
 
@@ -203,6 +194,7 @@ Client::~Client()
 
 void Client::die()
 {
+    // We defer removing this connection to avoid closing its socket while we are inside the on_ready_to_read callback.
     deferred_invoke([this] { remove_from_parent(); });
 }
 
@@ -227,31 +219,36 @@ ErrorOr<void, Client::WrappedError> Client::on_ready_to_read()
     if (m_remaining_request.is_empty())
         return {};
 
-    auto maybe_parsed_request = HTTP::HttpRequest::from_raw_request(TRY(m_remaining_request.to_byte_buffer()));
-    if (maybe_parsed_request.is_error()) {
-        if (maybe_parsed_request.error() == HTTP::HttpRequest::ParseError::RequestIncomplete) {
-            // If request is not complete we need to wait for more data to arrive
-            return {};
-        }
-        return maybe_parsed_request.error();
-    }
+    auto parsed_request = HTTP::HttpRequest::from_raw_request(m_remaining_request.string_view().bytes());
+
+    // If the request is not complete, we need to wait for more data to arrive.
+    if (parsed_request.is_error() && parsed_request.error() == HTTP::HttpRequest::ParseError::RequestIncomplete)
+        return {};
 
     m_remaining_request.clear();
-    m_request = maybe_parsed_request.value();
+    auto request = parsed_request.release_value();
 
-    auto body = TRY(read_body_as_json());
-    TRY(handle_request(move(body)));
+    deferred_invoke([this, request = move(request)]() {
+        auto body = read_body_as_json(request);
+        if (body.is_error()) {
+            handle_error(request, body.release_error());
+            return;
+        }
+
+        if (auto result = handle_request(request, body.release_value()); result.is_error())
+            handle_error(request, result.release_error());
+    });
 
     return {};
 }
 
-ErrorOr<JsonValue, Client::WrappedError> Client::read_body_as_json()
+ErrorOr<JsonValue, Client::WrappedError> Client::read_body_as_json(HTTP::HttpRequest const& request)
 {
     // FIXME: If we received a multipart body here, this would fail badly.
     // FIXME: Check the Content-Type is actually application/json.
     size_t content_length = 0;
 
-    for (auto const& header : m_request->headers()) {
+    for (auto const& header : request.headers().headers()) {
         if (header.name.equals_ignoring_ascii_case("Content-Length"sv)) {
             content_length = header.value.to_number<size_t>(TrimWhitespace::Yes).value_or(0);
             break;
@@ -261,90 +258,105 @@ ErrorOr<JsonValue, Client::WrappedError> Client::read_body_as_json()
     if (content_length == 0)
         return JsonValue {};
 
-    JsonParser json_parser(m_request->body());
+    JsonParser json_parser(request.body());
     return TRY(json_parser.parse());
 }
 
-ErrorOr<void, Client::WrappedError> Client::handle_request(JsonValue body)
+ErrorOr<void, Client::WrappedError> Client::handle_request(HTTP::HttpRequest const& request, JsonValue body)
 {
     if constexpr (WEBDRIVER_DEBUG) {
-        dbgln("Got HTTP request: {} {}", m_request->method_name(), m_request->resource());
+        dbgln("Got HTTP request: {} {}", request.method_name(), request.resource());
         dbgln("Body: {}", body);
     }
 
-    auto [handler, parameters] = TRY(match_route(*m_request));
+    auto [handler, parameters] = TRY(match_route(request));
     auto result = TRY((*handler)(*this, move(parameters), move(body)));
-    return send_success_response(move(result));
+    return send_success_response(request, move(result));
 }
 
-ErrorOr<void, Client::WrappedError> Client::send_success_response(JsonValue result)
+void Client::handle_error(HTTP::HttpRequest const& request, WrappedError const& error)
+{
+    error.visit(
+        [](AK::Error const& error) {
+            warnln("Internal error: {}", error);
+        },
+        [](HTTP::HttpRequest::ParseError const& error) {
+            warnln("HTTP request parsing error: {}", HTTP::HttpRequest::parse_error_to_string(error));
+        },
+        [&](WebDriver::Error const& error) {
+            if (send_error_response(request, error).is_error())
+                warnln("Could not send error response");
+        });
+
+    die();
+}
+
+ErrorOr<void, Client::WrappedError> Client::send_success_response(HTTP::HttpRequest const& request, JsonValue result)
 {
     bool keep_alive = false;
-    if (auto it = m_request->headers().find_if([](auto& header) { return header.name.equals_ignoring_ascii_case("Connection"sv); }); !it.is_end())
+    if (auto it = request.headers().headers().find_if([](auto& header) { return header.name.equals_ignoring_ascii_case("Connection"sv); }); !it.is_end())
         keep_alive = it->value.trim_whitespace().equals_ignoring_ascii_case("keep-alive"sv);
 
     result = make_success_response(move(result));
     auto content = result.serialized<StringBuilder>();
 
     StringBuilder builder;
-    builder.append("HTTP/1.0 200 OK\r\n"sv);
+    builder.append("HTTP/1.1 200 OK\r\n"sv);
     builder.append("Server: WebDriver (SerenityOS)\r\n"sv);
     builder.append("X-Frame-Options: SAMEORIGIN\r\n"sv);
     builder.append("X-Content-Type-Options: nosniff\r\n"sv);
-    builder.append("Pragma: no-cache\r\n"sv);
     if (keep_alive)
         builder.append("Connection: keep-alive\r\n"sv);
+    builder.append("Cache-Control: no-cache\r\n"sv);
     builder.append("Content-Type: application/json; charset=utf-8\r\n"sv);
     builder.appendff("Content-Length: {}\r\n", content.length());
     builder.append("\r\n"sv);
+    builder.append(content);
 
-    auto builder_contents = TRY(builder.to_byte_buffer());
-    TRY(m_socket->write_until_depleted(builder_contents));
-
-    while (!content.is_empty()) {
-        auto bytes_sent = TRY(m_socket->write_some(content.bytes()));
-        content = content.substring_view(bytes_sent);
-    }
+    TRY(m_socket->write_until_depleted(builder.string_view()));
 
     if (!keep_alive)
         die();
 
-    log_response(200);
+    log_response(request, 200);
     return {};
 }
 
-ErrorOr<void, Client::WrappedError> Client::send_error_response(Error const& error)
+ErrorOr<void, Client::WrappedError> Client::send_error_response(HTTP::HttpRequest const& request, Error const& error)
 {
     // FIXME: Implement to spec.
     dbgln_if(WEBDRIVER_DEBUG, "Sending error response: {} {}: {}", error.http_status, error.error, error.message);
     auto reason = HTTP::HttpResponse::reason_phrase_for_code(error.http_status);
 
-    JsonObject result;
-    result.set("error", error.error);
-    result.set("message", error.message);
-    result.set("stacktrace", "");
+    JsonObject error_response;
+    error_response.set("error", error.error);
+    error_response.set("message", error.message);
+    error_response.set("stacktrace", "");
     if (error.data.has_value())
-        result.set("data", *error.data);
+        error_response.set("data", *error.data);
 
-    StringBuilder content_builder;
-    result.serialize(content_builder);
+    JsonObject result;
+    result.set("value", move(error_response));
 
-    StringBuilder header_builder;
-    header_builder.appendff("HTTP/1.0 {} {}\r\n", error.http_status, reason);
-    header_builder.append("Content-Type: application/json; charset=UTF-8\r\n"sv);
-    header_builder.appendff("Content-Length: {}\r\n", content_builder.length());
-    header_builder.append("\r\n"sv);
+    auto content = result.serialized<StringBuilder>();
 
-    TRY(m_socket->write_until_depleted(TRY(header_builder.to_byte_buffer())));
-    TRY(m_socket->write_until_depleted(TRY(content_builder.to_byte_buffer())));
+    StringBuilder builder;
+    builder.appendff("HTTP/1.1 {} {}\r\n", error.http_status, reason);
+    builder.append("Cache-Control: no-cache\r\n"sv);
+    builder.append("Content-Type: application/json; charset=utf-8\r\n"sv);
+    builder.appendff("Content-Length: {}\r\n", content.length());
+    builder.append("\r\n"sv);
+    builder.append(content);
 
-    log_response(error.http_status);
+    TRY(m_socket->write_until_depleted(builder.string_view()));
+
+    log_response(request, error.http_status);
     return {};
 }
 
-void Client::log_response(unsigned code)
+void Client::log_response(HTTP::HttpRequest const& request, unsigned code)
 {
-    outln("{} :: {:03d} :: {} {}", Core::DateTime::now().to_byte_string(), code, m_request->method_name(), m_request->resource());
+    outln("{} :: {:03d} :: {} {}", Core::DateTime::now().to_byte_string(), code, request.method_name(), request.resource());
 }
 
 }

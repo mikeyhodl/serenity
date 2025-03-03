@@ -22,9 +22,34 @@ bool is_animatable_property(JsonObject& properties, StringView property_name);
 static bool type_name_is_enum(StringView type_name)
 {
     return !AK::first_is_one_of(type_name,
-        "angle"sv, "background-position"sv, "color"sv, "custom-ident"sv, "easing-function"sv, "flex"sv, "frequency"sv, "image"sv,
-        "integer"sv, "length"sv, "number"sv, "paint"sv, "percentage"sv, "position"sv, "ratio"sv, "rect"sv,
-        "resolution"sv, "string"sv, "time"sv, "url"sv);
+        "angle"sv,
+        "background-position"sv,
+        "basic-shape"sv,
+        "color"sv,
+        "counter"sv,
+        "custom-ident"sv,
+        "easing-function"sv,
+        "flex"sv,
+        "frequency"sv,
+        "image"sv,
+        "integer"sv,
+        "length"sv,
+        "number"sv,
+        "opentype-tag"sv,
+        "paint"sv,
+        "percentage"sv,
+        "position"sv,
+        "ratio"sv,
+        "rect"sv,
+        "resolution"sv,
+        "string"sv,
+        "time"sv,
+        "url"sv);
+}
+
+static bool is_legacy_alias(JsonObject const& property)
+{
+    return property.has_string("legacy-alias-for"sv);
 }
 
 ErrorOr<int> serenity_main(Main::Arguments arguments)
@@ -69,8 +94,8 @@ void replace_logical_aliases(JsonObject& properties)
     AK::HashMap<ByteString, ByteString> logical_aliases;
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
-        const auto& value_as_object = value.as_object();
-        const auto logical_alias_for = value_as_object.get_array("logical-alias-for"sv);
+        auto const& value_as_object = value.as_object();
+        auto const logical_alias_for = value_as_object.get_array("logical-alias-for"sv);
         if (logical_alias_for.has_value()) {
             auto const& aliased_properties = logical_alias_for.value();
             for (auto const& aliased_property : aliased_properties.values()) {
@@ -117,46 +142,64 @@ enum class PropertyID {
     All,
 )~~~");
 
-    Vector<ByteString> shorthand_property_ids;
-    Vector<ByteString> longhand_property_ids;
+    Vector<ByteString> inherited_shorthand_property_ids;
+    Vector<ByteString> inherited_longhand_property_ids;
+    Vector<ByteString> noninherited_shorthand_property_ids;
+    Vector<ByteString> noninherited_longhand_property_ids;
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
-        if (value.as_object().has("longhands"sv))
-            shorthand_property_ids.append(name);
-        else
-            longhand_property_ids.append(name);
+        // Legacy aliases don't get a PropertyID
+        if (is_legacy_alias(value.as_object()))
+            return;
+        bool inherited = value.as_object().get_bool("inherited"sv).value_or(false);
+        if (value.as_object().has("longhands"sv)) {
+            if (inherited)
+                inherited_shorthand_property_ids.append(name);
+            else
+                noninherited_shorthand_property_ids.append(name);
+        } else {
+            if (inherited)
+                inherited_longhand_property_ids.append(name);
+            else
+                noninherited_longhand_property_ids.append(name);
+        }
     });
 
-    auto first_property_id = shorthand_property_ids.first();
-    auto last_property_id = longhand_property_ids.last();
+    // Section order:
+    // 1. inherited shorthand properties
+    // 2. noninherited shorthand properties
+    // 3. inherited longhand properties
+    // 4. noninherited longhand properties
 
-    for (auto& name : shorthand_property_ids) {
-        auto member_generator = generator.fork();
-        member_generator.set("name:titlecase", title_casify(name));
+    auto first_property_id = inherited_shorthand_property_ids.first();
+    auto last_property_id = noninherited_longhand_property_ids.last();
 
-        member_generator.append(R"~~~(
-    @name:titlecase@,
+    auto emit_properties = [&](auto& property_ids) {
+        for (auto& name : property_ids) {
+            auto member_generator = generator.fork();
+            member_generator.set("name:titlecase", title_casify(name));
+            member_generator.append(R"~~~(
+        @name:titlecase@,
 )~~~");
-    }
+        }
+    };
 
-    for (auto& name : longhand_property_ids) {
-        auto member_generator = generator.fork();
-        member_generator.set("name:titlecase", title_casify(name));
-
-        member_generator.append(R"~~~(
-    @name:titlecase@,
-)~~~");
-    }
+    emit_properties(inherited_shorthand_property_ids);
+    emit_properties(noninherited_shorthand_property_ids);
+    emit_properties(inherited_longhand_property_ids);
+    emit_properties(noninherited_longhand_property_ids);
 
     generator.set("first_property_id", title_casify(first_property_id));
     generator.set("last_property_id", title_casify(last_property_id));
 
-    generator.set("first_shorthand_property_id", title_casify(shorthand_property_ids.first()));
-    generator.set("last_shorthand_property_id", title_casify(shorthand_property_ids.last()));
+    generator.set("first_longhand_property_id", title_casify(inherited_longhand_property_ids.first()));
+    generator.set("last_longhand_property_id", title_casify(noninherited_longhand_property_ids.last()));
 
-    generator.set("first_longhand_property_id", title_casify(longhand_property_ids.first()));
-    generator.set("last_longhand_property_id", title_casify(longhand_property_ids.last()));
+    generator.set("first_inherited_shorthand_property_id", title_casify(inherited_shorthand_property_ids.first()));
+    generator.set("last_inherited_shorthand_property_id", title_casify(inherited_shorthand_property_ids.last()));
+    generator.set("first_inherited_longhand_property_id", title_casify(inherited_longhand_property_ids.first()));
+    generator.set("last_inherited_longhand_property_id", title_casify(inherited_longhand_property_ids.last()));
 
     generator.append(R"~~~(
 };
@@ -174,13 +217,16 @@ bool is_animatable_property(PropertyID);
 Optional<PropertyID> property_id_from_camel_case_string(StringView);
 Optional<PropertyID> property_id_from_string(StringView);
 [[nodiscard]] FlyString const& string_from_property_id(PropertyID);
+[[nodiscard]] FlyString const& camel_case_string_from_property_id(PropertyID);
 bool is_inherited_property(PropertyID);
-NonnullRefPtr<StyleValue> property_initial_value(JS::Realm&, PropertyID);
+NonnullRefPtr<CSSStyleValue> property_initial_value(JS::Realm&, PropertyID);
 
 enum class ValueType {
     Angle,
     BackgroundPosition,
+    BasicShape,
     Color,
+    Counter,
     CustomIdent,
     EasingFunction,
     FilterValueList,
@@ -190,6 +236,7 @@ enum class ValueType {
     Integer,
     Length,
     Number,
+    OpenTypeTag,
     Paint,
     Percentage,
     Position,
@@ -201,7 +248,7 @@ enum class ValueType {
     Url,
 };
 bool property_accepts_type(PropertyID, ValueType);
-bool property_accepts_identifier(PropertyID, ValueID);
+bool property_accepts_keyword(PropertyID, Keyword);
 Optional<ValueType> property_resolves_percentages_relative_to(PropertyID);
 
 // These perform range-checking, but are also safe to call with properties that don't accept that type. (They'll just return false.)
@@ -225,8 +272,10 @@ bool property_affects_stacking_context(PropertyID);
 
 constexpr PropertyID first_property_id = PropertyID::@first_property_id@;
 constexpr PropertyID last_property_id = PropertyID::@last_property_id@;
-constexpr PropertyID first_shorthand_property_id = PropertyID::@first_shorthand_property_id@;
-constexpr PropertyID last_shorthand_property_id = PropertyID::@last_shorthand_property_id@;
+constexpr PropertyID first_inherited_shorthand_property_id = PropertyID::@first_inherited_shorthand_property_id@;
+constexpr PropertyID last_inherited_shorthand_property_id = PropertyID::@last_inherited_shorthand_property_id@;
+constexpr PropertyID first_inherited_longhand_property_id = PropertyID::@first_inherited_longhand_property_id@;
+constexpr PropertyID last_inherited_longhand_property_id = PropertyID::@last_inherited_longhand_property_id@;
 constexpr PropertyID first_longhand_property_id = PropertyID::@first_longhand_property_id@;
 constexpr PropertyID last_longhand_property_id = PropertyID::@last_longhand_property_id@;
 
@@ -266,6 +315,8 @@ bool property_accepts_@css_type_name@(PropertyID property_id, [[maybe_unused]] @
 
     properties.for_each_member([&](auto& name, JsonValue const& value) -> void {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
         if (auto maybe_valid_types = value.as_object().get_array("valid-types"sv); maybe_valid_types.has_value() && !maybe_valid_types->is_empty()) {
             for (auto valid_type : maybe_valid_types->values()) {
                 auto type_and_range = valid_type.as_string().split_view(' ');
@@ -351,7 +402,7 @@ ErrorOr<void> generate_implementation_file(JsonObject& properties, Core::File& f
 #include <LibWeb/CSS/Enums.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/PropertyID.h>
-#include <LibWeb/CSS/StyleValue.h>
+#include <LibWeb/CSS/CSSStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/CSS/StyleValues/TimeStyleValue.h>
 #include <LibWeb/Infra/Strings.h>
@@ -367,8 +418,12 @@ Optional<PropertyID> property_id_from_camel_case_string(StringView string)
 
         auto member_generator = generator.fork();
         member_generator.set("name", name);
-        member_generator.set("name:titlecase", title_casify(name));
         member_generator.set("name:camelcase", camel_casify(name));
+        if (auto legacy_alias_for = value.as_object().get_byte_string("legacy-alias-for"sv); legacy_alias_for.has_value()) {
+            member_generator.set("name:titlecase", title_casify(legacy_alias_for.value()));
+        } else {
+            member_generator.set("name:titlecase", title_casify(name));
+        }
         member_generator.append(R"~~~(
     if (string.equals_ignoring_ascii_case("@name:camelcase@"sv))
         return PropertyID::@name:titlecase@;
@@ -390,7 +445,11 @@ Optional<PropertyID> property_id_from_string(StringView string)
 
         auto member_generator = generator.fork();
         member_generator.set("name", name);
-        member_generator.set("name:titlecase", title_casify(name));
+        if (auto legacy_alias_for = value.as_object().get_byte_string("legacy-alias-for"sv); legacy_alias_for.has_value()) {
+            member_generator.set("name:titlecase", title_casify(legacy_alias_for.value()));
+        } else {
+            member_generator.set("name:titlecase", title_casify(name));
+        }
         member_generator.append(R"~~~(
     if (Infra::is_ascii_case_insensitive_match(string, "@name@"sv))
         return PropertyID::@name:titlecase@;
@@ -407,6 +466,8 @@ FlyString const& string_from_property_id(PropertyID property_id) {
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
 
         auto member_generator = generator.fork();
         member_generator.set("name", name);
@@ -427,6 +488,35 @@ FlyString const& string_from_property_id(PropertyID property_id) {
     }
 }
 
+FlyString const& camel_case_string_from_property_id(PropertyID property_id) {
+    switch (property_id) {
+)~~~");
+
+    properties.for_each_member([&](auto& name, auto& value) {
+        VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
+
+        auto member_generator = generator.fork();
+        member_generator.set("name", name);
+        member_generator.set("name:titlecase", title_casify(name));
+        member_generator.set("name:camelcase", camel_casify(name));
+        member_generator.append(R"~~~(
+    case PropertyID::@name:titlecase@: {
+        static FlyString name = "@name:camelcase@"_fly_string;
+        return name;
+    }
+)~~~");
+    });
+
+    generator.append(R"~~~(
+    default: {
+        static FlyString invalid_property_id_string = "(invalid CSS::PropertyID)"_fly_string;
+        return invalid_property_id_string;
+    }
+    }
+}
+
 AnimationType animation_type_from_longhand_property(PropertyID property_id)
 {
     switch (property_id) {
@@ -434,6 +524,9 @@ AnimationType animation_type_from_longhand_property(PropertyID property_id)
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
+
         auto member_generator = generator.fork();
         member_generator.set("name:titlecase", title_casify(name));
 
@@ -476,6 +569,9 @@ bool is_animatable_property(PropertyID property_id)
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
+
         if (is_animatable_property(properties, name)) {
             auto member_generator = generator.fork();
             member_generator.set("name:titlecase", title_casify(name));
@@ -494,33 +590,11 @@ bool is_animatable_property(PropertyID property_id)
 
 bool is_inherited_property(PropertyID property_id)
 {
-    switch (property_id) {
-)~~~");
-
-    properties.for_each_member([&](auto& name, auto& value) {
-        VERIFY(value.is_object());
-
-        bool inherited = false;
-        if (value.as_object().has("inherited"sv)) {
-            auto inherited_value = value.as_object().get_bool("inherited"sv);
-            VERIFY(inherited_value.has_value());
-            inherited = inherited_value.value();
-        }
-
-        if (inherited) {
-            auto member_generator = generator.fork();
-            member_generator.set("name:titlecase", title_casify(name));
-            member_generator.append(R"~~~(
-    case PropertyID::@name:titlecase@:
+    if (property_id >= first_inherited_shorthand_property_id && property_id <= last_inherited_longhand_property_id)
         return true;
-)~~~");
-        }
-    });
-
-    generator.append(R"~~~(
-    default:
-        return false;
-    }
+    if (property_id >= first_inherited_longhand_property_id && property_id <= last_inherited_longhand_property_id)
+        return true;
+    return false;
 }
 
 bool property_affects_layout(PropertyID property_id)
@@ -530,6 +604,8 @@ bool property_affects_layout(PropertyID property_id)
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
 
         bool affects_layout = true;
         if (value.as_object().has("affects-layout"sv))
@@ -558,6 +634,8 @@ bool property_affects_stacking_context(PropertyID property_id)
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
 
         bool affects_stacking_context = false;
         if (value.as_object().has("affects-stacking-context"sv))
@@ -579,9 +657,9 @@ bool property_affects_stacking_context(PropertyID property_id)
     }
 }
 
-NonnullRefPtr<StyleValue> property_initial_value(JS::Realm& context_realm, PropertyID property_id)
+NonnullRefPtr<CSSStyleValue> property_initial_value(JS::Realm& context_realm, PropertyID property_id)
 {
-    static Array<RefPtr<StyleValue>, to_underlying(last_property_id) + 1> initial_values;
+    static Array<RefPtr<CSSStyleValue>, to_underlying(last_property_id) + 1> initial_values;
     if (auto initial_value = initial_values[to_underlying(property_id)])
         return initial_value.release_nonnull();
 
@@ -619,6 +697,8 @@ NonnullRefPtr<StyleValue> property_initial_value(JS::Realm& context_realm, Prope
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
         output_initial_value_code(name, value.as_object());
     });
 
@@ -635,6 +715,9 @@ bool property_has_quirk(PropertyID property_id, Quirk quirk)
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
+
         if (value.as_object().has("quirks"sv)) {
             auto quirks_value = value.as_object().get_array("quirks"sv);
             VERIFY(quirks_value.has_value());
@@ -679,6 +762,9 @@ bool property_accepts_type(PropertyID property_id, ValueType value_type)
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
         auto& object = value.as_object();
+        if (is_legacy_alias(object))
+            return;
+
         if (auto maybe_valid_types = object.get_array("valid-types"sv); maybe_valid_types.has_value() && !maybe_valid_types->is_empty()) {
             auto& valid_types = maybe_valid_types.value();
             auto property_generator = generator.fork();
@@ -699,8 +785,12 @@ bool property_accepts_type(PropertyID property_id, ValueType value_type)
                     property_generator.appendln("        case ValueType::Angle:");
                 } else if (type_name == "background-position") {
                     property_generator.appendln("        case ValueType::BackgroundPosition:");
+                } else if (type_name == "basic-shape") {
+                    property_generator.appendln("        case ValueType::BasicShape:");
                 } else if (type_name == "color") {
                     property_generator.appendln("        case ValueType::Color:");
+                } else if (type_name == "counter") {
+                    property_generator.appendln("        case ValueType::Counter:");
                 } else if (type_name == "custom-ident") {
                     property_generator.appendln("        case ValueType::CustomIdent:");
                 } else if (type_name == "easing-function") {
@@ -717,6 +807,8 @@ bool property_accepts_type(PropertyID property_id, ValueType value_type)
                     property_generator.appendln("        case ValueType::Length:");
                 } else if (type_name == "number") {
                     property_generator.appendln("        case ValueType::Number:");
+                } else if (type_name == "opentype-tag") {
+                    property_generator.appendln("        case ValueType::OpenTypeTag:");
                 } else if (type_name == "paint") {
                     property_generator.appendln("        case ValueType::Paint:");
                 } else if (type_name == "percentage") {
@@ -758,25 +850,27 @@ bool property_accepts_type(PropertyID property_id, ValueType value_type)
     }
 }
 
-bool property_accepts_identifier(PropertyID property_id, ValueID identifier)
+bool property_accepts_keyword(PropertyID property_id, Keyword keyword)
 {
     switch (property_id) {
 )~~~");
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
         auto& object = value.as_object();
+        if (is_legacy_alias(object))
+            return;
 
         auto property_generator = generator.fork();
         property_generator.set("name:titlecase", title_casify(name));
         property_generator.appendln("    case PropertyID::@name:titlecase@: {");
 
         if (auto maybe_valid_identifiers = object.get_array("valid-identifiers"sv); maybe_valid_identifiers.has_value() && !maybe_valid_identifiers->is_empty()) {
-            property_generator.appendln("        switch (identifier) {");
+            property_generator.appendln("        switch (keyword) {");
             auto& valid_identifiers = maybe_valid_identifiers.value();
-            for (auto& identifier : valid_identifiers.values()) {
-                auto identifier_generator = generator.fork();
-                identifier_generator.set("identifier:titlecase", title_casify(identifier.as_string()));
-                identifier_generator.appendln("        case ValueID::@identifier:titlecase@:");
+            for (auto& keyword : valid_identifiers.values()) {
+                auto keyword_generator = generator.fork();
+                keyword_generator.set("keyword:titlecase", title_casify(keyword.as_string()));
+                keyword_generator.appendln("        case Keyword::@keyword:titlecase@:");
             }
             property_generator.append(R"~~~(
             return true;
@@ -796,7 +890,7 @@ bool property_accepts_identifier(PropertyID property_id, ValueID identifier)
                 auto type_generator = generator.fork();
                 type_generator.set("type_name:snakecase", snake_casify(type_name));
                 type_generator.append(R"~~~(
-        if (value_id_to_@type_name:snakecase@(identifier).has_value())
+        if (keyword_to_@type_name:snakecase@(keyword).has_value())
             return true;
 )~~~");
             }
@@ -819,6 +913,9 @@ Optional<ValueType> property_resolves_percentages_relative_to(PropertyID propert
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
+
         if (auto resolved_type = value.as_object().get_byte_string("percentages-resolve-to"sv); resolved_type.has_value()) {
             auto property_generator = generator.fork();
             property_generator.set("name:titlecase", title_casify(name));
@@ -843,6 +940,9 @@ size_t property_maximum_value_count(PropertyID property_id)
 
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
+        if (is_legacy_alias(value.as_object()))
+            return;
+
         if (value.as_object().has("max-values"sv)) {
             JsonValue max_values = value.as_object().get("max-values"sv).release_value();
             VERIFY(max_values.is_integer<size_t>());
@@ -878,6 +978,9 @@ bool property_is_shorthand(PropertyID property_id)
     switch (property_id) {
 )~~~");
     properties.for_each_member([&](auto& name, auto& value) {
+        if (is_legacy_alias(value.as_object()))
+            return;
+
         if (value.as_object().has("longhands"sv)) {
             auto property_generator = generator.fork();
             property_generator.set("name:titlecase", title_casify(name));
@@ -901,6 +1004,9 @@ Vector<PropertyID> longhands_for_shorthand(PropertyID property_id)
     switch (property_id) {
 )~~~");
     properties.for_each_member([&](auto& name, auto& value) {
+        if (is_legacy_alias(value.as_object()))
+            return;
+
         if (value.as_object().has("longhands"sv)) {
             auto longhands = value.as_object().get("longhands"sv);
             VERIFY(longhands.has_value() && longhands->is_array());

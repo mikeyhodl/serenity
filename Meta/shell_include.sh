@@ -83,19 +83,36 @@ get_number_of_processing_units() {
   ($number_of_processing_units)
 }
 
-# We depend on GNU coreutils du for the --apparent-size extension.
-# GNU coreutils is a build dependency.
-if command -v gdu > /dev/null 2>&1 && gdu --version | grep -q "GNU coreutils"; then
-    GNUDU="gdu"
+# Discover how to get apparent size from `du`. GNU/BusyBox du has --apparent-size / -b, BSD/Darwin du has `-A`.
+if du --help 2>&1 | grep -qE "GNU coreutils|BusyBox"; then
+    DU_APPARENT_SIZE_FLAG="-b"
 else
-    GNUDU="du"
+    DU_APPARENT_SIZE_FLAG="-A"
 fi
 
 disk_usage() {
     # shellcheck disable=SC2003,SC2307
-    expr "$(${GNUDU} -sbm "$1" | cut -f1)"
+    expr "$(du ${DU_APPARENT_SIZE_FLAG} -sm "$1" | cut -f1)"
 }
 
 inode_usage() {
     find "$1" | wc -l
+}
+
+check_sha256() {
+    if [ $# -ne 2 ]; then
+        error "Usage: check_sha256 FILE EXPECTED_HASH"
+        return 1
+    fi
+
+    FILE="${1}"
+    EXPECTED_HASH="${2}"
+
+    SYSTEM_NAME="$(uname -s)"
+    if [ "$SYSTEM_NAME" = "Darwin" ]; then
+        SEEN_HASH="$(shasum -a 256 "${FILE}" | cut -d " " -f 1)"
+    else
+        SEEN_HASH="$(sha256sum "${FILE}" | cut -d " " -f 1)"
+    fi
+    test "${EXPECTED_HASH}" = "${SEEN_HASH}"
 }

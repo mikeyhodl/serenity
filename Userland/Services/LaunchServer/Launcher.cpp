@@ -50,6 +50,12 @@ ByteString Handler::to_details_str() const
     auto obj = MUST(JsonObjectSerializer<>::try_create(builder));
     MUST(obj.add("executable"sv, executable));
     MUST(obj.add("name"sv, name));
+
+    auto arguments = MUST(obj.add_array("arguments"sv));
+    for (auto const& argument : this->arguments)
+        MUST(arguments.add(argument));
+    MUST(arguments.finish());
+
     switch (handler_type) {
     case Type::Application:
         MUST(obj.add("type"sv, "app"));
@@ -63,6 +69,7 @@ ByteString Handler::to_details_str() const
     default:
         break;
     }
+
     MUST(obj.finish());
     return builder.to_byte_string();
 }
@@ -84,6 +91,7 @@ void Launcher::load_handlers(ByteString const& af_dir)
     Desktop::AppFile::for_each([&](auto af) {
         auto app_name = af->name();
         auto app_executable = af->executable();
+        auto app_arguments = af->arguments();
         HashTable<ByteString> mime_types;
         for (auto& mime_type : af->launcher_mime_types())
             mime_types.set(mime_type);
@@ -94,7 +102,7 @@ void Launcher::load_handlers(ByteString const& af_dir)
         for (auto& protocol : af->launcher_protocols())
             protocols.set(protocol);
         if (access(app_executable.characters(), X_OK) == 0)
-            m_handlers.set(app_executable, { Handler::Type::Default, app_name, app_executable, mime_types, file_types, protocols });
+            m_handlers.set(app_executable, { Handler::Type::Default, app_name, app_executable, move(app_arguments), mime_types, file_types, protocols });
     },
         af_dir);
 }
@@ -141,7 +149,7 @@ Vector<ByteString> Launcher::handlers_for_url(const URL::URL& url)
 {
     Vector<ByteString> handlers;
     if (url.scheme() == "file") {
-        for_each_handler_for_path(url.serialize_path(), [&](auto& handler) -> bool {
+        for_each_handler_for_path(URL::percent_decode(url.serialize_path()), [&](auto& handler) -> bool {
             handlers.append(handler.executable);
             return true;
         });
@@ -161,7 +169,7 @@ Vector<ByteString> Launcher::handlers_with_details_for_url(const URL::URL& url)
 {
     Vector<ByteString> handlers;
     if (url.scheme() == "file") {
-        for_each_handler_for_path(url.serialize_path(), [&](auto& handler) -> bool {
+        for_each_handler_for_path(URL::percent_decode(url.serialize_path()), [&](auto& handler) -> bool {
             handlers.append(handler.to_details_str());
             return true;
         });
@@ -206,7 +214,7 @@ bool Launcher::open_with_handler_name(const URL::URL& url, ByteString const& han
     auto& handler = handler_optional.value();
     ByteString argument;
     if (url.scheme() == "file")
-        argument = url.serialize_path();
+        argument = URL::percent_decode(url.serialize_path());
     else
         argument = url.to_byte_string();
     return spawn(handler.executable, { argument });
@@ -349,7 +357,7 @@ void Launcher::for_each_handler_for_path(ByteString const& path, Function<bool(H
 bool Launcher::open_file_url(const URL::URL& url)
 {
     struct stat st;
-    auto file_path = url.serialize_path();
+    auto file_path = URL::percent_decode(url.serialize_path());
     if (stat(file_path.characters(), &st) < 0) {
         perror("stat");
         return false;
@@ -391,7 +399,7 @@ bool Launcher::open_file_url(const URL::URL& url)
 
     // Additional parameters parsing, specific for the file protocol and txt file handlers
     Vector<ByteString> additional_parameters;
-    ByteString filepath = url.serialize_path();
+    ByteString filepath = URL::percent_decode(url.serialize_path());
 
     if (url.query().has_value()) {
         url.query()->bytes_as_string_view().for_each_split_view('&', SplitBehavior::Nothing, [&](auto parameter) {

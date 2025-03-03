@@ -21,8 +21,10 @@ public:
     JS::NonnullGCPtr<DOM::DocumentFragment> content() { return *m_content; }
     JS::NonnullGCPtr<DOM::DocumentFragment> const content() const { return *m_content; }
 
+    void set_template_contents(JS::NonnullGCPtr<DOM::DocumentFragment>);
+
     virtual void adopted_from(DOM::Document&) override;
-    virtual void cloned(Node& copy, bool clone_children) override;
+    virtual WebIDL::ExceptionOr<void> cloned(Node& copy, bool clone_children) override;
 
 private:
     HTMLTemplateElement(DOM::Document&, DOM::QualifiedName);

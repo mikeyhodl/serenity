@@ -7,7 +7,7 @@ print_help() {
     NAME=$(basename "$ARG0")
     cat <<EOF
 Usage: $NAME COMMAND [TARGET] [TOOLCHAIN] [ARGS...]
-  Supported TARGETs: aarch64, x86_64, riscv64, lagom. Defaults to SERENITY_ARCH, or x86_64 if not set.
+  Supported TARGETs: aarch64, x86_64, riscv64, lagom. Defaults to SERENITY_ARCH, or host architecture if not set.
   Supported TOOLCHAINs: GNU, Clang. Defaults to SERENITY_TOOLCHAIN, or GNU if not set.
   Supported COMMANDs:
     build:      Compiles the target binaries, [ARGS...] are passed through to ninja
@@ -54,7 +54,7 @@ Usage: $NAME COMMAND [TARGET] [TOOLCHAIN] [ARGS...]
         Runs the Lagom-built js(1) REPL
     $NAME test lagom
         Runs the unit tests on the build host
-    $NAME kaddr2line x86_64 0x12345678
+    $NAME kaddr2line x86_64 GNU 0x12345678
         Resolves the address 0x12345678 in the Kernel binary
     $NAME addr2line x86_64 WindowServer 0x12345678
         Resolves the address 0x12345678 in the WindowServer binary
@@ -84,13 +84,24 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 exit_if_running_as_root "Do not run serenity.sh as root, your Build directory will become root-owned"
 
+host_arch=$(uname -m)
+if [ "$host_arch" = "x86_64" ] || [ "$host_arch" = "amd64" ] || [ "$host_arch" = "x64" ]; then
+    host_arch="x86_64"
+elif [ "$host_arch" = "aarch64" ] || [ "$host_arch" = "arm64" ]; then
+    host_arch="aarch64"
+elif [ "$host_arch" = "riscv64" ]; then
+    host_arch="riscv64"
+else
+    die "Unknown host architecture: $host_arch"
+fi
+
 # shellcheck source=/dev/null
 . "${DIR}/find_compiler.sh"
 
 if [ -n "$1" ]; then
     TARGET="$1"; shift
 else
-    TARGET="${SERENITY_ARCH:-"x86_64"}"
+    TARGET="${SERENITY_ARCH:-${host_arch}}"
 fi
 
 CMAKE_ARGS=()
@@ -169,7 +180,9 @@ cmd_with_target() {
         else
             TOOLCHAIN_DIR="$SERENITY_SOURCE_DIR/Toolchain/Local/$TARGET_TOOLCHAIN/$TARGET"
         fi
+        JAKT_TOOLCHAIN_DIR="$SERENITY_SOURCE_DIR/Toolchain/Local/jakt"
         SUPER_BUILD_DIR="$SERENITY_SOURCE_DIR/Build/superbuild-$TARGET$TARGET_TOOLCHAIN"
+        JAKT_LIB_DIR="$BUILD_DIR/Root/usr/local/lib/$TARGET-pc-serenity-unknown"
     else
         SUPER_BUILD_DIR="$BUILD_DIR"
         CMAKE_ARGS+=("-DCMAKE_INSTALL_PREFIX=$SERENITY_SOURCE_DIR/Build/lagom-install")
@@ -250,6 +263,18 @@ build_toolchain() {
     fi
 }
 
+build_jakt() {
+    [ -z "$JAKT_TOOLCHAIN_DIR" ] && return
+    echo "build_jakt: $JAKT_TOOLCHAIN_DIR"
+    ( cd "$SERENITY_SOURCE_DIR/Toolchain" && ./BuildJakt.sh )
+}
+
+ensure_jakt() {
+    if ! [ -d "$JAKT_TOOLCHAIN_DIR" ] || ! [ -d "$JAKT_LIB_DIR" ]; then
+        build_jakt || true # CMake can handle the failure.
+    fi
+}
+
 ensure_toolchain() {
     if [ "$(cmake -P "$SERENITY_SOURCE_DIR"/Meta/CMake/cmake-version.cmake)" -ne 1 ]; then
         build_cmake
@@ -269,6 +294,7 @@ ensure_toolchain() {
         fi
     fi
 
+    ensure_jakt
 }
 
 confirm_rebuild_if_toolchain_exists() {
@@ -283,6 +309,7 @@ confirm_rebuild_if_toolchain_exists() {
 
 delete_toolchain() {
     [ ! -d "$TOOLCHAIN_DIR" ] || rm -rf "$TOOLCHAIN_DIR"
+    ! [ -d "$JAKT_TOOLCHAIN_DIR" ] || rm -fr "$JAKT_TOOLCHAIN_DIR"
 }
 
 kill_tmux_session() {
@@ -366,6 +393,7 @@ if [[ "$CMD" =~ ^(build|install|image|copy-src|run|gdb|test|rebuild|recreate|kad
     cmd_with_target
     [[ "$CMD" != "recreate" && "$CMD" != "rebuild" ]] || delete_target
     [ "$TARGET" = "lagom" ] || ensure_toolchain
+    ensure_jakt
     ensure_target
     case "$CMD" in
         build)
@@ -500,7 +528,7 @@ elif [ "$CMD" = "__tmux_cmd" ]; then
             export SERENITY_KERNEL_CMDLINE="${CMD_ARGS[0]}"
         fi
         # We need to make sure qemu doesn't start until we continue in gdb
-        export SERENITY_EXTRA_QEMU_ARGS="${SERENITY_EXTRA_QEMU_ARGS} -d int -no-reboot -no-shutdown -S"
+        export SERENITY_EXTRA_QEMU_ARGS="${SERENITY_EXTRA_QEMU_ARGS} -no-reboot -no-shutdown -S"
         # We need to disable kaslr to let gdb map the kernel symbols correctly
         export SERENITY_KERNEL_CMDLINE="${SERENITY_KERNEL_CMDLINE} disable_kaslr"
         set_tmux_title 'qemu'

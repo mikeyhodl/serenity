@@ -7,10 +7,12 @@
 
 #pragma once
 
+#include <AK/Coroutine.h>
 #include <AK/Function.h>
 #include <AK/Stream.h>
 #include <LibCore/EventReceiver.h>
 #include <LibCore/Forward.h>
+#include <LibHTTP/HeaderMap.h>
 
 namespace Core {
 
@@ -24,10 +26,10 @@ public:
         ProtocolFailed,
         Cancelled,
     };
-    virtual ~NetworkJob() override = default;
+    virtual ~NetworkJob() override;
 
     // Could fire twice, after Headers and after Trailers!
-    Function<void(HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> const& response_headers, Optional<u32> response_code)> on_headers_received;
+    Function<void(HTTP::HeaderMap const& response_headers, Optional<u32> response_code)> on_headers_received;
     Function<void(bool success)> on_finish;
     Function<void(Optional<u64>, u64)> on_progress;
 
@@ -52,16 +54,20 @@ public:
     }
 
 protected:
-    NetworkJob(Stream&);
+    NetworkJob(Core::File&);
     void did_finish(NonnullRefPtr<NetworkResponse>&&);
     void did_fail(Error);
     void did_progress(Optional<u64> total_size, u64 downloaded);
 
-    ErrorOr<size_t> do_write(ReadonlyBytes bytes) { return m_output_stream.write_some(bytes); }
+    Coroutine<ErrorOr<size_t>> do_write(ReadonlyBytes bytes)
+    {
+        CO_TRY(co_await m_output_stream.wait_for_state(Core::Notifier::Type::Write));
+        co_return m_output_stream.write_some(bytes);
+    }
 
 private:
     RefPtr<NetworkResponse> m_response;
-    Stream& m_output_stream;
+    Core::File& m_output_stream;
     Error m_error { Error::None };
 };
 

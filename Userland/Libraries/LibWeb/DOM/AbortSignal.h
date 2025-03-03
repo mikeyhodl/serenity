@@ -26,7 +26,7 @@ public:
 
     virtual ~AbortSignal() override = default;
 
-    void add_abort_algorithm(Function<void()>);
+    void add_abort_algorithm(ESCAPING Function<void()>);
 
     // https://dom.spec.whatwg.org/#dom-abortsignal-aborted
     // An AbortSignal object is aborted when its abort reason is not undefined.
@@ -43,19 +43,17 @@ public:
 
     JS::ThrowCompletionOr<void> throw_if_aborted() const;
 
-    void follow(JS::NonnullGCPtr<AbortSignal> parent_signal);
-
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> abort(JS::VM&, JS::Value reason);
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> timeout(JS::VM&, Web::WebIDL::UnsignedLongLong milliseconds);
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> any(JS::VM&, JS::Value signals);
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> any(JS::VM&, Vector<JS::Handle<AbortSignal>> const&);
+
+    static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> create_dependent_abort_signal(JS::Realm&, Vector<JS::Handle<AbortSignal>> const&);
 
 private:
     explicit AbortSignal(JS::Realm&);
 
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(JS::Cell::Visitor&) override;
-
-    static WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> create_dependent_abort_signal(JS::Realm&, Vector<JS::Handle<AbortSignal>> const&);
 
     bool dependent() const { return m_dependent; }
     void set_dependent(bool dependent) { m_dependent = dependent; }

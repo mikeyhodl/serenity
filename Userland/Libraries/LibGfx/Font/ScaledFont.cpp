@@ -85,7 +85,18 @@ RefPtr<Gfx::Bitmap> ScaledFont::rasterize_glyph(u32 glyph_id, GlyphSubpixelOffse
 
 bool ScaledFont::append_glyph_path_to(Gfx::Path& path, u32 glyph_id) const
 {
-    return m_font->append_glyph_path_to(path, glyph_id, m_x_scale, m_y_scale);
+    auto glyph_iterator = m_glyph_cache.find(glyph_id);
+    if (glyph_iterator != m_glyph_cache.end()) {
+        path.append_path(glyph_iterator->value, Path::AppendRelativeToLastPoint::Yes);
+        return true;
+    }
+    Gfx::Path glyph_path;
+    bool success = m_font->append_glyph_path_to(glyph_path, glyph_id, m_x_scale, m_y_scale);
+    if (success) {
+        path.append_path(glyph_path, Path::AppendRelativeToLastPoint::Yes);
+        m_glyph_cache.set(glyph_id, move(glyph_path));
+    }
+    return success;
 }
 
 Gfx::Glyph ScaledFont::glyph(u32 code_point) const
@@ -110,8 +121,7 @@ float ScaledFont::glyph_left_bearing(u32 code_point) const
 float ScaledFont::glyph_width(u32 code_point) const
 {
     auto id = glyph_id_for_code_point(code_point);
-    auto metrics = glyph_metrics(id);
-    return metrics.advance_width;
+    return m_font->glyph_advance(id, m_x_scale, m_y_scale, m_point_width, m_point_height);
 }
 
 template<typename CodePointIterator>
@@ -160,7 +170,7 @@ NonnullRefPtr<ScaledFont> ScaledFont::scaled_with_size(float point_size) const
     return m_font->scaled_font(point_size);
 }
 
-RefPtr<Font> ScaledFont::with_size(float point_size) const
+NonnullRefPtr<Font> ScaledFont::with_size(float point_size) const
 {
     return scaled_with_size(point_size);
 }

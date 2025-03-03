@@ -181,7 +181,63 @@ ThrowCompletionOr<ArrayBuffer*> allocate_array_buffer(VM& vm, FunctionObject& co
     return obj.ptr();
 }
 
-// 25.1.3.4 DetachArrayBuffer ( arrayBuffer [ , key ] ), https://tc39.es/ecma262/#sec-detacharraybuffer
+// 25.1.3.3 ArrayBufferCopyAndDetach ( arrayBuffer, newLength, preserveResizability ), https://tc39.es/ecma262/#sec-arraybuffercopyanddetach
+ThrowCompletionOr<ArrayBuffer*> array_buffer_copy_and_detach(VM& vm, ArrayBuffer& array_buffer, Value new_length, PreserveResizability preserve_resizability)
+{
+    auto& realm = *vm.current_realm();
+
+    // 1. Perform ? RequireInternalSlot(arrayBuffer, [[ArrayBufferData]]).
+
+    // 2. If IsSharedArrayBuffer(arrayBuffer) is true, throw a TypeError exception.
+    if (array_buffer.is_shared_array_buffer())
+        return vm.throw_completion<TypeError>(ErrorType::SharedArrayBuffer);
+
+    // 3. If newLength is undefined, then
+    //     a. Let newByteLength be arrayBuffer.[[ArrayBufferByteLength]].
+    // 4. Else,
+    //     a. Let newByteLength be ? ToIndex(newLength).
+    auto new_byte_length = new_length.is_undefined() ? array_buffer.byte_length() : TRY(new_length.to_index(vm));
+
+    // 5. If IsDetachedBuffer(arrayBuffer) is true, throw a TypeError exception.
+    if (array_buffer.is_detached())
+        return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
+
+    Optional<size_t> new_max_byte_length;
+
+    // 6. If preserveResizability is PRESERVE-RESIZABILITY and IsFixedLengthArrayBuffer(arrayBuffer) is false, then
+    if (preserve_resizability == PreserveResizability::PreserveResizability && !array_buffer.is_fixed_length()) {
+        // a. Let newMaxByteLength be arrayBuffer.[[ArrayBufferMaxByteLength]].
+        new_max_byte_length = array_buffer.max_byte_length();
+    }
+    // 7. Else,
+    else {
+        // a. Let newMaxByteLength be EMPTY.
+    }
+
+    // 8. If arrayBuffer.[[ArrayBufferDetachKey]] is not undefined, throw a TypeError exception.
+    if (!array_buffer.detach_key().is_undefined())
+        return vm.throw_completion<TypeError>(ErrorType::DetachKeyMismatch, array_buffer.detach_key(), js_undefined());
+
+    // 9. Let newBuffer be ? AllocateArrayBuffer(%ArrayBuffer%, newByteLength, newMaxByteLength).
+    auto* new_buffer = TRY(allocate_array_buffer(vm, realm.intrinsics().array_buffer_constructor(), new_byte_length, new_max_byte_length));
+
+    // 10. Let copyLength be min(newByteLength, arrayBuffer.[[ArrayBufferByteLength]]).
+    auto copy_length = min(new_byte_length, array_buffer.byte_length());
+
+    // 11. Let fromBlock be arrayBuffer.[[ArrayBufferData]].
+    // 12. Let toBlock be newBuffer.[[ArrayBufferData]].
+    // 13. Perform CopyDataBlockBytes(toBlock, 0, fromBlock, 0, copyLength).
+    // 14. NOTE: Neither creation of the new Data Block nor copying from the old Data Block are observable. Implementations may implement this method as a zero-copy move or a realloc.
+    copy_data_block_bytes(new_buffer->buffer(), 0, array_buffer.buffer(), 0, copy_length);
+
+    // 15. Perform ! DetachArrayBuffer(arrayBuffer).
+    MUST(detach_array_buffer(vm, array_buffer));
+
+    // 16. Return newBuffer.
+    return new_buffer;
+}
+
+// 25.1.3.5 DetachArrayBuffer ( arrayBuffer [ , key ] ), https://tc39.es/ecma262/#sec-detacharraybuffer
 ThrowCompletionOr<void> detach_array_buffer(VM& vm, ArrayBuffer& array_buffer, Optional<Value> key)
 {
     // 1. Assert: IsSharedArrayBuffer(arrayBuffer) is false.
@@ -203,7 +259,7 @@ ThrowCompletionOr<void> detach_array_buffer(VM& vm, ArrayBuffer& array_buffer, O
     return {};
 }
 
-// 25.1.3.5 CloneArrayBuffer ( srcBuffer, srcByteOffset, srcLength, cloneConstructor ), https://tc39.es/ecma262/#sec-clonearraybuffer
+// 25.1.3.6 CloneArrayBuffer ( srcBuffer, srcByteOffset, srcLength, cloneConstructor ), https://tc39.es/ecma262/#sec-clonearraybuffer
 ThrowCompletionOr<ArrayBuffer*> clone_array_buffer(VM& vm, ArrayBuffer& source_buffer, size_t source_byte_offset, size_t source_length)
 {
     auto& realm = *vm.current_realm();
@@ -227,7 +283,7 @@ ThrowCompletionOr<ArrayBuffer*> clone_array_buffer(VM& vm, ArrayBuffer& source_b
     return target_buffer;
 }
 
-// 25.1.3.6 GetArrayBufferMaxByteLengthOption ( options ), https://tc39.es/ecma262/#sec-getarraybuffermaxbytelengthoption
+// 25.1.3.7 GetArrayBufferMaxByteLengthOption ( options ), https://tc39.es/ecma262/#sec-getarraybuffermaxbytelengthoption
 ThrowCompletionOr<Optional<size_t>> get_array_buffer_max_byte_length_option(VM& vm, Value options)
 {
     // 1. If options is not an Object, return empty.
@@ -243,63 +299,6 @@ ThrowCompletionOr<Optional<size_t>> get_array_buffer_max_byte_length_option(VM& 
 
     // 4. Return ? ToIndex(maxByteLength).
     return TRY(max_byte_length.to_index(vm));
-}
-
-// 25.1.2.14 ArrayBufferCopyAndDetach ( arrayBuffer, newLength, preserveResizability ), https://tc39.es/proposal-arraybuffer-transfer/#sec-arraybuffer.prototype.transfertofixedlength
-ThrowCompletionOr<ArrayBuffer*> array_buffer_copy_and_detach(VM& vm, ArrayBuffer& array_buffer, Value new_length, PreserveResizability preserve_resizability)
-{
-    auto& realm = *vm.current_realm();
-
-    // 1. Perform ? RequireInternalSlot(arrayBuffer, [[ArrayBufferData]]).
-
-    // 2. If IsSharedArrayBuffer(arrayBuffer) is true, throw a TypeError exception.
-    if (array_buffer.is_shared_array_buffer())
-        return vm.throw_completion<TypeError>(ErrorType::SharedArrayBuffer);
-
-    // 3. If newLength is undefined, then
-    // a. Let newByteLength be arrayBuffer.[[ArrayBufferByteLength]].
-    // 4. Else,
-    // a. Let newByteLength be ? ToIndex(newLength).
-    auto new_byte_length = new_length.is_undefined() ? array_buffer.byte_length() : TRY(new_length.to_index(vm));
-
-    // 5. If IsDetachedBuffer(arrayBuffer) is true, throw a TypeError exception.
-    if (array_buffer.is_detached())
-        return vm.throw_completion<TypeError>(ErrorType::DetachedArrayBuffer);
-
-    Optional<size_t> new_max_byte_length;
-
-    // 6. If preserveResizability is preserve-resizability and IsResizableArrayBuffer(arrayBuffer) is true, then
-    // FIXME: The ArrayBuffer transfer spec is a bit out-of-date. IsResizableArrayBuffer no longer exists, we now have IsFixedLengthArrayBuffer.
-    if (preserve_resizability == PreserveResizability::PreserveResizability && !array_buffer.is_fixed_length()) {
-        // a. Let newMaxByteLength be arrayBuffer.[[ArrayBufferMaxByteLength]].
-        new_max_byte_length = array_buffer.max_byte_length();
-    }
-    // 7. Else,
-    else {
-        // a. Let newMaxByteLength be empty.
-    }
-
-    // 8. If arrayBuffer.[[ArrayBufferDetachKey]] is not undefined, throw a TypeError exception.
-    if (!array_buffer.detach_key().is_undefined())
-        return vm.throw_completion<TypeError>(ErrorType::DetachKeyMismatch, array_buffer.detach_key(), js_undefined());
-
-    // 9. Let newBuffer be ? AllocateArrayBuffer(%ArrayBuffer%, newByteLength, newMaxByteLength).
-    auto* new_buffer = TRY(allocate_array_buffer(vm, realm.intrinsics().array_buffer_constructor(), new_byte_length, new_max_byte_length));
-
-    // 10. Let copyLength be min(newByteLength, arrayBuffer.[[ArrayBufferByteLength]]).
-    auto copy_length = min(new_byte_length, array_buffer.byte_length());
-
-    // 11. Let fromBlock be arrayBuffer.[[ArrayBufferData]].
-    // 12. Let toBlock be newBuffer.[[ArrayBufferData]].
-    // 13. Perform CopyDataBlockBytes(toBlock, 0, fromBlock, 0, copyLength).
-    // 14. NOTE: Neither creation of the new Data Block nor copying from the old Data Block are observable. Implementations may implement this method as a zero-copy move or a realloc.
-    copy_data_block_bytes(new_buffer->buffer(), 0, array_buffer.buffer(), 0, copy_length);
-
-    // 15. Perform ! DetachArrayBuffer(arrayBuffer).
-    TRY(detach_array_buffer(vm, array_buffer));
-
-    // 16. Return newBuffer.
-    return new_buffer;
 }
 
 // 25.2.2.1 AllocateSharedArrayBuffer ( constructor, byteLength [ , maxByteLength ] ), https://tc39.es/ecma262/#sec-allocatesharedarraybuffer

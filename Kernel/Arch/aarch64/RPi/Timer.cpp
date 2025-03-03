@@ -10,6 +10,9 @@
 #include <Kernel/Arch/aarch64/RPi/MMIO.h>
 #include <Kernel/Arch/aarch64/RPi/Mailbox.h>
 #include <Kernel/Arch/aarch64/RPi/Timer.h>
+#include <Kernel/Firmware/DeviceTree/DeviceTree.h>
+#include <Kernel/Firmware/DeviceTree/Driver.h>
+#include <Kernel/Firmware/DeviceTree/Management.h>
 
 namespace Kernel::RPi {
 
@@ -30,9 +33,9 @@ enum FlagBits {
     SystemTimerMatch3 = 1 << 3,
 };
 
-Timer::Timer()
-    : HardwareTimer(1)
-    , m_registers(MMIO::the().peripheral<TimerRegisters>(0x3000))
+Timer::Timer(Memory::TypedMapping<TimerRegisters volatile> registers_mapping, size_t interrupt_number)
+    : HardwareTimer(interrupt_number)
+    , m_registers(move(registers_mapping))
 {
     // FIXME: Actually query the frequency of the timer. By default it is 100MHz.
     m_frequency = 1e6;
@@ -42,11 +45,6 @@ Timer::Timer()
 }
 
 Timer::~Timer() = default;
-
-NonnullLockRefPtr<Timer> Timer::initialize()
-{
-    return adopt_lock_ref(*new Timer);
-}
 
 u64 Timer::microseconds_since_boot()
 {
@@ -59,9 +57,9 @@ u64 Timer::microseconds_since_boot()
     return (static_cast<u64>(high) << 32) | low;
 }
 
-bool Timer::handle_irq(RegisterState const& regs)
+bool Timer::handle_irq()
 {
-    auto result = HardwareTimer::handle_irq(regs);
+    auto result = HardwareTimer::handle_irq();
 
     set_compare(TimerID::Timer1, microseconds_since_boot() + m_interrupt_interval);
     clear_interrupt(TimerID::Timer1);
@@ -82,9 +80,9 @@ u64 Timer::update_time(u64& seconds_since_boot, u32& ticks_this_second, bool que
     }
 
     u64 ticks_since_last_second = (u64)ticks_this_second + delta_ticks;
-    auto ticks_per_second = frequency();
-    seconds_since_boot += ticks_since_last_second / ticks_per_second;
-    ticks_this_second = ticks_since_last_second % ticks_per_second;
+    auto frequency = ticks_per_second();
+    seconds_since_boot += ticks_since_last_second / frequency;
+    ticks_this_second = ticks_since_last_second % frequency;
 
     if (!query_only) {
         m_main_counter_drift = 0;
@@ -92,7 +90,7 @@ u64 Timer::update_time(u64& seconds_since_boot, u32& ticks_this_second, bool que
     }
 
     // Return the time passed (in ns) since last time update_time was called
-    return (delta_ticks * 1000000000ull) / ticks_per_second;
+    return (delta_ticks * 1000000000ull) / frequency;
 }
 
 void Timer::enable_interrupt_mode()
@@ -180,6 +178,45 @@ u32 Timer::get_clock_rate(ClockID clock_id)
     }
 
     return message_queue.get_clock_rate.rate_hz;
+}
+
+static constinit Array const compatibles_array = {
+    "brcm,bcm2835-system-timer"sv,
+};
+
+DEVICETREE_DRIVER(BCM2835TimerDriver, compatibles_array);
+
+// https://www.kernel.org/doc/Documentation/devicetree/bindings/timer/brcm,bcm2835-system-timer.txt
+ErrorOr<void> BCM2835TimerDriver::probe(DeviceTree::Device const& device, StringView) const
+{
+    auto const interrupts = TRY(device.node().interrupts(DeviceTree::get()));
+    if (interrupts.size() != 4)
+        return EINVAL; // The devicetree binding requires 4 interrupts.
+
+    // This driver currently only uses channel 1.
+    auto const& interrupt = interrupts[1];
+
+    // FIXME: Don't depend on a specific interrupt descriptor format and implement proper devicetree interrupt mapping/translation.
+    if (!interrupt.domain_root->is_compatible_with("brcm,bcm2836-armctrl-ic"sv))
+        return ENOTSUP;
+    if (interrupt.interrupt_identifier.size() != sizeof(BigEndian<u64>))
+        return ENOTSUP;
+    auto const interrupt_number = *reinterpret_cast<BigEndian<u64> const*>(interrupt.interrupt_identifier.data()) & 0xffff'ffff;
+
+    auto physical_address = TRY(device.get_resource(0)).paddr;
+
+    DeviceTree::DeviceRecipe<NonnullLockRefPtr<HardwareTimerBase>> recipe {
+        name(),
+        device.node_name(),
+        [physical_address, interrupt_number]() -> ErrorOr<NonnullLockRefPtr<HardwareTimerBase>> {
+            auto registers_mapping = TRY(Memory::map_typed_writable<TimerRegisters volatile>(physical_address));
+            return adopt_nonnull_lock_ref_or_enomem(new (nothrow) Timer(move(registers_mapping), interrupt_number));
+        },
+    };
+
+    TimeManagement::add_recipe(move(recipe));
+
+    return {};
 }
 
 }

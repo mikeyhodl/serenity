@@ -14,6 +14,7 @@
 #    include <serenity.h>
 #elif defined(AK_OS_LINUX) || defined(AK_LIBC_GLIBC) || defined(AK_OS_MACOS) || defined(AK_OS_IOS) || defined(AK_OS_NETBSD) || defined(AK_OS_SOLARIS) || defined(AK_OS_HAIKU)
 #    include <pthread.h>
+#    include <sys/resource.h>
 #elif defined(AK_OS_FREEBSD) || defined(AK_OS_OPENBSD)
 #    include <pthread.h>
 #    include <pthread_np.h>
@@ -64,11 +65,16 @@ StackInfo::StackInfo()
     // MacOS seems inconsistent on what stack size is given for the main thread.
     // According to the Apple docs, default for main thread is 8MB, and default for
     // other threads is 512KB
-    constexpr size_t eight_megabytes = 0x800000;
-    if (pthread_main_np() == 1 && m_size < eight_megabytes) {
-        // Assume no one messed with stack size linker options for the main thread,
-        // and just set it to 8MB.
-        m_size = eight_megabytes;
+    if (pthread_main_np() == 1) {
+        // Apparently the main thread's stack size is not reported correctly on macOS
+        // but we can use getrlimit to get the correct value.
+        rlimit limit {};
+        getrlimit(RLIMIT_STACK, &limit);
+        if (limit.rlim_cur == RLIM_INFINITY) {
+            m_size = 8 * MiB;
+        } else {
+            m_size = limit.rlim_cur;
+        }
     }
     m_base = top_of_stack - m_size;
 #elif defined(AK_OS_OPENBSD)
@@ -95,6 +101,21 @@ StackInfo::StackInfo()
 #endif
 
     m_top = m_base + m_size;
+
+#if defined(AK_OS_LINUX) && !defined(AK_LIBC_GLIBC)
+    // Note: musl libc always gives the initial size of the main thread's stack
+    if (getpid() == static_cast<pid_t>(gettid())) {
+        rlimit limit;
+        getrlimit(RLIMIT_STACK, &limit);
+        rlim_t size = limit.rlim_cur;
+        if (size == RLIM_INFINITY)
+            size = 8 * 0x10000;
+        // account for a guard page
+        size -= static_cast<rlim_t>(sysconf(_SC_PAGESIZE));
+        m_size = static_cast<size_t>(size);
+        m_base = m_top - m_size;
+    }
+#endif
 }
 
 }

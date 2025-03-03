@@ -8,6 +8,7 @@
 
 #include <AK/BuiltinWrappers.h>
 #include <AK/Format.h>
+#include <AK/StackUnwinder.h>
 #include <AK/StdLibExtras.h>
 #include <AK/StringBuilder.h>
 #include <AK/Types.h>
@@ -455,8 +456,6 @@ UNMAP_AFTER_INIT void Processor::cpu_detect()
         }
     }
 
-    m_has_qemu_hvf_quirk = false;
-
     if (max_extended_leaf >= 0x80000008) {
         // CPUID.80000008H:EAX[7:0] reports the physical-address width supported by the processor.
         CPUID cpuid(0x80000008);
@@ -478,7 +477,7 @@ UNMAP_AFTER_INIT void Processor::cpu_detect()
         if (has_feature(CPUFeature::HYPERVISOR)) {
             CPUID hypervisor_leaf_range(0x40000000);
             if (!hypervisor_leaf_range.ebx() && m_physical_address_bit_width == 36) {
-                m_has_qemu_hvf_quirk = true;
+                m_has_qemu_hvf_quirk.set();
                 m_virtual_address_bit_width = 48;
             }
         }
@@ -602,7 +601,6 @@ UNMAP_AFTER_INIT void ProcessorBase<T>::early_initialize(u32 cpu)
     m_in_critical = 0;
 
     m_invoke_scheduler_async = false;
-    m_scheduler_initialized = false;
     m_in_scheduler = true;
 
     self->m_message_queue = nullptr;
@@ -642,7 +640,7 @@ UNMAP_AFTER_INIT void ProcessorBase<T>::initialize(u32 cpu)
         dmesgln("CPU[{}]: No RDRAND support detected, randomness will be poor", current_id());
     dmesgln("CPU[{}]: Physical address bit width: {}", current_id(), m_physical_address_bit_width);
     dmesgln("CPU[{}]: Virtual address bit width: {}", current_id(), m_virtual_address_bit_width);
-    if (self->m_has_qemu_hvf_quirk)
+    if (self->m_has_qemu_hvf_quirk.was_set())
         dmesgln("CPU[{}]: Applied correction for QEMU Hypervisor.framework quirk", current_id());
 
     if (cpu == 0)
@@ -760,126 +758,6 @@ DescriptorTablePointer const& Processor::get_gdtr()
     return m_gdtr;
 }
 
-template<typename T>
-ErrorOr<Vector<FlatPtr, 32>> ProcessorBase<T>::capture_stack_trace(Thread& thread, size_t max_frames)
-{
-    FlatPtr frame_ptr = 0, ip = 0;
-    Vector<FlatPtr, 32> stack_trace;
-
-    auto walk_stack = [&](FlatPtr stack_ptr) -> ErrorOr<void> {
-        constexpr size_t max_stack_frames = 4096;
-        bool is_walking_userspace_stack = false;
-        TRY(stack_trace.try_append(ip));
-        size_t count = 1;
-        while (stack_ptr && stack_trace.size() < max_stack_frames) {
-            FlatPtr retaddr;
-
-            count++;
-            if (max_frames != 0 && count > max_frames)
-                break;
-
-            if (!Memory::is_user_address(VirtualAddress { stack_ptr })) {
-                if (is_walking_userspace_stack) {
-                    dbgln("SHENANIGANS! Userspace stack points back into kernel memory");
-                    break;
-                }
-            } else {
-                is_walking_userspace_stack = true;
-            }
-
-            if (Memory::is_user_range(VirtualAddress(stack_ptr), sizeof(FlatPtr) * 2)) {
-                if (copy_from_user(&retaddr, &((FlatPtr*)stack_ptr)[1]).is_error() || !retaddr)
-                    break;
-                TRY(stack_trace.try_append(retaddr));
-                if (copy_from_user(&stack_ptr, (FlatPtr*)stack_ptr).is_error())
-                    break;
-            } else {
-                void* fault_at;
-                if (!safe_memcpy(&retaddr, &((FlatPtr*)stack_ptr)[1], sizeof(FlatPtr), fault_at) || !retaddr)
-                    break;
-                TRY(stack_trace.try_append(retaddr));
-                if (!safe_memcpy(&stack_ptr, (FlatPtr*)stack_ptr, sizeof(FlatPtr), fault_at))
-                    break;
-            }
-        }
-        return {};
-    };
-    auto capture_current_thread = [&]() {
-        frame_ptr = (FlatPtr)__builtin_frame_address(0);
-        ip = (FlatPtr)__builtin_return_address(0);
-
-        return walk_stack(frame_ptr);
-    };
-
-    // Since the thread may be running on another processor, there
-    // is a chance a context switch may happen while we're trying
-    // to get it. It also won't be entirely accurate and merely
-    // reflect the status at the last context switch.
-    SpinlockLocker lock(g_scheduler_lock);
-    if (&thread == Processor::current_thread()) {
-        VERIFY(thread.state() == Thread::State::Running);
-        // Leave the scheduler lock. If we trigger page faults we may
-        // need to be preempted. Since this is our own thread it won't
-        // cause any problems as the stack won't change below this frame.
-        lock.unlock();
-        TRY(capture_current_thread());
-    } else if (thread.is_active()) {
-        VERIFY(thread.cpu() != Processor::current_id());
-        // If this is the case, the thread is currently running
-        // on another processor. We can't trust the kernel stack as
-        // it may be changing at any time. We need to probably send
-        // an IPI to that processor, have it walk the stack and wait
-        // until it returns the data back to us
-        auto& proc = Processor::current();
-        ErrorOr<void> result;
-        Processor::smp_unicast(
-            thread.cpu(),
-            [&]() {
-                dbgln("CPU[{}] getting stack for cpu #{}", Processor::current_id(), proc.id());
-                ScopedAddressSpaceSwitcher switcher(thread.process());
-                VERIFY(&Processor::current() != &proc);
-                VERIFY(&thread == Processor::current_thread());
-                // NOTE: Because the other processor is still holding the
-                // scheduler lock while waiting for this callback to finish,
-                // the current thread on the target processor cannot change
-
-                // TODO: What to do about page faults here? We might deadlock
-                //       because the other processor is still holding the
-                //       scheduler lock...
-                result = capture_current_thread();
-            },
-            false);
-        TRY(result);
-    } else {
-        switch (thread.state()) {
-        case Thread::State::Running:
-            VERIFY_NOT_REACHED(); // should have been handled above
-        case Thread::State::Runnable:
-        case Thread::State::Stopped:
-        case Thread::State::Blocked:
-        case Thread::State::Dying:
-        case Thread::State::Dead: {
-            ScopedAddressSpaceSwitcher switcher(thread.process());
-            auto& regs = thread.regs();
-
-            ip = regs.ip();
-            frame_ptr = regs.rbp;
-
-            // TODO: We need to leave the scheduler lock here, but we also
-            //       need to prevent the target thread from being run while
-            //       we walk the stack
-            lock.unlock();
-            TRY(walk_stack(frame_ptr));
-            break;
-        }
-        default:
-            dbgln("Cannot capture stack trace for thread {} in state {}", thread, thread.state_string());
-            break;
-        }
-    }
-    return stack_trace;
-}
-
 ProcessorContainer& Processor::processors()
 {
     return s_processors;
@@ -951,12 +829,10 @@ void ProcessorBase<T>::flush_tlb_local(VirtualAddress vaddr, size_t page_count)
 {
     auto ptr = vaddr.as_ptr();
     while (page_count > 0) {
-        // clang-format off
         asm volatile("invlpg %0"
-             :
-             : "m"(*ptr)
-             : "memory");
-        // clang-format on
+                     :
+                     : "m"(*ptr)
+                     : "memory");
         ptr += PAGE_SIZE;
         page_count--;
     }
@@ -1390,7 +1266,7 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
     }
 
     auto& processor = Processor::current();
-    Processor::set_thread_specific_data(to_thread->thread_specific_data());
+    Processor::set_fs_base(to_thread->arch_specific_data().fs_base);
 
     if (from_regs.cr3 != to_regs.cr3)
         write_cr3(to_regs.cr3);
@@ -1409,7 +1285,7 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
         asm volatile("frstor %0" ::"m"(to_thread->fpu_state()));
 }
 
-extern "C" FlatPtr do_init_context(Thread* thread, u32 flags)
+extern "C" NO_SANITIZE_COVERAGE FlatPtr do_init_context(Thread* thread, u32 flags)
 {
     VERIFY_INTERRUPTS_DISABLED();
     thread->regs().set_flags(flags);
@@ -1461,7 +1337,7 @@ NAKED void thread_context_first_enter(void)
         "    jmp common_trap_exit \n");
 }
 
-NAKED void do_assume_context(Thread*, u32)
+NAKED NO_SANITIZE_COVERAGE void do_assume_context(Thread*, u32)
 {
     // clang-format off
     // FIXME: I hope (Thread* thread, u32 flags) aren't compiled away
@@ -1493,7 +1369,6 @@ StringView ProcessorBase<T>::platform_string()
 template<typename T>
 FlatPtr ProcessorBase<T>::init_context(Thread& thread, bool leave_crit)
 {
-    VERIFY(is_kernel_mode());
     VERIFY(g_scheduler_lock.is_locked());
     if (leave_crit) {
         // Leave the critical section we set up in in Process::exec,
@@ -1600,7 +1475,6 @@ void ProcessorBase<T>::switch_context(Thread*& from_thread, Thread*& to_thread)
 {
     VERIFY(!m_in_irq);
     VERIFY(m_in_critical == 1);
-    VERIFY(is_kernel_mode());
     auto* self = static_cast<Processor*>(this);
 
     dbgln_if(CONTEXT_SWITCH_DEBUG, "switch_context --> switching out of: {} {}", VirtualAddress(from_thread), *from_thread);
@@ -1690,7 +1564,7 @@ UNMAP_AFTER_INIT void ProcessorBase<T>::initialize_context_switching(Thread& ini
     self->m_tss.rsp0l = regs.rsp0 & 0xffffffff;
     self->m_tss.rsp0h = regs.rsp0 >> 32;
 
-    m_scheduler_initialized = true;
+    m_scheduler_initialized.set();
 
     // clang-format off
     asm volatile(
@@ -1717,11 +1591,10 @@ UNMAP_AFTER_INIT void ProcessorBase<T>::initialize_context_switching(Thread& ini
     VERIFY_NOT_REACHED();
 }
 
-template<typename T>
-void ProcessorBase<T>::set_thread_specific_data(VirtualAddress thread_specific_data)
+void Processor::set_fs_base(FlatPtr fs_base)
 {
     MSR fs_base_msr(MSR_FS_BASE);
-    fs_base_msr.set(thread_specific_data.get());
+    fs_base_msr.set(fs_base);
 }
 
 template<typename T>

@@ -32,6 +32,12 @@ public:
         Text
     };
 
+    enum class OffsetFormat {
+        Decimal,
+        Hexadecimal,
+    };
+    static OffsetFormat offset_format_from_string(StringView);
+
     virtual ~HexEditor() override = default;
 
     size_t buffer_size() const { return m_document->size(); }
@@ -54,6 +60,9 @@ public:
     bool copy_selected_text_to_clipboard();
     bool copy_selected_hex_to_clipboard();
     bool copy_selected_hex_to_clipboard_as_c_code();
+
+    void set_show_offsets_column(bool);
+    void set_offset_format(OffsetFormat);
 
     size_t bytes_per_group() const { return m_bytes_per_group; }
     void set_bytes_per_group(size_t);
@@ -95,6 +104,8 @@ private:
     size_t m_content_length { 0 };
     size_t m_bytes_per_group { 4 };
     size_t m_groups_per_row { 4 };
+    bool m_show_offsets_column { true };
+    OffsetFormat m_offset_format { OffsetFormat::Hexadecimal };
     bool m_in_drag_select { false };
     Selection m_selection;
     size_t m_position { 0 };
@@ -113,27 +124,16 @@ private:
 
     void scroll_position_into_view(size_t position);
 
-    size_t total_rows() const { return ceil_div(m_content_length, bytes_per_row()); }
-    size_t line_height() const { return font().pixel_size_rounded_up() + m_line_spacing; }
-    size_t character_width() const { return font().glyph_fixed_width(); }
-    size_t cell_gap() const { return character_width() / 2; }
-    size_t cell_width() const { return character_width() * 2 + cell_gap(); }
-    size_t group_gap() const { return character_width() * 1.5; }
-    size_t group_width() const
-    {
-        return (character_width() * 2 * bytes_per_group())
-            + (cell_gap() * (bytes_per_group() - 1))
-            + group_gap();
-    }
-
-    int offset_area_width() const { return m_padding + font().width_rounded_up("0X12345678"sv) + m_padding; }
-    int hex_area_width() const
-    {
-        return m_padding
-            + groups_per_row() * group_width() - group_gap()
-            + m_padding;
-    }
-    int text_area_width() const { return m_padding + bytes_per_row() * character_width() + m_padding; }
+    size_t total_rows() const;
+    size_t line_height() const;
+    size_t character_width() const;
+    size_t cell_gap() const;
+    size_t cell_width() const;
+    size_t group_gap() const;
+    size_t group_width() const;
+    int offset_area_width() const;
+    int hex_area_width() const;
+    int text_area_width() const;
 
     struct OffsetData {
         size_t offset;

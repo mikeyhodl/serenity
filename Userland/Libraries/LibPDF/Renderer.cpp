@@ -10,15 +10,10 @@
 #include <LibPDF/Fonts/PDFFont.h>
 #include <LibPDF/Interpolation.h>
 #include <LibPDF/Renderer.h>
+#include <LibPDF/Shading.h>
 
 #define RENDERER_HANDLER(name) \
     PDFErrorOr<void> Renderer::handle_##name([[maybe_unused]] ReadonlySpan<Value> args, [[maybe_unused]] Optional<NonnullRefPtr<DictObject>> extra_resources)
-
-#define RENDERER_TODO(name)                                                        \
-    RENDERER_HANDLER(name)                                                         \
-    {                                                                              \
-        return Error(Error::Type::RenderingUnsupported, "draw operation: " #name); \
-    }
 
 namespace PDF {
 
@@ -109,9 +104,9 @@ Renderer::Renderer(RefPtr<Document> document, Page const& page, RefPtr<Gfx::Bitm
     // insert a horizontal reflection about the vertical midpoint into our transformation
     // matrix
 
-    static Gfx::AffineTransform horizontal_reflection_matrix = { 1, 0, 0, -1, 0, 0 };
+    static Gfx::AffineTransform vertical_reflection_matrix = { 1, 0, 0, -1, 0, 0 };
 
-    userspace_matrix.multiply(horizontal_reflection_matrix);
+    userspace_matrix.multiply(vertical_reflection_matrix);
     userspace_matrix.translate(0.0f, -height);
 
     auto initial_clipping_path = rect_path(userspace_matrix.map(Gfx::FloatRect(0, 0, width, height)));
@@ -210,10 +205,10 @@ RENDERER_HANDLER(set_miter_limit)
 RENDERER_HANDLER(set_dash_pattern)
 {
     auto dash_array = MUST(m_document->resolve_to<ArrayObject>(args[0]));
-    Vector<int> pattern;
+    Vector<float> pattern;
     for (auto& element : *dash_array)
-        pattern.append(element.to_int());
-    state().line_dash_pattern = LineDashPattern { pattern, args[1].to_int() };
+        pattern.append(element.to_float());
+    state().line_dash_pattern = LineDashPattern { pattern, args[1].to_float() };
     return {};
 }
 
@@ -305,12 +300,12 @@ RENDERER_HANDLER(path_append_rect)
 
 void Renderer::activate_clip()
 {
-    auto bounding_box = state().clipping_paths.current.bounding_box();
+    auto bounding_box = state().clipping_paths.current.bounding_box().to_type<int>();
     m_painter.clear_clip_rect();
     if (m_rendering_preferences.show_clipping_paths) {
-        m_painter.stroke_path(rect_path(bounding_box), Color::Black, 1);
+        m_painter.draw_rect(bounding_box, Color::Black);
     }
-    m_painter.add_clip_rect(bounding_box.to_type<int>());
+    m_painter.add_clip_rect(bounding_box);
 }
 
 void Renderer::deactivate_clip()
@@ -340,9 +335,9 @@ RENDERER_HANDLER(path_stroke)
 {
     begin_path_paint();
     if (state().stroke_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), line_width());
+        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), stroke_style());
     } else {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), line_width());
+        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), stroke_style());
     }
     end_path_paint();
     return {};
@@ -360,9 +355,9 @@ RENDERER_HANDLER(path_fill_nonzero)
     begin_path_paint();
     m_current_path.close_all_subpaths();
     if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::Painter::WindingRule::Nonzero);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::Nonzero);
     } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::Painter::WindingRule::Nonzero);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::Nonzero);
     }
     end_path_paint();
     return {};
@@ -378,9 +373,9 @@ RENDERER_HANDLER(path_fill_evenodd)
     begin_path_paint();
     m_current_path.close_all_subpaths();
     if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::Painter::WindingRule::EvenOdd);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::EvenOdd);
     } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::Painter::WindingRule::EvenOdd);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::EvenOdd);
     }
     end_path_paint();
     return {};
@@ -390,15 +385,15 @@ RENDERER_HANDLER(path_fill_stroke_nonzero)
 {
     begin_path_paint();
     if (state().stroke_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), line_width());
+        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), stroke_style());
     } else {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), line_width());
+        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), stroke_style());
     }
     m_current_path.close_all_subpaths();
     if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::Painter::WindingRule::Nonzero);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::Nonzero);
     } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::Painter::WindingRule::Nonzero);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::Nonzero);
     }
     end_path_paint();
     return {};
@@ -408,15 +403,15 @@ RENDERER_HANDLER(path_fill_stroke_evenodd)
 {
     begin_path_paint();
     if (state().stroke_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), line_width());
+        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), stroke_style());
     } else {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), line_width());
+        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), stroke_style());
     }
     m_current_path.close_all_subpaths();
     if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::Painter::WindingRule::EvenOdd);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::EvenOdd);
     } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::Painter::WindingRule::EvenOdd);
+        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::EvenOdd);
     }
     end_path_paint();
     return {};
@@ -735,7 +730,27 @@ RENDERER_HANDLER(set_painting_color_and_space_to_cmyk)
     return {};
 }
 
-RENDERER_TODO(shade)
+RENDERER_HANDLER(shade)
+{
+    auto inverse_ctm = state().ctm.inverse();
+    if (!inverse_ctm.has_value())
+        return {};
+
+    VERIFY(args.size() == 1);
+    auto shading_name = MUST(m_document->resolve_to<NameObject>(args[0]))->name();
+    auto resources = extra_resources.value_or(m_page.resources);
+    auto shading_resource_dict = TRY(resources->get_dict(m_document, CommonNames::Shading));
+    if (!shading_resource_dict->contains(shading_name)) {
+        dbgln("missing shade {}", shading_name);
+        return Error::malformed_error("Missing entry for shade name");
+    }
+
+    auto shading_dict_or_stream = TRY(shading_resource_dict->get_object(m_document, shading_name));
+    auto shading = TRY(Shading::create(m_document, shading_dict_or_stream, *this));
+
+    ClipRAII clip_raii { *this };
+    return shading->draw(m_painter, inverse_ctm.value());
+}
 
 RENDERER_HANDLER(inline_image_begin)
 {
@@ -1002,6 +1017,48 @@ float Renderer::line_width() const
     return state().ctm.x_scale() * state().line_width;
 }
 
+Gfx::Path::CapStyle Renderer::line_cap_style() const
+{
+    switch (state().line_cap_style) {
+    case LineCapStyle::ButtCap:
+        return Gfx::Path::CapStyle::Butt;
+    case LineCapStyle::RoundCap:
+        return Gfx::Path::CapStyle::Round;
+    case LineCapStyle::SquareCap:
+        return Gfx::Path::CapStyle::Square;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+Gfx::Path::JoinStyle Renderer::line_join_style() const
+{
+    switch (state().line_join_style) {
+    case LineJoinStyle::Miter:
+        return Gfx::Path::JoinStyle::Miter;
+    case LineJoinStyle::Round:
+        return Gfx::Path::JoinStyle::Round;
+    case LineJoinStyle::Bevel:
+        return Gfx::Path::JoinStyle::Bevel;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+Gfx::Path::StrokeStyle Renderer::stroke_style() const
+{
+    auto dash_pattern = state().line_dash_pattern.pattern;
+
+    // The spec doesn't explicitly say how to handle dash patterns with an odd number of elements.
+    // <canvas> and <svg> repeat the pattern, so we do the same.
+    if (dash_pattern.size() % 2 == 1)
+        dash_pattern.extend(dash_pattern);
+
+    for (auto& value : dash_pattern)
+        value *= state().ctm.x_scale();
+    float dash_phase = state().ctm.x_scale() * state().line_dash_pattern.phase;
+
+    return { line_width(), line_cap_style(), line_join_style(), state().miter_limit, move(dash_pattern), dash_phase };
+}
+
 PDFErrorOr<void> Renderer::set_graphics_state_from_dict(NonnullRefPtr<DictObject> dict)
 {
     // ISO 32000 (PDF 2.0), 8.4.5 Graphics state parameter dictionaries
@@ -1123,8 +1180,34 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
         auto last_filter_index = filters->elements().size() - 1;
         return MUST(filters->get_name_at(m_document, last_filter_index))->name() == name;
     };
-    if (TRY(is_filter(CommonNames::JPXDecode))) {
-        return Error(Error::Type::RenderingUnsupported, "JPXDecode filter");
+    bool is_jpeg2000 = TRY(is_filter(CommonNames::JPXDecode));
+
+    // "SMaskInData specifies whether soft-mask information packaged with the im-
+    //  age samples should be used (see “Soft-Mask Images” on page 553); if it is, the
+    //  SMask entry is not needed. If SMaskInData is nonzero, there must be only one
+    //  opacity channel in the JPEG2000 data and it must apply to all color channels."
+    if (is_jpeg2000 && image_dict->contains(CommonNames::SMaskInData)) {
+        auto smask_in_data = TRY(m_document->resolve_to<int>(image_dict->get_value(CommonNames::SMaskInData)));
+        if (smask_in_data == 0) {
+            // "If present, encoded soft-mask image information should be ignored."
+            // That's what we currently always do.
+        } else if (smask_in_data == 1) {
+            // "The image’s data stream includes encoded soft-mask values. An
+            //  application can create a soft-mask image from the information to
+            //  be used as a source of mask shape or mask opacity in the transpar-
+            //  ency imaging model.""
+            return Error(Error::Type::RenderingUnsupported, "SMaskInData=1 not yet supported");
+        } else if (smask_in_data == 2) {
+            // "The image’s data stream includes color channels that have been
+            //  preblended with a background; the image data also includes an
+            //  opacity channel. An application can create a soft-mask image with
+            //  a Matte entry from the opacity channel information to be used as
+            //  a source of mask shape or mask opacity in the transparency mod-
+            //  el."
+            return Error(Error::Type::RenderingUnsupported, "SMaskInData=2 not yet supported");
+        } else {
+            return Error(Error::Type::MalformedPDF, "Invalid SMaskInData value");
+        }
     }
 
     bool is_image_mask = false;
@@ -1132,10 +1215,21 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
         is_image_mask = TRY(m_document->resolve_to<bool>(image_dict->get_value(CommonNames::ImageMask)));
     }
 
+    if (is_image_mask && is_jpeg2000) {
+        // JPEG2000 always returns 8bpp data, but image masks are 1bpp. Need to convert.
+        return Error(Error::Type::RenderingUnsupported, "JPEG2000 image masks not yet supported");
+    }
+
     // "(Required for images, except those that use the JPXDecode filter; not allowed for image masks) [...]
     //  it can be any type of color space except Pattern."
     NonnullRefPtr<ColorSpace> color_space = DeviceGrayColorSpace::the();
     if (!is_image_mask) {
+        // "If ColorSpace is not present in the image dictionary, the color space informa-
+        //  tion in the JPEG2000 data is used."
+        // FIXME: When implementing this, check how palettized JPEG2000 images with color space
+        //        from the image are handled. I suppose the palette embedded in the image is then used?
+        if (!image_dict->contains(CommonNames::ColorSpace) && is_jpeg2000)
+            return Error(Error::Type::RenderingUnsupported, "Using color space from jpeg2000 image not yet implemented");
         auto color_space_object = MUST(image_dict->get_object(m_document, CommonNames::ColorSpace));
         color_space = TRY(get_color_space_from_document(color_space_object));
     }
@@ -1148,8 +1242,11 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
     // "Valid values are 1, 2, 4, 8, and (in PDF 1.5) 16."
     // Per spec, this is required even for /Mask images, but it's required to be 1 there.
     // In practice, it's sometimes missing for /Mask images.
+    // "If the image stream uses the JPXDecode filter, this entry is optional and ignored if present."
     auto bits_per_component = 1;
-    if (!is_image_mask)
+    if (is_jpeg2000)
+        bits_per_component = 8;
+    else if (!is_image_mask)
         bits_per_component = TRY(m_document->resolve_to<int>(image_dict->get_value(CommonNames::BitsPerComponent)));
     switch (bits_per_component) {
     case 1:
@@ -1166,19 +1263,46 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
 
     int const n_components = color_space->number_of_components();
 
+    // PDF 1.7 spec, 3.3.8 JPXDecode Filter:
+    // "Decode is ignored, except in the case where the image is treated as a mask; that is, when ImageMask is true.
+    //  In this case, the JPEG2000 data must provide a single color channel with 1-bit samples."
+    Vector<float> decode_array;
+    if ((!is_jpeg2000 || is_image_mask) && image_dict->contains(CommonNames::Decode)) {
+        decode_array = MUST(image_dict->get_array(m_document, CommonNames::Decode))->float_elements();
+    } else {
+        decode_array = color_space->default_decode();
+    }
+
+    if (bits_per_component == 1 && color_space->family() == ColorSpaceFamily::DeviceGray) {
+        // Fast path for 1bpp grayscale. Used for masks and scanned pages (CCITT or JBIG2).
+        // FIXME: This fast path could work for CalGray and Indexed too,
+        //        but IndexedColorSpace::default_decode() currently assumes 8bpp.
+        auto bitmap = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, { width, height }));
+
+        Color colors[] = {
+            TRY(color_space->style({ &decode_array[0], 1 })).get<Color>(),
+            TRY(color_space->style({ &decode_array[1], 1 })).get<Color>(),
+        };
+
+        auto const bytes_per_line = ceil_div(width, 8);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                auto byte = content[y * bytes_per_line + x / 8];
+                auto bit = 7 - (x % 8);
+                auto color = colors[(byte >> bit) & 1];
+                bitmap->set_pixel(x, y, color);
+            }
+        }
+
+        return LoadedImage { bitmap, is_image_mask };
+    }
+
     Vector<u8> resampled_storage;
     if (bits_per_component < 8) {
         UpsampleMode mode = color_space->family() == ColorSpaceFamily::Indexed ? UpsampleMode::StoreValuesUnchanged : UpsampleMode::UpsampleTo8Bit;
         resampled_storage = upsample_to_8_bit(content, width * n_components, bits_per_component, mode);
         content = resampled_storage;
         bits_per_component = 8;
-
-        if (is_image_mask) {
-            // "a sample value of 0 marks the page with the current color, and a 1 leaves the previous contents unchanged."
-            // That's opposite of the normal alpha convention, and we're upsampling masks to 8 bit and use that as normal alpha.
-            for (u8& byte : resampled_storage)
-                byte = ~byte;
-        }
     } else if (bits_per_component == 16) {
         if (color_space->family() == ColorSpaceFamily::Indexed)
             return Error(Error::Type::RenderingUnsupported, "16 bpp indexed images not yet supported");
@@ -1194,12 +1318,6 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
         bits_per_component = 8;
     }
 
-    Vector<float> decode_array;
-    if (image_dict->contains(CommonNames::Decode)) {
-        decode_array = MUST(image_dict->get_array(m_document, CommonNames::Decode))->float_elements();
-    } else {
-        decode_array = color_space->default_decode();
-    }
     Vector<LinearInterpolation1D> component_value_decoders;
     component_value_decoders.ensure_capacity(decode_array.size());
     for (size_t i = 0; i < decode_array.size(); i += 2) {
@@ -1297,7 +1415,7 @@ void Renderer::show_empty_image(Gfx::IntSize size)
     m_painter.stroke_path(rect_path(image_border), Color::Black, 1);
 }
 
-static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> apply_alpha_channel(NonnullRefPtr<Gfx::Bitmap> image_bitmap, NonnullRefPtr<const Gfx::Bitmap> mask_bitmap)
+static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> apply_alpha_channel(NonnullRefPtr<Gfx::Bitmap> image_bitmap, NonnullRefPtr<Gfx::Bitmap const> mask_bitmap, bool invert_alpha = false)
 {
     // Make alpha mask same size as image.
     if (mask_bitmap->size() != image_bitmap->size()) {
@@ -1315,7 +1433,10 @@ static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> apply_alpha_channel(NonnullRefPtr<Gfx
         for (int i = 0; i < image_bitmap->width(); ++i) {
             auto image_color = image_bitmap->get_pixel(i, j);
             auto mask_color = mask_bitmap->get_pixel(i, j);
-            image_color = image_color.with_alpha(mask_color.luminosity());
+            u8 alpha = mask_color.luminosity();
+            if (invert_alpha)
+                alpha = 255 - alpha;
+            image_color = image_color.with_alpha(alpha);
             image_bitmap->set_pixel(i, j, image_color);
         }
     }
@@ -1347,7 +1468,9 @@ PDFErrorOr<void> Renderer::show_image(NonnullRefPtr<StreamObject> image)
         // Move mask to alpha channel, and put current color in RGB.
         auto current_color = state().paint_style.get<Gfx::Color>();
         for (auto& pixel : *image_bitmap.bitmap) {
-            u8 mask_alpha = Color::from_argb(pixel).luminosity();
+            // "a sample value of 0 marks the page with the current color, and a 1 leaves the previous contents unchanged."
+            // That's opposite of the normal alpha convention, and we're upsampling masks to 8 bit and use that as normal alpha.
+            u8 mask_alpha = 255 - Color::from_argb(pixel).luminosity();
             pixel = current_color.with_alpha(mask_alpha).value();
         }
     } else if (image_dict->contains(CommonNames::SMask)) {
@@ -1357,7 +1480,8 @@ PDFErrorOr<void> Renderer::show_image(NonnullRefPtr<StreamObject> image)
         auto mask_object = TRY(image_dict->get_object(m_document, CommonNames::Mask));
         if (mask_object->is<StreamObject>()) {
             auto mask_bitmap = TRY(load_image(mask_object->cast<StreamObject>()));
-            image_bitmap.bitmap = TRY(apply_alpha_channel(image_bitmap.bitmap, mask_bitmap.bitmap));
+            bool invert_alpha = mask_bitmap.is_image_mask;
+            image_bitmap.bitmap = TRY(apply_alpha_channel(image_bitmap.bitmap, mask_bitmap.bitmap, invert_alpha));
         } else if (mask_object->is<ArrayObject>()) {
             auto mask_bitmap = TRY(make_mask_bitmap_from_array(mask_object->cast<ArrayObject>(), image));
             image_bitmap.bitmap = TRY(apply_alpha_channel(image_bitmap.bitmap, mask_bitmap));

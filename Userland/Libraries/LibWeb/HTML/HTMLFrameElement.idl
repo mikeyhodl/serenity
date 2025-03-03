@@ -8,14 +8,14 @@ interface HTMLFrameElement : HTMLElement {
 
     [CEReactions, Reflect] attribute DOMString name;
     [CEReactions, Reflect] attribute DOMString scrolling;
-    [CEReactions, Reflect] attribute DOMString src;
+    [CEReactions, Reflect, URL] attribute USVString src;
     [CEReactions, Reflect=frameborder] attribute DOMString frameBorder;
-    [CEReactions, Reflect=longdesc] attribute DOMString longDesc;
-    // FIXME: [CEReactions] attribute boolean noResize;
-    // FIXME: readonly attribute Document? contentDocument;
-    // FIXME: readonly attribute WindowProxy? contentWindow;
+    [CEReactions, Reflect=longdesc, URL] attribute USVString longDesc;
+    [CEReactions, Reflect=noresize] attribute boolean noResize;
+    [FIXME] readonly attribute Document? contentDocument;
+    [FIXME] readonly attribute WindowProxy? contentWindow;
 
-    // FIXME: [CEReactions] attribute [LegacyNullToEmptyString] DOMString marginHeight;
-    // FIXME: [CEReactions] attribute [LegacyNullToEmptyString] DOMString marginWidth;
+    [CEReactions, LegacyNullToEmptyString, Reflect=marginheight] attribute DOMString marginHeight;
+    [CEReactions, LegacyNullToEmptyString, Reflect=marginwidth] attribute DOMString marginWidth;
 
 };

@@ -32,11 +32,12 @@ public:
     virtual bool is_inode() const { return false; }
     virtual bool is_shared_inode() const { return false; }
     virtual bool is_private_inode() const { return false; }
+    virtual bool is_mmio() const { return false; }
 
     size_t page_count() const { return m_physical_pages.size(); }
 
-    virtual ReadonlySpan<RefPtr<PhysicalPage>> physical_pages() const { return m_physical_pages.span(); }
-    virtual Span<RefPtr<PhysicalPage>> physical_pages() { return m_physical_pages.span(); }
+    virtual ReadonlySpan<RefPtr<PhysicalRAMPage>> physical_pages() const { return m_physical_pages.span(); }
+    virtual Span<RefPtr<PhysicalRAMPage>> physical_pages() { return m_physical_pages.span(); }
 
     size_t size() const { return m_physical_pages.size() * PAGE_SIZE; }
 
@@ -55,15 +56,18 @@ public:
     }
 
 protected:
-    static ErrorOr<FixedArray<RefPtr<PhysicalPage>>> try_create_physical_pages(size_t);
-    ErrorOr<FixedArray<RefPtr<PhysicalPage>>> try_clone_physical_pages() const;
-    explicit VMObject(FixedArray<RefPtr<PhysicalPage>>&&);
+    static ErrorOr<FixedArray<RefPtr<PhysicalRAMPage>>> try_create_physical_pages(size_t);
+    ErrorOr<FixedArray<RefPtr<PhysicalRAMPage>>> try_clone_physical_pages() const;
+    explicit VMObject(FixedArray<RefPtr<PhysicalRAMPage>>&&);
 
     template<typename Callback>
     void for_each_region(Callback);
 
+    void remap_regions();
+    bool remap_regions_one_page(size_t page_index, NonnullRefPtr<PhysicalRAMPage> page);
+
     IntrusiveListNode<VMObject> m_list_node;
-    FixedArray<RefPtr<PhysicalPage>> m_physical_pages;
+    FixedArray<RefPtr<PhysicalRAMPage>> m_physical_pages;
 
     mutable RecursiveSpinlock<LockRank::None> m_lock {};
 

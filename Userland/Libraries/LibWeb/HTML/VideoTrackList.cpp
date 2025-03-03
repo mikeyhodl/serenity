@@ -17,7 +17,6 @@ JS_DEFINE_ALLOCATOR(VideoTrackList);
 
 VideoTrackList::VideoTrackList(JS::Realm& realm)
     : DOM::EventTarget(realm, MayInterfereWithIndexedPropertyAccess::Yes)
-    , m_video_tracks(realm.heap())
 {
 }
 
@@ -45,12 +44,10 @@ JS::ThrowCompletionOr<Optional<JS::PropertyDescriptor>> VideoTrackList::internal
     return Base::internal_get_own_property(property_name);
 }
 
-ErrorOr<void> VideoTrackList::add_track(Badge<HTMLMediaElement>, JS::NonnullGCPtr<VideoTrack> video_track)
+void VideoTrackList::add_track(Badge<HTMLMediaElement>, JS::NonnullGCPtr<VideoTrack> video_track)
 {
-    TRY(m_video_tracks.try_append(video_track));
+    m_video_tracks.append(video_track);
     video_track->set_video_track_list({}, this);
-
-    return {};
 }
 
 void VideoTrackList::remove_all_tracks(Badge<HTMLMediaElement>)
@@ -125,6 +122,12 @@ void VideoTrackList::set_onremovetrack(WebIDL::CallbackType* event_handler)
 WebIDL::CallbackType* VideoTrackList::onremovetrack()
 {
     return event_handler_attribute(HTML::EventNames::removetrack);
+}
+
+void VideoTrackList::visit_edges(JS::Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_video_tracks);
 }
 
 }

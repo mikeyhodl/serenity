@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2020-2023, Linus Groh <linusg@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -35,6 +35,14 @@ NonnullGCPtr<Object> Object::create(Realm& realm, Object* prototype)
     if (prototype == realm.intrinsics().object_prototype())
         return realm.heap().allocate<Object>(realm, realm.intrinsics().new_object_shape());
     return realm.heap().allocate<Object>(realm, ConstructWithPrototypeTag::Tag, *prototype);
+}
+
+NonnullGCPtr<Object> Object::create_prototype(Realm& realm, Object* prototype)
+{
+    auto shape = realm.heap().allocate_without_realm<Shape>(realm);
+    if (prototype)
+        shape->set_prototype_without_transition(prototype);
+    return realm.heap().allocate<Object>(realm, shape);
 }
 
 NonnullGCPtr<Object> Object::create_with_premade_shape(Shape& shape)
@@ -671,9 +679,9 @@ ThrowCompletionOr<void> Object::define_field(ClassFieldDefinition const& field)
     auto init_value = js_undefined();
 
     // 3. If initializer is not empty, then
-    if (!initializer.is_null()) {
+    if (initializer) {
         // a. Let initValue be ? Call(initializer, receiver).
-        init_value = TRY(call(vm, initializer.cell(), this));
+        init_value = TRY(call(vm, initializer, this));
     }
     // 4. Else, let initValue be undefined.
 
@@ -800,6 +808,13 @@ ThrowCompletionOr<Optional<PropertyDescriptor>> Object::internal_get_own_propert
     // 3. Let X be O's own property whose key is P.
     auto [value, attributes, property_offset] = *maybe_storage_entry;
 
+    // AD-HOC: Properties with the [[Unimplemented]] attribute are used for reporting unimplemented IDL interfaces.
+    if (attributes.is_unimplemented()) {
+        if (vm().on_unimplemented_property_access)
+            vm().on_unimplemented_property_access(*this, property_key);
+        descriptor.unimplemented = true;
+    }
+
     // 4. If X is a data property, then
     if (!value.is_accessor()) {
         // a. Set D.[[Value]] to the value of X's [[Value]] attribute.
@@ -833,12 +848,12 @@ ThrowCompletionOr<Optional<PropertyDescriptor>> Object::internal_get_own_propert
 }
 
 // 10.1.6 [[DefineOwnProperty]] ( P, Desc ), https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-defineownproperty-p-desc
-ThrowCompletionOr<bool> Object::internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& property_descriptor)
+ThrowCompletionOr<bool> Object::internal_define_own_property(PropertyKey const& property_key, PropertyDescriptor const& property_descriptor, Optional<PropertyDescriptor>* precomputed_get_own_property)
 {
     VERIFY(property_key.is_valid());
 
     // 1. Let current be ? O.[[GetOwnProperty]](P).
-    auto current = TRY(internal_get_own_property(property_key));
+    auto current = precomputed_get_own_property ? *precomputed_get_own_property : TRY(internal_get_own_property(property_key));
 
     // 2. Let extensible be ? IsExtensible(O).
     auto extensible = TRY(is_extensible());
@@ -873,7 +888,7 @@ ThrowCompletionOr<bool> Object::internal_has_property(PropertyKey const& propert
 }
 
 // 10.1.8 [[Get]] ( P, Receiver ), https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-get-p-receiver
-ThrowCompletionOr<Value> Object::internal_get(PropertyKey const& property_key, Value receiver, CacheablePropertyMetadata* cacheable_metadata) const
+ThrowCompletionOr<Value> Object::internal_get(PropertyKey const& property_key, Value receiver, CacheablePropertyMetadata* cacheable_metadata, PropertyLookupPhase phase) const
 {
     VERIFY(!receiver.is_empty());
     VERIFY(property_key.is_valid());
@@ -893,18 +908,33 @@ ThrowCompletionOr<Value> Object::internal_get(PropertyKey const& property_key, V
             return js_undefined();
 
         // c. Return ? parent.[[Get]](P, Receiver).
-        return parent->internal_get(property_key, receiver);
+        return parent->internal_get(property_key, receiver, cacheable_metadata, PropertyLookupPhase::PrototypeChain);
     }
 
-    // 3. If IsDataDescriptor(desc) is true, return desc.[[Value]].
-    if (descriptor->is_data_descriptor()) {
+    auto update_inline_cache = [&] {
         // Non-standard: If the caller has requested cacheable metadata and the property is an own property, fill it in.
-        if (cacheable_metadata && descriptor->property_offset.has_value() && shape().is_cacheable()) {
+        if (!cacheable_metadata || !descriptor->property_offset.has_value() || !shape().is_cacheable())
+            return;
+        if (phase == PropertyLookupPhase::OwnProperty) {
             *cacheable_metadata = CacheablePropertyMetadata {
                 .type = CacheablePropertyMetadata::Type::OwnProperty,
                 .property_offset = descriptor->property_offset.value(),
+                .prototype = nullptr,
+            };
+        } else if (phase == PropertyLookupPhase::PrototypeChain) {
+            VERIFY(shape().is_prototype_shape());
+            VERIFY(shape().prototype_chain_validity()->is_valid());
+            *cacheable_metadata = CacheablePropertyMetadata {
+                .type = CacheablePropertyMetadata::Type::InPrototypeChain,
+                .property_offset = descriptor->property_offset.value(),
+                .prototype = this,
             };
         }
+    };
+
+    // 3. If IsDataDescriptor(desc) is true, return desc.[[Value]].
+    if (descriptor->is_data_descriptor()) {
+        update_inline_cache();
         return *descriptor->value;
     }
 
@@ -917,6 +947,8 @@ ThrowCompletionOr<Value> Object::internal_get(PropertyKey const& property_key, V
     // 6. If getter is undefined, return undefined.
     if (!getter)
         return js_undefined();
+
+    update_inline_cache();
 
     // 7. Return ? Call(getter, Receiver).
     return TRY(call(vm, *getter, receiver));
@@ -977,8 +1009,10 @@ ThrowCompletionOr<bool> Object::ordinary_set_with_own_descriptor(PropertyKey con
         if (!receiver.is_object())
             return false;
 
+        auto& receiver_object = receiver.as_object();
+
         // c. Let existingDescriptor be ? Receiver.[[GetOwnProperty]](P).
-        auto existing_descriptor = TRY(receiver.as_object().internal_get_own_property(property_key));
+        auto existing_descriptor = TRY(receiver_object.internal_get_own_property(property_key));
 
         // d. If existingDescriptor is not undefined, then
         if (existing_descriptor.has_value()) {
@@ -997,19 +1031,20 @@ ThrowCompletionOr<bool> Object::ordinary_set_with_own_descriptor(PropertyKey con
                 *cacheable_metadata = CacheablePropertyMetadata {
                     .type = CacheablePropertyMetadata::Type::OwnProperty,
                     .property_offset = own_descriptor->property_offset.value(),
+                    .prototype = nullptr,
                 };
             }
 
             // iv. Return ? Receiver.[[DefineOwnProperty]](P, valueDesc).
-            return TRY(receiver.as_object().internal_define_own_property(property_key, value_descriptor));
+            return TRY(receiver_object.internal_define_own_property(property_key, value_descriptor, &existing_descriptor));
         }
         // e. Else,
         else {
             // i. Assert: Receiver does not currently have a property P.
-            VERIFY(!receiver.as_object().storage_has(property_key));
+            VERIFY(!receiver_object.storage_has(property_key));
 
             // ii. Return ? CreateDataProperty(Receiver, P, V).
-            return TRY(receiver.as_object().create_data_property(property_key, value));
+            return TRY(receiver_object.create_data_property(property_key, value));
         }
     }
 
@@ -1394,9 +1429,7 @@ void Object::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_shape);
-
-    for (auto& value : m_storage)
-        visitor.visit(value);
+    visitor.visit(m_storage);
 
     m_indexed_properties.for_each_value([&visitor](auto& value) {
         visitor.visit(value);
@@ -1446,6 +1479,13 @@ ThrowCompletionOr<Value> Object::ordinary_to_primitive(Value::PreferredType pref
 
     // 4. Throw a TypeError exception.
     return vm.throw_completion<TypeError>(ErrorType::Convert, "object", preferred_type == Value::PreferredType::String ? "string" : "number");
+}
+
+void Object::convert_to_prototype_if_needed()
+{
+    if (shape().is_prototype_shape())
+        return;
+    set_shape(shape().clone_for_prototype());
 }
 
 }

@@ -8,6 +8,7 @@
 #pragma once
 
 #include <AK/RedBlackTree.h>
+#include <AK/SetOnce.h>
 #include <AK/Vector.h>
 #include <Kernel/Arch/PageDirectory.h>
 #include <Kernel/Library/LockWeakPtr.h>
@@ -34,8 +35,8 @@ public:
 
     ErrorOr<void> unmap_mmap_range(VirtualAddress, size_t);
 
-    ErrorOr<Region*> allocate_region_with_vmobject(VirtualRange requested_range, NonnullLockRefPtr<VMObject>, size_t offset_in_vmobject, StringView name, int prot, bool shared);
-    ErrorOr<Region*> allocate_region_with_vmobject(RandomizeVirtualAddress, VirtualAddress requested_address, size_t requested_size, size_t requested_alignment, NonnullLockRefPtr<VMObject>, size_t offset_in_vmobject, StringView name, int prot, bool shared);
+    ErrorOr<Region*> allocate_region_with_vmobject(VirtualRange requested_range, NonnullLockRefPtr<VMObject>, size_t offset_in_vmobject, StringView name, int prot, bool shared, MemoryType = MemoryType::Normal);
+    ErrorOr<Region*> allocate_region_with_vmobject(RandomizeVirtualAddress, VirtualAddress requested_address, size_t requested_size, size_t requested_alignment, NonnullLockRefPtr<VMObject>, size_t offset_in_vmobject, StringView name, int prot, bool shared, MemoryType = MemoryType::Normal);
     ErrorOr<Region*> allocate_region(RandomizeVirtualAddress, VirtualAddress requested_address, size_t requested_size, size_t requested_alignment, StringView name, int prot = PROT_READ | PROT_WRITE, AllocationStrategy strategy = AllocationStrategy::Reserve);
     void deallocate_region(Region& region);
     NonnullOwnPtr<Region> take_region(Region& region);
@@ -48,8 +49,8 @@ public:
 
     ErrorOr<Vector<Region*, 4>> find_regions_intersecting(VirtualRange const&);
 
-    bool enforces_syscall_regions() const { return m_enforces_syscall_regions; }
-    void set_enforces_syscall_regions(bool b) { m_enforces_syscall_regions = b; }
+    bool enforces_syscall_regions() const { return m_enforces_syscall_regions.was_set(); }
+    void set_enforces_syscall_regions() { m_enforces_syscall_regions.set(); }
 
     void remove_all_regions(Badge<Process>);
 
@@ -68,7 +69,7 @@ private:
 
     RegionTree m_region_tree;
 
-    bool m_enforces_syscall_regions { false };
+    SetOnce m_enforces_syscall_regions;
 };
 
 }

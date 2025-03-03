@@ -10,13 +10,14 @@
 
 namespace JS::Bytecode {
 
-NonnullOwnPtr<BasicBlock> BasicBlock::create(String name)
+NonnullOwnPtr<BasicBlock> BasicBlock::create(u32 index, String name)
 {
-    return adopt_own(*new BasicBlock(move(name)));
+    return adopt_own(*new BasicBlock(index, move(name)));
 }
 
-BasicBlock::BasicBlock(String name)
-    : m_name(move(name))
+BasicBlock::BasicBlock(u32 index, String name)
+    : m_index(index)
+    , m_name(move(name))
 {
 }
 
@@ -27,27 +28,6 @@ BasicBlock::~BasicBlock()
         auto& to_destroy = (*it);
         ++it;
         Instruction::destroy(const_cast<Instruction&>(to_destroy));
-    }
-}
-
-void BasicBlock::dump(Bytecode::Executable const& executable) const
-{
-    Bytecode::InstructionStreamIterator it(instruction_stream());
-
-    if (!m_name.is_empty())
-        warn("{}", m_name);
-    if (m_handler || m_finalizer) {
-        warn(" [");
-        if (m_handler)
-            warn(" Handler: {}", Label { *m_handler });
-        if (m_finalizer)
-            warn(" Finalizer: {}", Label { *m_finalizer });
-        warn(" ]");
-    }
-    warnln(":");
-    while (!it.at_end()) {
-        warnln("[{:4x}] {}", it.offset(), (*it).to_byte_string(executable));
-        ++it;
     }
 }
 

@@ -12,9 +12,11 @@
 namespace Web::SVG::TagNames {
 
 #define ENUMERATE_SVG_GRAPHICS_TAGS \
+    __ENUMERATE_SVG_TAG(a)          \
     __ENUMERATE_SVG_TAG(circle)     \
     __ENUMERATE_SVG_TAG(ellipse)    \
     __ENUMERATE_SVG_TAG(g)          \
+    __ENUMERATE_SVG_TAG(image)      \
     __ENUMERATE_SVG_TAG(line)       \
     __ENUMERATE_SVG_TAG(path)       \
     __ENUMERATE_SVG_TAG(polygon)    \
@@ -33,6 +35,7 @@ namespace Web::SVG::TagNames {
     __ENUMERATE_SVG_TAG(foreignObject)  \
     __ENUMERATE_SVG_TAG(linearGradient) \
     __ENUMERATE_SVG_TAG(mask)           \
+    __ENUMERATE_SVG_TAG(metadata)       \
     __ENUMERATE_SVG_TAG(radialGradient) \
     __ENUMERATE_SVG_TAG(script)         \
     __ENUMERATE_SVG_TAG(stop)           \

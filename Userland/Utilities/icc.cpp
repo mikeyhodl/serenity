@@ -17,7 +17,7 @@
 #include <LibGfx/ICC/Tags.h>
 #include <LibGfx/ICC/WellKnownProfiles.h>
 #include <LibGfx/ImageFormats/ImageDecoder.h>
-#include <LibVideo/Color/CodingIndependentCodePoints.h>
+#include <LibMedia/Color/CodingIndependentCodePoints.h>
 
 template<class T>
 static ErrorOr<String> hyperlink(URL::URL const& target, T const& label)
@@ -244,13 +244,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(reencode_out_path, "Reencode ICC profile to this path", "reencode-to", 0, "FILE");
 
     bool debug_roundtrip = false;
-    args_parser.add_option(debug_roundtrip, "Check how many u8 colors roundtrip losslessly through the profile. For debugging.", "debug-roundtrip", 0);
+    args_parser.add_option(debug_roundtrip, "Check how many u8 colors roundtrip losslessly through the profile. For debugging.", "debug-roundtrip");
 
     bool measure = false;
-    args_parser.add_option(measure, "For RGB ICC profiles, print perceptually smallest and largest color step", "measure", 0);
+    args_parser.add_option(measure, "For RGB ICC profiles, print perceptually smallest and largest color step", "measure");
 
     bool force_print = false;
-    args_parser.add_option(force_print, "Print profile even when writing ICC files", "print", 0);
+    args_parser.add_option(force_print, "Print profile even when writing ICC files", "print");
 
     args_parser.parse(arguments);
 
@@ -406,13 +406,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         } else if (tag_data->type() == Gfx::ICC::CicpTagData::Type) {
             auto& cicp = static_cast<Gfx::ICC::CicpTagData&>(*tag_data);
             outln("    color primaries: {} - {}", cicp.color_primaries(),
-                Video::color_primaries_to_string((Video::ColorPrimaries)cicp.color_primaries()));
+                Media::color_primaries_to_string((Media::ColorPrimaries)cicp.color_primaries()));
             outln("    transfer characteristics: {} - {}", cicp.transfer_characteristics(),
-                Video::transfer_characteristics_to_string((Video::TransferCharacteristics)cicp.transfer_characteristics()));
+                Media::transfer_characteristics_to_string((Media::TransferCharacteristics)cicp.transfer_characteristics()));
             outln("    matrix coefficients: {} - {}", cicp.matrix_coefficients(),
-                Video::matrix_coefficients_to_string((Video::MatrixCoefficients)cicp.matrix_coefficients()));
+                Media::matrix_coefficients_to_string((Media::MatrixCoefficients)cicp.matrix_coefficients()));
             outln("    video full range flag: {} - {}", cicp.video_full_range_flag(),
-                Video::video_full_range_flag_to_string((Video::VideoFullRangeFlag)cicp.video_full_range_flag()));
+                Media::video_full_range_flag_to_string((Media::VideoFullRangeFlag)cicp.video_full_range_flag()));
         } else if (tag_data->type() == Gfx::ICC::CurveTagData::Type) {
             TRY(out_curve_tag(*tag_data, /*indent=*/4));
         } else if (tag_data->type() == Gfx::ICC::Lut16TagData::Type) {
@@ -537,7 +537,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             outln("    common name suffix: \"{}\"", named_colors.suffix());
             outln("    {} colors:", named_colors.size());
             for (size_t i = 0; i < min(named_colors.size(), 5u); ++i) {
-                const auto& pcs = named_colors.pcs_coordinates(i);
+                auto const& pcs = named_colors.pcs_coordinates(i);
 
                 // FIXME: Display decoded values? (See ICC v4 6.3.4.2 and 10.8.)
                 out("        \"{}\", PCS coordinates: {:#04x} {:#04x} {:#04x}", TRY(named_colors.color_name(i)), pcs.xyz.x, pcs.xyz.y, pcs.xyz.z);
