@@ -24,17 +24,17 @@ DeclarativeEnvironment* DeclarativeEnvironment::create_for_per_iteration_binding
 }
 
 DeclarativeEnvironment::DeclarativeEnvironment()
-    : Environment(nullptr)
+    : Environment(nullptr, IsDeclarative::Yes)
 {
 }
 
 DeclarativeEnvironment::DeclarativeEnvironment(Environment* parent_environment)
-    : Environment(parent_environment)
+    : Environment(parent_environment, IsDeclarative::Yes)
 {
 }
 
 DeclarativeEnvironment::DeclarativeEnvironment(Environment* parent_environment, ReadonlySpan<Binding> bindings)
-    : Environment(parent_environment)
+    : Environment(parent_environment, IsDeclarative::Yes)
     , m_bindings(bindings)
 {
 }
@@ -69,6 +69,7 @@ ThrowCompletionOr<void> DeclarativeEnvironment::create_mutable_binding(VM&, Depr
     // NOTE: We skip this to avoid O(n) traversal of m_bindings.
 
     // 2. Create a mutable binding in envRec for N and record that it is uninitialized. If D is true, record that the newly created binding may be deleted by a subsequent DeleteBinding call.
+    m_bindings_assoc.set(name, m_bindings.size());
     m_bindings.append(Binding {
         .name = name,
         .value = {},
@@ -91,6 +92,7 @@ ThrowCompletionOr<void> DeclarativeEnvironment::create_immutable_binding(VM&, De
     // NOTE: We skip this to avoid O(n) traversal of m_bindings.
 
     // 2. Create an immutable binding in envRec for N and record that it is uninitialized. If S is true, record that the newly created binding is a strict binding.
+    m_bindings_assoc.set(name, m_bindings.size());
     m_bindings.append(Binding {
         .name = name,
         .value = {},
@@ -110,9 +112,12 @@ ThrowCompletionOr<void> DeclarativeEnvironment::create_immutable_binding(VM&, De
 // 4.1.1.1.1 InitializeBinding ( N, V, hint ), https://tc39.es/proposal-explicit-resource-management/#sec-declarative-environment-records
 ThrowCompletionOr<void> DeclarativeEnvironment::initialize_binding(VM& vm, DeprecatedFlyString const& name, Value value, Environment::InitializeBindingHint hint)
 {
-    auto binding_and_index = find_binding_and_index(name);
-    VERIFY(binding_and_index.has_value());
-    auto& binding = binding_and_index->binding();
+    return initialize_binding_direct(vm, find_binding_and_index(name)->index().value(), value, hint);
+}
+
+ThrowCompletionOr<void> DeclarativeEnvironment::initialize_binding_direct(VM& vm, size_t index, Value value, Environment::InitializeBindingHint hint)
+{
+    auto& binding = m_bindings.at(index);
 
     // 1. Assert: envRec must have an uninitialized binding for N.
     VERIFY(binding.initialized == false);
@@ -182,29 +187,14 @@ ThrowCompletionOr<void> DeclarativeEnvironment::set_mutable_binding_direct(VM& v
 }
 
 // 9.1.1.1.6 GetBindingValue ( N, S ), https://tc39.es/ecma262/#sec-declarative-environment-records-getbindingvalue-n-s
-ThrowCompletionOr<Value> DeclarativeEnvironment::get_binding_value(VM& vm, DeprecatedFlyString const& name, bool strict)
+ThrowCompletionOr<Value> DeclarativeEnvironment::get_binding_value(VM& vm, DeprecatedFlyString const& name, [[maybe_unused]] bool strict)
 {
     // 1. Assert: envRec has a binding for N.
     auto binding_and_index = find_binding_and_index(name);
     VERIFY(binding_and_index.has_value());
 
     // 2-3. (extracted into a non-standard function below)
-    return get_binding_value_direct(vm, binding_and_index->binding(), strict);
-}
-
-ThrowCompletionOr<Value> DeclarativeEnvironment::get_binding_value_direct(VM& vm, size_t index, bool strict)
-{
-    return get_binding_value_direct(vm, m_bindings[index], strict);
-}
-
-ThrowCompletionOr<Value> DeclarativeEnvironment::get_binding_value_direct(VM&, Binding& binding, bool)
-{
-    // 2. If the binding for N in envRec is an uninitialized binding, throw a ReferenceError exception.
-    if (!binding.initialized)
-        return vm().throw_completion<ReferenceError>(ErrorType::BindingNotInitialized, binding.name);
-
-    // 3. Return the value currently bound to N in envRec.
-    return binding.value;
+    return get_binding_value_direct(vm, binding_and_index->binding());
 }
 
 // 9.1.1.1.7 DeleteBinding ( N ), https://tc39.es/ecma262/#sec-declarative-environment-records-deletebinding-n

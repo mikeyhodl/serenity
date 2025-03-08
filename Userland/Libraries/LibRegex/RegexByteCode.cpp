@@ -95,7 +95,7 @@ StringView character_compare_type_name(CharacterCompareType ch_compare_type)
     }
 }
 
-static StringView character_class_name(CharClass ch_class)
+StringView character_class_name(CharClass ch_class)
 {
     switch (ch_class) {
 #define __ENUMERATE_CHARACTER_CLASS(x) \
@@ -776,15 +776,11 @@ ALWAYS_INLINE void OpCode_Compare::compare_character_class(MatchInput const& inp
 bool OpCode_Compare::matches_character_class(CharClass character_class, u32 ch, bool insensitive)
 {
     constexpr auto is_space_or_line_terminator = [](u32 code_point) {
-        static auto space_separator = Unicode::general_category_from_string("Space_Separator"sv);
-        if (!space_separator.has_value())
-            return is_ascii_space(code_point);
-
         if ((code_point == 0x0a) || (code_point == 0x0d) || (code_point == 0x2028) || (code_point == 0x2029))
             return true;
         if ((code_point == 0x09) || (code_point == 0x0b) || (code_point == 0x0c) || (code_point == 0xfeff))
             return true;
-        return Unicode::code_point_has_general_category(code_point, *space_separator);
+        return Unicode::code_point_has_space_separator_general_category(code_point);
     };
 
     switch (character_class) {
@@ -1072,20 +1068,20 @@ ALWAYS_INLINE ExecutionResult OpCode_ResetRepeat::execute(MatchInput const&, Mat
     return ExecutionResult::Continue;
 }
 
-ALWAYS_INLINE ExecutionResult OpCode_Checkpoint::execute(MatchInput const& input, MatchState& state) const
+ALWAYS_INLINE ExecutionResult OpCode_Checkpoint::execute(MatchInput const&, MatchState& state) const
 {
     auto id = this->id();
-    if (id >= input.checkpoints.size())
-        input.checkpoints.resize(id + 1);
+    if (id >= state.checkpoints.size())
+        state.checkpoints.resize(id + 1);
 
-    input.checkpoints[id] = state.string_position + 1;
+    state.checkpoints[id] = state.string_position + 1;
     return ExecutionResult::Continue;
 }
 
 ALWAYS_INLINE ExecutionResult OpCode_JumpNonEmpty::execute(MatchInput const& input, MatchState& state) const
 {
     u64 current_position = state.string_position;
-    auto checkpoint_position = input.checkpoints[checkpoint()];
+    auto checkpoint_position = state.checkpoints.get(checkpoint()).value_or(0);
 
     if (checkpoint_position != 0 && checkpoint_position != current_position + 1) {
         auto form = this->form();

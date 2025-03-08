@@ -34,7 +34,7 @@ UNMAP_AFTER_INIT ErrorOr<bool> VoodooGraphicsAdapter::probe(PCI::DeviceIdentifie
     return id.vendor_id == PCI::VendorID::Tdfx && is_supported_model(id.device_id);
 }
 
-UNMAP_AFTER_INIT ErrorOr<NonnullLockRefPtr<GenericGraphicsAdapter>> VoodooGraphicsAdapter::create(PCI::DeviceIdentifier const& pci_device_identifier)
+UNMAP_AFTER_INIT ErrorOr<NonnullLockRefPtr<GPUDevice>> VoodooGraphicsAdapter::create(PCI::DeviceIdentifier const& pci_device_identifier)
 {
     auto adapter = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) VoodooGraphicsAdapter(pci_device_identifier)));
     MUST(adapter->initialize_adapter(pci_device_identifier));
@@ -60,7 +60,7 @@ UNMAP_AFTER_INIT ErrorOr<void> VoodooGraphicsAdapter::initialize_adapter(PCI::De
 
     auto io_window = TRY(IOWindow::create_for_pci_device_bar(pci_device_identifier, PCI::HeaderType0BaseRegister::BAR2));
 
-    m_display_connector = VoodooGraphics::VoodooDisplayConnector::must_create(vmem_addr, vmem_size, move(mmio_mapping), move(io_window));
+    m_display_connector = TRY(VoodooGraphics::VoodooDisplayConnector::create(vmem_addr, vmem_size, move(mmio_mapping), move(io_window)));
     TRY(m_display_connector->set_safe_mode_setting());
 
     return {};

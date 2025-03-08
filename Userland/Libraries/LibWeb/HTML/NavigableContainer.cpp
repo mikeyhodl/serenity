@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibURL/Origin.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
@@ -17,9 +18,9 @@
 #include <LibWeb/HTML/Navigable.h>
 #include <LibWeb/HTML/NavigableContainer.h>
 #include <LibWeb/HTML/NavigationParams.h>
-#include <LibWeb/HTML/Origin.h>
 #include <LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Page/Page.h>
 
@@ -58,7 +59,7 @@ JS::GCPtr<NavigableContainer> NavigableContainer::navigable_container_with_conte
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#create-a-new-child-navigable
-WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
+WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(JS::GCPtr<JS::HeapFunction<void()>> after_session_history_update)
 {
     // 1. Let parentNavigable be element's node navigable.
     auto parent_navigable = navigable();
@@ -94,7 +95,7 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
     document_state->set_about_base_url(document->about_base_url());
 
     // 7. Let navigable be a new navigable.
-    JS::NonnullGCPtr<Navigable> navigable = *heap().allocate_without_realm<Navigable>();
+    JS::NonnullGCPtr<Navigable> navigable = *heap().allocate_without_realm<Navigable>(page);
 
     // 8. Initialize the navigable navigable given documentState and parentNavigable.
     TRY_OR_THROW_OOM(vm(), navigable->initialize_navigable(document_state, parent_navigable));
@@ -109,21 +110,20 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
     auto traversable = parent_navigable->traversable_navigable();
 
     // 12. Append the following session history traversal steps to traversable:
-    traversable->append_session_history_traversal_steps([traversable, navigable, parent_navigable, history_entry] {
+    traversable->append_session_history_traversal_steps(JS::create_heap_function(heap(), [traversable, navigable, parent_navigable, history_entry, after_session_history_update] {
         // 1. Let parentDocState be parentNavigable's active session history entry's document state.
-
-        auto parent_doc_state = parent_navigable->active_session_history_entry()->document_state;
+        auto parent_doc_state = parent_navigable->active_session_history_entry()->document_state();
 
         // 2. Let parentNavigableEntries be the result of getting session history entries for parentNavigable.
         auto parent_navigable_entries = parent_navigable->get_session_history_entries();
 
         // 3. Let targetStepSHE be the first session history entry in parentNavigableEntries whose document state equals parentDocState.
         auto target_step_she = *parent_navigable_entries.find_if([parent_doc_state](auto& entry) {
-            return entry->document_state == parent_doc_state;
+            return entry->document_state() == parent_doc_state;
         });
 
         // 4. Set historyEntry's step to targetStepSHE's step.
-        history_entry->step = target_step_she->step;
+        history_entry->set_step(target_step_she->step());
 
         // 5. Let nestedHistory be a new nested history whose id is navigable's id and entries list is « historyEntry ».
         DocumentState::NestedHistory nested_history {
@@ -131,12 +131,16 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
             .entries { *history_entry },
         };
 
-        // 5. Append nestedHistory to parentDocState's nested histories.
+        // 6. Append nestedHistory to parentDocState's nested histories.
         parent_doc_state->nested_histories().append(move(nested_history));
 
-        // 6. Update for navigable creation/destruction given traversable
+        // 7. Update for navigable creation/destruction given traversable
         traversable->update_for_navigable_creation_or_destruction();
-    });
+
+        if (after_session_history_update) {
+            after_session_history_update->function()();
+        }
+    }));
 
     return {};
 }
@@ -215,7 +219,8 @@ Optional<URL::URL> NavigableContainer::shared_attribute_processing_steps_for_ifr
 
     // 4. If url matches about:blank and initialInsertion is true, then perform the URL and history update steps given element's content navigable's active document and url.
     if (url_matches_about_blank(url) && initial_insertion) {
-        perform_url_and_history_update_steps(*m_content_navigable->active_document(), url);
+        auto& document = *m_content_navigable->active_document();
+        perform_url_and_history_update_steps(document, url);
     }
 
     // 5. Return url.
@@ -258,39 +263,50 @@ void NavigableContainer::destroy_the_child_navigable()
     if (!navigable)
         return;
 
-    // 3. Set container's content navigable to null.
-    m_content_navigable = nullptr;
+    // Not in the spec:
+    // Setting container's content navigable makes document *not* be "fully active".
+    // Therefore, it is moved to run in afterAllDestruction callback of "destroy a document and its descendants"
+    // when all queued tasks are done.
+    // "Has been destroyed" flag is used instead to check whether navigable is already destroyed.
+    if (navigable->has_been_destroyed())
+        return;
+    navigable->set_has_been_destroyed();
 
     // FIXME: 4. Inform the navigation API about child navigable destruction given navigable.
 
-    // 5. Destroy navigable's active document.
-    navigable->active_document()->destroy();
+    // 5. Destroy a document and its descendants given navigable's active document.
+    navigable->active_document()->destroy_a_document_and_its_descendants(JS::create_heap_function(heap(), [this, navigable] {
+        // 3. Set container's content navigable to null.
+        m_content_navigable = nullptr;
 
-    // 6. Let parentDocState be container's node navigable's active session history entry's document state.
-    auto parent_doc_state = this->navigable()->active_session_history_entry()->document_state;
+        // Not in the spec:
+        HTML::all_navigables().remove(navigable);
 
-    // 7. Remove the nested history from parentDocState's nested histories whose id equals navigable's id.
-    parent_doc_state->nested_histories().remove_all_matching([&](auto& nested_history) {
-        return navigable->id() == nested_history.id;
-    });
+        // 6. Let parentDocState be container's node navigable's active session history entry's document state.
+        auto parent_doc_state = this->navigable()->active_session_history_entry()->document_state();
 
-    // 8. Let traversable be container's node navigable's traversable navigable.
-    auto traversable = this->navigable()->traversable_navigable();
+        // 7. Remove the nested history from parentDocState's nested histories whose id equals navigable's id.
+        parent_doc_state->nested_histories().remove_all_matching([&](auto& nested_history) {
+            return navigable->id() == nested_history.id;
+        });
 
-    // Not in the spec
-    navigable->set_has_been_destroyed();
-    HTML::all_navigables().remove(navigable);
+        // 8. Let traversable be container's node navigable's traversable navigable.
+        auto traversable = this->navigable()->traversable_navigable();
 
-    // 9. Append the following session history traversal steps to traversable:
-    traversable->append_session_history_traversal_steps([traversable] {
-        // 1. Apply pending history changes to traversable.
-        traversable->update_for_navigable_creation_or_destruction();
-    });
+        // 9. Append the following session history traversal steps to traversable:
+        traversable->append_session_history_traversal_steps(JS::create_heap_function(heap(), [traversable] {
+            // 1. Update for navigable creation/destruction given traversable.
+            traversable->update_for_navigable_creation_or_destruction();
+        }));
+    }));
 }
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#potentially-delays-the-load-event
 bool NavigableContainer::currently_delays_the_load_event() const
 {
+    if (!m_content_navigable_initialized)
+        return true;
+
     if (!m_potentially_delays_the_load_event)
         return false;
 

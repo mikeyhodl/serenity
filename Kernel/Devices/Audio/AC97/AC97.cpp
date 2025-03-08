@@ -7,7 +7,7 @@
 #include <AK/Format.h>
 #include <Kernel/Arch/Delay.h>
 #include <Kernel/Devices/Audio/AC97/AC97.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 
@@ -64,7 +64,7 @@ UNMAP_AFTER_INIT AC97::AC97(PCI::DeviceIdentifier const& pci_device_identifier, 
 
 UNMAP_AFTER_INIT AC97::~AC97() = default;
 
-bool AC97::handle_irq(RegisterState const&)
+bool AC97::handle_irq()
 {
     auto pcm_out_status = m_pcm_out_channel->io_window().read16(AC97Channel::Register::Status);
     dbgln_if(AC97_DEBUG, "AC97 @ {}: interrupt received - status: {:#05b}", device_identifier().address(), pcm_out_status);
@@ -224,13 +224,16 @@ ErrorOr<size_t> AC97::write(size_t channel_index, UserOrKernelBuffer const& data
     if (channel_index != 0)
         return Error::from_errno(ENODEV);
 
-    if (!m_output_buffer)
-        m_output_buffer = TRY(MM.allocate_dma_buffer_pages(m_output_buffer_page_count * PAGE_SIZE, "AC97 Output buffer"sv, Memory::Region::Access::Write));
+    if (!m_output_buffer) {
+        // FIXME: Synchronize DMA buffer accesses correctly and set the MemoryType to NonCacheable.
+        m_output_buffer = TRY(MM.allocate_dma_buffer_pages(m_output_buffer_page_count * PAGE_SIZE, "AC97 Output buffer"sv, Memory::Region::Access::Write, Memory::MemoryType::IO));
+    }
 
     if (!m_buffer_descriptor_list) {
         size_t buffer_descriptor_list_size = buffer_descriptor_list_max_entries * sizeof(BufferDescriptorListEntry);
         buffer_descriptor_list_size = TRY(Memory::page_round_up(buffer_descriptor_list_size));
-        m_buffer_descriptor_list = TRY(MM.allocate_dma_buffer_pages(buffer_descriptor_list_size, "AC97 Buffer Descriptor List"sv, Memory::Region::Access::Write));
+        // FIXME: Synchronize DMA buffer accesses correctly and set the MemoryType to NonCacheable.
+        m_buffer_descriptor_list = TRY(MM.allocate_dma_buffer_pages(buffer_descriptor_list_size, "AC97 Buffer Descriptor List"sv, Memory::Region::Access::Write, Memory::MemoryType::IO));
     }
 
     Checked<size_t> remaining = length;

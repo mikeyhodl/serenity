@@ -70,7 +70,7 @@ TEST_CASE(empty_file_issue_10702)
     EXPECT(document.is_error());
 }
 
-TEST_CASE(encodig)
+TEST_CASE(encoding)
 {
     auto file = MUST(Core::MappedFile::map("encoding.pdf"sv));
     auto document = MUST(PDF::Document::create(file->bytes()));
@@ -87,6 +87,14 @@ TEST_CASE(encodig)
     EXPECT_EQ(outline_dict->children[0]->title, (char const*)u8"Titlè 1");
     EXPECT_EQ(outline_dict->children[1]->title, (char const*)u8"Titlè 2");
     EXPECT_EQ(outline_dict->children[2]->title, (char const*)u8"Titlè 3");
+}
+
+TEST_CASE(offset)
+{
+    auto file = MUST(Core::MappedFile::map("offset.pdf"sv));
+    auto document = MUST(PDF::Document::create(file->bytes()));
+    MUST(document->initialize());
+    EXPECT_EQ(document->get_page_count(), 1U);
 }
 
 TEST_CASE(truncated_pdf_header_issue_10717)
@@ -304,6 +312,42 @@ TEST_CASE(postscript)
     check_evaluate("{ pop }"sv, { 8.0f, 1.0f, 0.5f }, { 8.0f, 1.0f });
     check_evaluate("{ 3 1 roll }"sv, { 0.5f, 1.0f, 2.0f }, { 2.0f, 0.5f, 1.0f });
     check_evaluate("{ 3 -1 roll }"sv, { 0.5f, 1.0f, 2.0f }, { 1.0f, 2.0f, 0.5f });
+
+    // Comments
+    check_evaluate(R"(
+    % comment
+    {
+        % comment
+        1
+
+        % comment
+        {
+            % comment
+            1
+            % comment
+        }
+        % comment
+        if
+
+        % comment
+        {
+            % comment
+            1
+            % comment
+        }
+        % comment
+        {
+            % comment
+            0
+            % comment
+        }
+        ifelse
+
+        % comment
+    }
+    % comment
+    )"sv,
+        {}, { 1.0f });
 }
 
 TEST_CASE(render)
@@ -341,4 +385,30 @@ TEST_CASE(render)
 
     // MyCalGray
     EXPECT_EQ(bitmap->get_pixel(270, 370 - 320), Gfx::Color::NamedColor::Black);
+}
+
+TEST_CASE(render_jpeg2000_indexed)
+{
+#if !defined(AK_OS_SERENITY)
+    // Get from Build/lagom/bin/TestPDF to Build/lagom/Root/res.
+    auto source_root = LexicalPath(MUST(Core::System::current_executable_path())).parent().parent().string();
+    Core::ResourceImplementation::install(make<Core::ResourceImplementationFile>(MUST(String::formatted("{}/Root/res", source_root))));
+#endif
+
+    auto file = MUST(Core::MappedFile::map("jpeg2000-indexed-small.pdf"sv));
+    auto document = MUST(PDF::Document::create(file->bytes()));
+    MUST(document->initialize());
+    EXPECT_EQ(document->get_page_count(), 1U);
+
+    auto page = MUST(document->get_page(0));
+    auto page_size = Gfx::IntSize { 3, 2 };
+    auto bitmap = MUST(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, page_size));
+    MUST(PDF::Renderer::render(document, page, bitmap, Color::White, PDF::RenderingPreferences {}));
+
+    EXPECT_EQ(bitmap->scanline(0)[0], Gfx::Color(127, 0, 0).value());
+    EXPECT_EQ(bitmap->scanline(0)[1], Gfx::Color(0, 127, 0).value());
+    EXPECT_EQ(bitmap->scanline(0)[2], Gfx::Color(0, 0, 127).value());
+    EXPECT_EQ(bitmap->scanline(1)[0], Gfx::Color(0, 127, 127).value());
+    EXPECT_EQ(bitmap->scanline(1)[1], Gfx::Color(127, 0, 127).value());
+    EXPECT_EQ(bitmap->scanline(1)[2], Gfx::Color(127, 127, 0).value());
 }

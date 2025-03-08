@@ -13,12 +13,14 @@
 #include <AK/IntrusiveList.h>
 #include <AK/Optional.h>
 #include <AK/OwnPtr.h>
+#include <AK/Platform.h>
 #include <AK/Time.h>
 #include <AK/Variant.h>
 #include <AK/Vector.h>
 #include <Kernel/API/POSIX/sched.h>
 #include <Kernel/API/POSIX/select.h>
 #include <Kernel/API/POSIX/signal_numbers.h>
+#include <Kernel/Arch/ArchSpecificThreadData.h>
 #include <Kernel/Arch/RegisterState.h>
 #include <Kernel/Arch/ThreadRegisters.h>
 #include <Kernel/Debug.h>
@@ -72,8 +74,8 @@ public:
     static ErrorOr<NonnullRefPtr<Thread>> create(NonnullRefPtr<Process>);
     ~Thread();
 
-    static RefPtr<Thread> from_tid_ignoring_jails(ThreadID);
-    static RefPtr<Thread> from_tid_in_same_jail(ThreadID);
+    static RefPtr<Thread> from_tid_ignoring_process_lists(ThreadID);
+    static RefPtr<Thread> from_tid_in_same_process_list(ThreadID);
     static void finalize_dying_threads();
 
     ThreadID tid() const { return m_tid; }
@@ -94,8 +96,8 @@ public:
         return m_is_joinable;
     }
 
-    Process& process() { return m_process; }
-    Process const& process() const { return m_process; }
+    NO_SANITIZE_COVERAGE Process& process() { return m_process; }
+    NO_SANITIZE_COVERAGE Process const& process() const { return m_process; }
 
     using Name = FixedStringBuffer<64>;
     SpinlockProtected<Name, LockRank::None> const& name() const
@@ -359,7 +361,7 @@ public:
             bool did_unblock_any = false;
             for (size_t i = 0; i < m_blockers.size() && !stop_iterating;) {
                 auto& info = m_blockers[i];
-                if (bool did_unblock = try_to_unblock_one(*info.blocker, info.data, stop_iterating)) {
+                if (try_to_unblock_one(*info.blocker, info.data, stop_iterating)) {
                     m_blockers.remove(i);
                     did_unblock_any = true;
                     continue;
@@ -525,7 +527,7 @@ public:
 
     private:
         NonnullRefPtr<OpenFileDescription> m_blocked_description;
-        const BlockFlags m_flags;
+        BlockFlags const m_flags;
         BlockFlags& m_unblocked_flags;
         bool m_did_unblock { false };
     };
@@ -788,7 +790,8 @@ public:
     State state() const { return m_state; }
     StringView state_string() const;
 
-    VirtualAddress thread_specific_data() const { return m_thread_specific_data; }
+    ArchSpecificThreadData& arch_specific_data() { return m_arch_specific_data; }
+    ArchSpecificThreadData const& arch_specific_data() const { return m_arch_specific_data; }
 
     ALWAYS_INLINE void yield_if_should_be_stopped()
     {
@@ -888,8 +891,6 @@ public:
 
     FPUState& fpu_state() { return m_fpu_state; }
 
-    ErrorOr<void> make_thread_specific_region(Badge<Process>);
-
     unsigned syscall_count() const { return m_syscall_count; }
     void did_syscall() { ++m_syscall_count; }
     unsigned inode_faults() const { return m_inode_faults; }
@@ -967,14 +968,14 @@ public:
     ErrorOr<NonnullRefPtr<Thread>> clone(NonnullRefPtr<Process>);
 
     template<IteratorFunction<Thread&> Callback>
-    static IterationDecision for_each_in_state_ignoring_jails(State, Callback);
+    static IterationDecision for_each_in_state_ignoring_process_lists(State, Callback);
     template<IteratorFunction<Thread&> Callback>
-    static IterationDecision for_each_ignoring_jails(Callback);
+    static IterationDecision for_each_ignoring_process_lists(Callback);
 
     template<VoidFunction<Thread&> Callback>
-    static IterationDecision for_each_in_state_ignoring_jails(State, Callback);
+    static IterationDecision for_each_in_state_ignoring_process_lists(State, Callback);
     template<VoidFunction<Thread&> Callback>
-    static IterationDecision for_each_ignoring_jails(Callback);
+    static IterationDecision for_each_ignoring_process_lists(Callback);
 
     static constexpr u32 default_kernel_stack_size = 65536;
     static constexpr u32 default_userspace_stack_size = 1 * MiB;
@@ -1068,6 +1069,7 @@ public:
     void set_allocation_enabled(bool value) { m_allocation_enabled = value; }
 
     ErrorOr<NonnullOwnPtr<KString>> backtrace();
+    void print_backtrace();
 
     Blocker const* blocker() const { return m_blocker; }
     Kernel::Mutex const* blocking_mutex() const { return m_blocking_mutex; }
@@ -1181,8 +1183,6 @@ private:
     FlatPtr m_kernel_stack_base { 0 };
     FlatPtr m_kernel_stack_top { 0 };
     NonnullOwnPtr<Memory::Region> m_kernel_stack_region;
-    VirtualAddress m_thread_specific_data;
-    Optional<Memory::VirtualRange> m_thread_specific_range;
     Array<Optional<u32>, NSIG> m_signal_action_masks;
     Array<ProcessID, NSIG> m_signal_senders;
     Blocker* m_blocker { nullptr };
@@ -1191,6 +1191,7 @@ private:
     IntrusiveListNode<Thread> m_blocked_threads_list_node;
     LockRank m_lock_rank_mask {};
     bool m_allocation_enabled { true };
+    ArchSpecificThreadData m_arch_specific_data;
 
     // FIXME: remove this after annihilating Process::m_big_lock
     IntrusiveListNode<Thread> m_big_lock_blocked_threads_list_node;
@@ -1258,12 +1259,21 @@ public:
     using GlobalList = IntrusiveList<&Thread::m_global_thread_list_node>;
 
     static SpinlockProtected<GlobalList, LockRank::None>& all_instances();
+
+#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
+    // Used by __sanitizer_cov_trace_pc to identify traced threads.
+    bool m_kcov_enabled { false };
+#    ifdef ENABLE_KERNEL_COVERAGE_COLLECTION_DEBUG
+    // Used by __sanitizer_cov_trace_pc to detect an infinite recursion.
+    bool m_kcov_recursion_hint { false };
+#    endif
+#endif
 };
 
 AK_ENUM_BITWISE_OPERATORS(Thread::FileBlocker::BlockFlags);
 
 template<IteratorFunction<Thread&> Callback>
-inline IterationDecision Thread::for_each_ignoring_jails(Callback callback)
+inline IterationDecision Thread::for_each_ignoring_process_lists(Callback callback)
 {
     return Thread::all_instances().with([&](auto& list) -> IterationDecision {
         for (auto& thread : list) {
@@ -1276,7 +1286,7 @@ inline IterationDecision Thread::for_each_ignoring_jails(Callback callback)
 }
 
 template<IteratorFunction<Thread&> Callback>
-inline IterationDecision Thread::for_each_in_state_ignoring_jails(State state, Callback callback)
+inline IterationDecision Thread::for_each_in_state_ignoring_process_lists(State state, Callback callback)
 {
     return Thread::all_instances().with([&](auto& list) -> IterationDecision {
         for (auto& thread : list) {
@@ -1291,7 +1301,7 @@ inline IterationDecision Thread::for_each_in_state_ignoring_jails(State state, C
 }
 
 template<VoidFunction<Thread&> Callback>
-inline IterationDecision Thread::for_each_ignoring_jails(Callback callback)
+inline IterationDecision Thread::for_each_ignoring_process_lists(Callback callback)
 {
     return Thread::all_instances().with([&](auto& list) {
         for (auto& thread : list) {
@@ -1303,9 +1313,9 @@ inline IterationDecision Thread::for_each_ignoring_jails(Callback callback)
 }
 
 template<VoidFunction<Thread&> Callback>
-inline IterationDecision Thread::for_each_in_state_ignoring_jails(State state, Callback callback)
+inline IterationDecision Thread::for_each_in_state_ignoring_process_lists(State state, Callback callback)
 {
-    return for_each_in_state_ignoring_jails(state, [&](auto& thread) {
+    return for_each_in_state_ignoring_process_lists(state, [&](auto& thread) {
         callback(thread);
         return IterationDecision::Continue;
     });

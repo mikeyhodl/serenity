@@ -34,10 +34,10 @@ public:
     u16 flags() const { return m_flags; }
 
 private:
-    const u8 m_bus;
-    const u8 m_source;
-    const u32 m_global_system_interrupt;
-    const u16 m_flags;
+    u8 const m_bus;
+    u8 const m_source;
+    u32 const m_global_system_interrupt;
+    u16 const m_flags;
 };
 
 class InterruptManagement {
@@ -71,7 +71,6 @@ private:
     void locate_apic_data();
     Vector<NonnullLockRefPtr<IRQController>> m_interrupt_controllers;
     Vector<ISAInterruptOverrideMetadata> m_isa_interrupt_overrides;
-    Vector<PCIInterruptOverrideMetadata> m_pci_interrupt_overrides;
     Optional<PhysicalAddress> m_madt_physical_address;
 };
 

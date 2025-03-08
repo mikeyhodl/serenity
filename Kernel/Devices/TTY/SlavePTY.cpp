@@ -5,6 +5,7 @@
  */
 
 #include <AK/Singleton.h>
+#include <Kernel/API/MajorNumberAllocation.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Devices/TTY/MasterPTY.h>
 #include <Kernel/Devices/TTY/SlavePTY.h>
@@ -36,7 +37,7 @@ bool SlavePTY::unref() const
 }
 
 SlavePTY::SlavePTY(NonnullRefPtr<MasterPTY> master, UserID uid, GroupID gid, unsigned index)
-    : TTY(201, index)
+    : TTY(MajorAllocation::CharacterDeviceFamily::SlavePTY, index)
     , m_master(move(master))
     , m_index(index)
     , m_uid(uid)
@@ -67,7 +68,7 @@ void SlavePTY::echo(u8 ch)
 void SlavePTY::on_master_write(UserOrKernelBuffer const& buffer, size_t size)
 {
     auto result = buffer.read_buffered<128>(size, [&](ReadonlyBytes data) {
-        for (const auto& byte : data)
+        for (auto const& byte : data)
             emit(byte, false);
         return data.size();
     });

@@ -22,6 +22,7 @@ struct MouseEventInit : public EventModifierInit {
     double movement_y = 0;
     i16 button = 0;
     u16 buttons = 0;
+    JS::GCPtr<DOM::EventTarget> related_target = nullptr;
 };
 
 class MouseEvent : public UIEvent {
@@ -55,25 +56,37 @@ public:
     bool alt_key() const { return m_alt_key; }
     bool meta_key() const { return m_meta_key; }
 
+    bool platform_ctrl_key() const
+    {
+#if defined(AK_OS_MACOS)
+        return meta_key();
+#else
+        return ctrl_key();
+#endif
+    }
+
     double movement_x() const { return m_movement_x; }
     double movement_y() const { return m_movement_y; }
 
     i16 button() const { return m_button; }
     u16 buttons() const { return m_buttons; }
 
+    JS::GCPtr<DOM::EventTarget> related_target() const { return m_related_target; }
+
     bool get_modifier_state(String const& key_arg) const;
 
     virtual u32 which() const override { return m_button + 1; }
+
+    void init_mouse_event(String const& type, bool bubbles, bool cancelable, HTML::Window* view, WebIDL::Long detail, WebIDL::Long screen_x, WebIDL::Long screen_y, WebIDL::Long client_x, WebIDL::Long client_y, bool ctrl_key, bool alt_key, bool shift_key, bool meta_key, WebIDL::Short button, DOM::EventTarget* related_target);
 
 protected:
     MouseEvent(JS::Realm&, FlyString const& event_name, MouseEventInit const& event_init, double page_x, double page_y, double offset_x, double offset_y);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
 
 private:
     virtual bool is_mouse_event() const override { return true; }
-
-    void set_event_characteristics();
 
     double m_screen_x { 0 };
     double m_screen_y { 0 };
@@ -101,6 +114,7 @@ private:
     double m_movement_y { 0 };
     i16 m_button { 0 };
     u16 m_buttons { 0 };
+    JS::GCPtr<DOM::EventTarget> m_related_target { nullptr };
 };
 
 }

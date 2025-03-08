@@ -11,7 +11,6 @@
 #include <AK/Time.h>
 #include <LibWeb/ARIA/Roles.h>
 #include <LibWeb/HTML/HTMLElement.h>
-#include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/Navigable.h>
 
 namespace Web::HTML {
@@ -76,7 +75,7 @@ public:
 
     Vector<JS::NonnullGCPtr<DOM::Element>> get_submittable_elements();
 
-    JS::NonnullGCPtr<DOM::HTMLFormControlsCollection> elements() const;
+    JS::NonnullGCPtr<HTMLFormControlsCollection> elements() const;
     unsigned length() const;
 
     WebIDL::ExceptionOr<bool> check_validity();
@@ -89,8 +88,9 @@ public:
     bool constructing_entry_list() const { return m_constructing_entry_list; }
     void set_constructing_entry_list(bool value) { m_constructing_entry_list = value; }
 
-    StringView method() const;
     WebIDL::ExceptionOr<void> set_method(String const&);
+
+    JS::NonnullGCPtr<DOM::DOMTokenList> rel_list();
 
     String action() const;
     WebIDL::ExceptionOr<void> set_action(String const&);
@@ -104,10 +104,11 @@ private:
     virtual void visit_edges(Cell::Visitor&) override;
 
     // ^PlatformObject
-    virtual WebIDL::ExceptionOr<JS::Value> item_value(size_t index) const override;
-    virtual WebIDL::ExceptionOr<JS::Value> named_item_value(FlyString const& name) const override;
+    virtual Optional<JS::Value> item_value(size_t index) const override;
+    virtual JS::Value named_item_value(FlyString const& name) const override;
     virtual Vector<FlyString> supported_property_names() const override;
-    virtual bool is_supported_property_index(u32) const override;
+
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
 
     ErrorOr<String> pick_an_encoding() const;
 
@@ -135,14 +136,16 @@ private:
     };
     HashMap<FlyString, PastNameEntry> mutable m_past_names_map;
 
-    JS::GCPtr<DOM::HTMLFormControlsCollection> mutable m_elements;
+    JS::GCPtr<HTMLFormControlsCollection> mutable m_elements;
 
     bool m_constructing_entry_list { false };
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#planned-navigation
     // Each form element has a planned navigation, which is either null or a task; when the form is first created,
     // its planned navigation must be set to null.
-    Task const* m_planned_navigation { nullptr };
+    JS::GCPtr<Task const> m_planned_navigation;
+
+    JS::GCPtr<DOM::DOMTokenList> m_rel_list;
 };
 
 }

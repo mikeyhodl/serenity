@@ -9,7 +9,9 @@ set(SOURCES
     Bytecode/IdentifierTable.cpp
     Bytecode/Instruction.cpp
     Bytecode/Interpreter.cpp
+    Bytecode/Label.cpp
     Bytecode/RegexTable.cpp
+    Bytecode/ScopedOperand.cpp
     Bytecode/StringTable.cpp
     Console.cpp
     Contrib/Test262/262Object.cpp
@@ -66,6 +68,7 @@ set(SOURCES
     Runtime/BooleanPrototype.cpp
     Runtime/BoundFunction.cpp
     Runtime/Completion.cpp
+    Runtime/ConsoleObjectPrototype.cpp
     Runtime/ConsoleObject.cpp
     Runtime/DataView.cpp
     Runtime/DataViewConstructor.cpp
@@ -146,6 +149,7 @@ set(SOURCES
     Runtime/IteratorPrototype.cpp
     Runtime/JSONObject.cpp
     Runtime/JobCallback.cpp
+    Runtime/KeyedCollections.cpp
     Runtime/Map.cpp
     Runtime/MapConstructor.cpp
     Runtime/MapIterator.cpp
@@ -280,3 +284,4 @@ if("${CMAKE_SYSTEM_PROCESSOR}" MATCHES "i.86.*")
 endif()
 
 target_compile_options(LibJS PRIVATE -fno-omit-frame-pointer)
+target_link_libraries(LibJS PUBLIC JSClangPlugin)

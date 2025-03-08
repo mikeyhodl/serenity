@@ -13,13 +13,18 @@ group("Ladybird") {
 
 moc_qt_objects("generate_moc") {
   sources = [
+    "Qt/Application.h",
     "Qt/AutoComplete.h",
     "Qt/BrowserWindow.h",
     "Qt/EventLoopImplementationQtEventTarget.h",
+    "Qt/FindInPageWidget.h",
     "Qt/InspectorWidget.h",
     "Qt/LocationEdit.h",
+    "Qt/Settings.h",
     "Qt/SettingsDialog.h",
     "Qt/Tab.h",
+    "Qt/TabBar.h",
+    "Qt/TaskManagerWindow.h",
     "Qt/WebContentView.h",
   ]
 }
@@ -34,7 +39,6 @@ link_qt("ladybird_qt_components") {
     "Gui",
     "Widgets",
     "Network",
-    "Svg",
   ]
 }
 
@@ -62,7 +66,6 @@ executable("ladybird_executable") {
     "//AK",
     "//Userland/Libraries/LibCore",
     "//Userland/Libraries/LibFileSystem",
-    "//Userland/Libraries/LibGUI",
     "//Userland/Libraries/LibGfx",
     "//Userland/Libraries/LibIPC",
     "//Userland/Libraries/LibImageDecoderClient",
@@ -70,6 +73,7 @@ executable("ladybird_executable") {
     "//Userland/Libraries/LibMain",
     "//Userland/Libraries/LibProtocol",
     "//Userland/Libraries/LibSQL",
+    "//Userland/Libraries/LibURL",
     "//Userland/Libraries/LibWeb",
     "//Userland/Libraries/LibWebView",
   ]
@@ -82,10 +86,12 @@ executable("ladybird_executable") {
     configs += [ ":ladybird_qt_components" ]
 
     sources += [
+      "Qt/Application.cpp",
       "Qt/AutoComplete.cpp",
       "Qt/BrowserWindow.cpp",
       "Qt/EventLoopImplementationQt.cpp",
       "Qt/EventLoopImplementationQtEventTarget.cpp",
+      "Qt/FindInPageWidget.cpp",
       "Qt/Icon.cpp",
       "Qt/InspectorWidget.cpp",
       "Qt/LocationEdit.cpp",
@@ -94,6 +100,8 @@ executable("ladybird_executable") {
       "Qt/StringUtils.cpp",
       "Qt/TVGIconEngine.cpp",
       "Qt/Tab.cpp",
+      "Qt/TabBar.cpp",
+      "Qt/TaskManagerWindow.cpp",
       "Qt/WebContentView.cpp",
       "Qt/main.cpp",
     ]
@@ -108,6 +116,7 @@ executable("ladybird_executable") {
   } else {
     sources += [
       "AppKit/Application/Application.mm",
+      "AppKit/Application/ApplicationBridge.cpp",
       "AppKit/Application/ApplicationDelegate.mm",
       "AppKit/Application/EventLoopImplementation.mm",
       "AppKit/UI/Event.mm",
@@ -116,8 +125,11 @@ executable("ladybird_executable") {
       "AppKit/UI/LadybirdWebView.mm",
       "AppKit/UI/LadybirdWebViewBridge.cpp",
       "AppKit/UI/Palette.mm",
+      "AppKit/UI/SearchPanel.mm",
       "AppKit/UI/Tab.mm",
       "AppKit/UI/TabController.mm",
+      "AppKit/UI/TaskManager.mm",
+      "AppKit/UI/TaskManagerController.mm",
       "AppKit/Utilities/Conversions.mm",
       "AppKit/main.mm",
     ]
@@ -140,9 +152,13 @@ executable("ladybird_executable") {
     ]
   }
 
-  if (current_os != "mac") {
+  if (current_os == "mac") {
+    sources += [ "MachPortServer.cpp" ]
+    deps += [ "//Userland/Libraries/LibThreading" ]
+  } else {
     data_deps += [
       ":ladybird_copy_config_resources",
+      ":ladybird_copy_emoji",
       ":ladybird_copy_fonts",
       ":ladybird_copy_icons_16x16",
       ":ladybird_copy_icons_32x32",
@@ -173,7 +189,9 @@ executable("headless-browser") {
     "//Userland/Libraries/LibJS",
     "//Userland/Libraries/LibMain",
     "//Userland/Libraries/LibProtocol",
+    "//Userland/Libraries/LibSQL",
     "//Userland/Libraries/LibTLS",
+    "//Userland/Libraries/LibURL",
     "//Userland/Libraries/LibWeb",
     "//Userland/Libraries/LibWebSocket",
     "//Userland/Libraries/LibWebView",
@@ -184,6 +202,13 @@ executable("headless-browser") {
     "HelperProcess.cpp",
     "Utilities.cpp",
   ]
+}
+
+_emoji = read_file("//Meta/emoji-file-list.txt", "list lines")
+emoji = []
+
+foreach(file, _emoji) {
+  emoji += [ "//Base/res/emoji/" + file ]
 }
 
 fonts = [
@@ -202,6 +227,7 @@ fonts = [
 
 icons_16x16 = [
   "//Base/res/icons/16x16/app-browser.png",
+  "//Base/res/icons/16x16/app-system-monitor.png",
   "//Base/res/icons/16x16/audio-volume-high.png",
   "//Base/res/icons/16x16/audio-volume-muted.png",
   "//Base/res/icons/16x16/close-tab.png",
@@ -219,6 +245,7 @@ icons_16x16 = [
   "//Base/res/icons/16x16/layout.png",
   "//Base/res/icons/16x16/new-tab.png",
   "//Base/res/icons/16x16/open-parent-directory.png",
+  "//Base/res/icons/16x16/paste.png",
   "//Base/res/icons/16x16/pause.png",
   "//Base/res/icons/16x16/play.png",
   "//Base/res/icons/16x16/select-all.png",
@@ -232,6 +259,7 @@ icons_16x16 = [
 
 icons_32x32 = [
   "//Base/res/icons/32x32/app-browser.png",
+  "//Base/res/icons/32x32/app-system-monitor.png",
   "//Base/res/icons/32x32/filetype-folder.png",
   "//Base/res/icons/32x32/filetype-unknown.png",
   "//Base/res/icons/32x32/msgbox-warning.png",
@@ -269,6 +297,11 @@ config_resources = [
 ]
 
 if (current_os != "mac") {
+  copy("ladybird_copy_emoji") {
+    sources = emoji
+    outputs = [ "$root_out_dir/share/Lagom/emoji/{{source_file_part}}" ]
+  }
+
   copy("ladybird_copy_fonts") {
     sources = fonts
     outputs = [ "$root_out_dir/share/Lagom/fonts/{{source_file_part}}" ]
@@ -354,7 +387,6 @@ if (current_os != "mac") {
       "//Userland/Libraries/LibGL",
       "//Userland/Libraries/LibGLSL",
       "//Userland/Libraries/LibGPU",
-      "//Userland/Libraries/LibGUI",
       "//Userland/Libraries/LibGemini",
       "//Userland/Libraries/LibGfx",
       "//Userland/Libraries/LibHTTP",
@@ -365,6 +397,7 @@ if (current_os != "mac") {
       "//Userland/Libraries/LibJS",
       "//Userland/Libraries/LibLine",
       "//Userland/Libraries/LibMarkdown",
+      "//Userland/Libraries/LibMedia",
       "//Userland/Libraries/LibProtocol",
       "//Userland/Libraries/LibRIFF",
       "//Userland/Libraries/LibRegex",
@@ -374,7 +407,7 @@ if (current_os != "mac") {
       "//Userland/Libraries/LibTLS",
       "//Userland/Libraries/LibTextCodec",
       "//Userland/Libraries/LibThreading",
-      "//Userland/Libraries/LibVideo",
+      "//Userland/Libraries/LibURL",
       "//Userland/Libraries/LibWasm",
       "//Userland/Libraries/LibWeb",
       "//Userland/Libraries/LibWebSocket",
@@ -386,6 +419,7 @@ if (current_os != "mac") {
       "$root_out_dir/lib/liblagom-ak.dylib",
       "$root_out_dir/lib/liblagom-audio.dylib",
       "$root_out_dir/lib/liblagom-compress.dylib",
+      "$root_out_dir/lib/liblagom-core-minimal.dylib",
       "$root_out_dir/lib/liblagom-core.dylib",
       "$root_out_dir/lib/liblagom-crypto.dylib",
       "$root_out_dir/lib/liblagom-diff.dylib",
@@ -395,7 +429,6 @@ if (current_os != "mac") {
       "$root_out_dir/lib/liblagom-gl.dylib",
       "$root_out_dir/lib/liblagom-glsl.dylib",
       "$root_out_dir/lib/liblagom-gpu.dylib",
-      "$root_out_dir/lib/liblagom-gui.dylib",
       "$root_out_dir/lib/liblagom-http.dylib",
       "$root_out_dir/lib/liblagom-idl.dylib",
       "$root_out_dir/lib/liblagom-imagedecoderclient.dylib",
@@ -404,6 +437,7 @@ if (current_os != "mac") {
       "$root_out_dir/lib/liblagom-js.dylib",
       "$root_out_dir/lib/liblagom-line.dylib",
       "$root_out_dir/lib/liblagom-markdown.dylib",
+      "$root_out_dir/lib/liblagom-media.dylib",
       "$root_out_dir/lib/liblagom-protocol.dylib",
       "$root_out_dir/lib/liblagom-regex.dylib",
       "$root_out_dir/lib/liblagom-riff.dylib",
@@ -413,7 +447,7 @@ if (current_os != "mac") {
       "$root_out_dir/lib/liblagom-textcodec.dylib",
       "$root_out_dir/lib/liblagom-threading.dylib",
       "$root_out_dir/lib/liblagom-tls.dylib",
-      "$root_out_dir/lib/liblagom-video.dylib",
+      "$root_out_dir/lib/liblagom-url.dylib",
       "$root_out_dir/lib/liblagom-wasm.dylib",
       "$root_out_dir/lib/liblagom-web.dylib",
       "$root_out_dir/lib/liblagom-websocket.dylib",
@@ -421,6 +455,11 @@ if (current_os != "mac") {
       "$root_out_dir/lib/liblagom-xml.dylib",
     ]
     outputs = [ "{{bundle_contents_dir}}/lib/{{source_file_part}}" ]
+  }
+
+  bundle_data("ladybird_emoji") {
+    sources = emoji
+    outputs = [ "{{bundle_resources_dir}}/emoji/{{source_file_part}}" ]
   }
 
   bundle_data("ladybird_fonts") {
@@ -510,6 +549,7 @@ if (current_os != "mac") {
       ":ladybird_bundle_info_plist",
       ":ladybird_bundle_libs",
       ":ladybird_config_resources",
+      ":ladybird_emoji",
       ":ladybird_fonts",
       ":ladybird_icon",
       ":ladybird_icons_16x16",

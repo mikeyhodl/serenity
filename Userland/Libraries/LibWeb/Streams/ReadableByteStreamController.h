@@ -41,6 +41,10 @@ struct PullIntoDescriptor {
     // A nonnegative integer number of bytes that have been written into the buffer so far
     u64 bytes_filled;
 
+    // https://streams.spec.whatwg.org/#pull-into-descriptor-minimum-fill
+    // A positive integer representing the minimum number of bytes that must be written into the buffer before the associated read() request may be fulfilled. By default, this equals the element size.
+    u64 minimum_fill;
+
     // https://streams.spec.whatwg.org/#pull-into-descriptor-element-size
     // A positive integer representing the number of bytes that can be written into the buffer at a time, using views of the type described by the view constructor
     u64 element_size;
@@ -127,9 +131,9 @@ public:
     JS::GCPtr<ReadableStream> stream() { return m_stream; }
     void set_stream(JS::GCPtr<ReadableStream> stream) { m_stream = stream; }
 
-    WebIDL::ExceptionOr<JS::NonnullGCPtr<WebIDL::Promise>> cancel_steps(JS::Value reason);
-    WebIDL::ExceptionOr<void> pull_steps(JS::NonnullGCPtr<ReadRequest>);
-    WebIDL::ExceptionOr<void> release_steps();
+    JS::NonnullGCPtr<WebIDL::Promise> cancel_steps(JS::Value reason);
+    void pull_steps(JS::NonnullGCPtr<ReadRequest>);
+    void release_steps();
 
 private:
     explicit ReadableByteStreamController(JS::Realm&);

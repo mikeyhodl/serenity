@@ -246,8 +246,20 @@ ErrorOr<XYZ> parse_pcs_illuminant(ICCHeader const& header)
     // ICC v4, 7.2.16 PCS illuminant field
     XYZ xyz = (XYZ)header.pcs_illuminant;
 
-    /// "The value, when rounded to four decimals, shall be X = 0,9642, Y = 1,0 and Z = 0,8249."
-    if (round(xyz.X * 10'000) != 9'642 || round(xyz.Y * 10'000) != 10'000 || round(xyz.Z * 10'000) != 8'249)
+    // "The value, when rounded to four decimals, shall be X = 0,9642, Y = 1,0 and Z = 0,8249."
+    // The v2 spec also says that this should be D50 (icc30.pdf, 8.1 "This must correspond to D50.", same in all newer versions of the v2 spec),
+    // but in practice there are v2 profiles with this set to D65 white instead of D50 white.
+    bool is_d65 = (round(xyz.X * 10'000) == 9'505 && round(xyz.Y * 10'000) == 10'000 && round(xyz.Z * 10'000) == 10'890);
+    if (header.profile_version_major <= 2 && is_d65) {
+        // FIXME: We might have to remap other values here too?
+        dbgln("ICC::Profile: PCS illuminant is D65, not D50. Setting to D50 and continuing.");
+        xyz.X = 0.9642;
+        xyz.Y = 1.0;
+        xyz.Z = 0.8249;
+        return xyz;
+    }
+
+    if (header.profile_version_major > 2 && (round(xyz.X * 10'000) != 9'642 || round(xyz.Y * 10'000) != 10'000 || round(xyz.Z * 10'000) != 8'249))
         return Error::from_string_literal("ICC::Profile: Invalid pcs illuminant");
 
     return xyz;
@@ -268,7 +280,7 @@ Optional<Creator> parse_profile_creator(ICCHeader const& header)
 }
 
 template<size_t N>
-bool all_bytes_are_zero(const u8 (&bytes)[N])
+bool all_bytes_are_zero(u8 const (&bytes)[N])
 {
     for (u8 byte : bytes) {
         if (byte != 0)
@@ -397,7 +409,7 @@ ErrorOr<DateTime> DateTime::from_time_t(time_t timestamp)
     return result;
 }
 
-static ErrorOr<ProfileHeader> read_header(ReadonlyBytes bytes)
+ErrorOr<ProfileHeader> Profile::read_header(ReadonlyBytes bytes)
 {
     if (bytes.size() < sizeof(ICCHeader))
         return Error::from_string_literal("ICC::Profile: Not enough data for header");
@@ -1229,7 +1241,7 @@ Crypto::Hash::MD5::DigestType Profile::compute_id(ReadonlyBytes bytes)
     //  and profile ID field (bytes 84 to 99)
     //  in the profile header temporarily set to zeros (00h),
     //  shall be used to calculate the ID."
-    const u8 zero[16] = {};
+    u8 const zero[16] = {};
     Crypto::Hash::MD5 md5;
     md5.update(bytes.slice(0, 44));
     md5.update(ReadonlyBytes { zero, 4 }); // profile flags field

@@ -52,6 +52,7 @@ public:
     WebIDL::ExceptionOr<JS::GCPtr<DOM::Document>> response_xml();
     WebIDL::ExceptionOr<JS::Value> response();
     Bindings::XMLHttpRequestResponseType response_type() const { return m_response_type; }
+    String response_url();
 
     WebIDL::ExceptionOr<void> open(String const& method, String const& url);
     WebIDL::ExceptionOr<void> open(String const& method, String const& url, bool async, Optional<String> const& username = Optional<String> {}, Optional<String> const& password = Optional<String> {});
@@ -83,9 +84,9 @@ private:
     virtual void visit_edges(Cell::Visitor&) override;
     virtual bool must_survive_garbage_collection() const override;
 
-    ErrorOr<MimeSniff::MimeType> get_response_mime_type() const;
-    ErrorOr<Optional<StringView>> get_final_encoding() const;
-    ErrorOr<MimeSniff::MimeType> get_final_mime_type() const;
+    [[nodiscard]] MimeSniff::MimeType get_response_mime_type() const;
+    [[nodiscard]] Optional<StringView> get_final_encoding() const;
+    [[nodiscard]] MimeSniff::MimeType get_final_mime_type() const;
 
     String get_text_response() const;
     void set_document_response();

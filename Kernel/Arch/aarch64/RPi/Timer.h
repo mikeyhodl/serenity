@@ -10,6 +10,7 @@
 #include <AK/Types.h>
 #include <Kernel/Interrupts/IRQHandler.h>
 #include <Kernel/Library/NonnullLockRefPtr.h>
+#include <Kernel/Memory/TypedMapping.h>
 #include <Kernel/Time/HardwareTimer.h>
 
 namespace Kernel::RPi {
@@ -18,13 +19,11 @@ struct TimerRegisters;
 
 class Timer final : public HardwareTimer<IRQHandler> {
 public:
+    Timer(Memory::TypedMapping<TimerRegisters volatile>, size_t interrupt_number);
     virtual ~Timer();
-
-    static NonnullLockRefPtr<Timer> initialize();
 
     virtual HardwareTimerType timer_type() const override { return HardwareTimerType::RPiTimer; }
     virtual StringView model() const override { return "RPi Timer"sv; }
-    virtual size_t ticks_per_second() const override { return m_frequency; }
 
     virtual bool is_periodic() const override { TODO_AARCH64(); }
     virtual bool is_periodic_capable() const override { TODO_AARCH64(); }
@@ -66,8 +65,6 @@ public:
     static u32 get_clock_rate(ClockID);
 
 private:
-    Timer();
-
     enum class TimerID : u32 {
         Timer0 = 0,
         Timer1 = 1,
@@ -78,9 +75,9 @@ private:
     void clear_interrupt(TimerID);
 
     //^ IRQHandler
-    virtual bool handle_irq(RegisterState const&) override;
+    virtual bool handle_irq() override;
 
-    TimerRegisters volatile* m_registers;
+    Memory::TypedMapping<TimerRegisters volatile> m_registers;
     u32 m_interrupt_interval { 0 };
 
     u64 m_main_counter_last_read { 0 };

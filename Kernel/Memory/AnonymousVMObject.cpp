@@ -9,7 +9,7 @@
 #include <Kernel/Debug.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/MemoryManager.h>
-#include <Kernel/Memory/PhysicalPage.h>
+#include <Kernel/Memory/PhysicalRAMPage.h>
 #include <Kernel/Tasks/Process.h>
 
 namespace Kernel::Memory {
@@ -34,7 +34,7 @@ ErrorOr<NonnullLockRefPtr<VMObject>> AnonymousVMObject::try_clone()
     // non-volatile memory available.
     size_t new_cow_pages_needed = 0;
     for (auto const& page : m_physical_pages) {
-        if (!page->is_shared_zero_page())
+        if (!page->is_shared_zero_page() && !page->is_lazy_committed_page())
             ++new_cow_pages_needed;
     }
 
@@ -88,32 +88,25 @@ ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_with
     return adopt_nonnull_lock_ref_or_enomem(new (nothrow) AnonymousVMObject(move(new_physical_pages), strategy, move(committed_pages)));
 }
 
-ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_physically_contiguous_with_size(size_t size)
+ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_physically_contiguous_with_size(size_t size, MemoryType memory_type_for_zero_fill)
 {
-    auto contiguous_physical_pages = TRY(MM.allocate_contiguous_physical_pages(size));
+    auto contiguous_physical_pages = TRY(MM.allocate_contiguous_physical_pages(size, memory_type_for_zero_fill));
 
-    auto new_physical_pages = TRY(FixedArray<RefPtr<PhysicalPage>>::create(contiguous_physical_pages.span()));
+    auto new_physical_pages = TRY(FixedArray<RefPtr<PhysicalRAMPage>>::create(contiguous_physical_pages.span()));
 
     return adopt_nonnull_lock_ref_or_enomem(new (nothrow) AnonymousVMObject(move(new_physical_pages)));
 }
 
 ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_purgeable_with_size(size_t size, AllocationStrategy strategy)
 {
-    Optional<CommittedPhysicalPageSet> committed_pages;
-    if (strategy == AllocationStrategy::Reserve || strategy == AllocationStrategy::AllocateNow) {
-        committed_pages = TRY(MM.commit_physical_pages(ceil_div(size, static_cast<size_t>(PAGE_SIZE))));
-    }
-
-    auto new_physical_pages = TRY(VMObject::try_create_physical_pages(size));
-
-    auto vmobject = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) AnonymousVMObject(move(new_physical_pages), strategy, move(committed_pages))));
+    auto vmobject = TRY(try_create_with_size(size, strategy));
     vmobject->m_purgeable = true;
     return vmobject;
 }
 
-ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_with_physical_pages(Span<NonnullRefPtr<PhysicalPage>> physical_pages)
+ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_with_physical_pages(Span<NonnullRefPtr<PhysicalRAMPage>> physical_pages)
 {
-    auto new_physical_pages = TRY(FixedArray<RefPtr<PhysicalPage>>::create(physical_pages));
+    auto new_physical_pages = TRY(FixedArray<RefPtr<PhysicalRAMPage>>::create(physical_pages));
     return adopt_nonnull_lock_ref_or_enomem(new (nothrow) AnonymousVMObject(move(new_physical_pages)));
 }
 
@@ -130,7 +123,7 @@ ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_for_
     return adopt_nonnull_lock_ref_or_enomem(new (nothrow) AnonymousVMObject(paddr, move(new_physical_pages)));
 }
 
-ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_with_shared_cow(AnonymousVMObject const& other, NonnullLockRefPtr<SharedCommittedCowPages> shared_committed_cow_pages, FixedArray<RefPtr<PhysicalPage>>&& new_physical_pages)
+ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_with_shared_cow(AnonymousVMObject const& other, NonnullLockRefPtr<SharedCommittedCowPages> shared_committed_cow_pages, FixedArray<RefPtr<PhysicalRAMPage>>&& new_physical_pages)
 {
     auto weak_parent = TRY(other.try_make_weak_ptr<AnonymousVMObject>());
     auto vmobject = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) AnonymousVMObject(move(weak_parent), move(shared_committed_cow_pages), move(new_physical_pages))));
@@ -140,7 +133,7 @@ ErrorOr<NonnullLockRefPtr<AnonymousVMObject>> AnonymousVMObject::try_create_with
     return vmobject;
 }
 
-AnonymousVMObject::AnonymousVMObject(FixedArray<RefPtr<PhysicalPage>>&& new_physical_pages, AllocationStrategy strategy, Optional<CommittedPhysicalPageSet> committed_pages)
+AnonymousVMObject::AnonymousVMObject(FixedArray<RefPtr<PhysicalRAMPage>>&& new_physical_pages, AllocationStrategy strategy, Optional<CommittedPhysicalPageSet> committed_pages)
     : VMObject(move(new_physical_pages))
     , m_unused_committed_pages(move(committed_pages))
 {
@@ -155,20 +148,20 @@ AnonymousVMObject::AnonymousVMObject(FixedArray<RefPtr<PhysicalPage>>&& new_phys
     }
 }
 
-AnonymousVMObject::AnonymousVMObject(PhysicalAddress paddr, FixedArray<RefPtr<PhysicalPage>>&& new_physical_pages)
+AnonymousVMObject::AnonymousVMObject(PhysicalAddress paddr, FixedArray<RefPtr<PhysicalRAMPage>>&& new_physical_pages)
     : VMObject(move(new_physical_pages))
 {
     VERIFY(paddr.page_base() == paddr);
     for (size_t i = 0; i < page_count(); ++i)
-        physical_pages()[i] = PhysicalPage::create(paddr.offset(i * PAGE_SIZE), MayReturnToFreeList::No);
+        physical_pages()[i] = PhysicalRAMPage::create(paddr.offset(i * PAGE_SIZE), MayReturnToFreeList::No);
 }
 
-AnonymousVMObject::AnonymousVMObject(FixedArray<RefPtr<PhysicalPage>>&& new_physical_pages)
+AnonymousVMObject::AnonymousVMObject(FixedArray<RefPtr<PhysicalRAMPage>>&& new_physical_pages)
     : VMObject(move(new_physical_pages))
 {
 }
 
-AnonymousVMObject::AnonymousVMObject(LockWeakPtr<AnonymousVMObject> other, NonnullLockRefPtr<SharedCommittedCowPages> shared_committed_cow_pages, FixedArray<RefPtr<PhysicalPage>>&& new_physical_pages)
+AnonymousVMObject::AnonymousVMObject(LockWeakPtr<AnonymousVMObject> other, NonnullLockRefPtr<SharedCommittedCowPages> shared_committed_cow_pages, FixedArray<RefPtr<PhysicalRAMPage>>&& new_physical_pages)
     : VMObject(move(new_physical_pages))
     , m_cow_parent(move(other))
     , m_shared_committed_cow_pages(move(shared_committed_cow_pages))
@@ -207,9 +200,7 @@ size_t AnonymousVMObject::purge()
 
     m_was_purged = true;
 
-    for_each_region([](Region& region) {
-        region.remap();
-    });
+    remap_regions();
 
     return total_pages_purged;
 }
@@ -241,7 +232,7 @@ ErrorOr<void> AnonymousVMObject::set_volatile(bool is_volatile, bool& was_purged
         m_volatile = true;
         m_was_purged = false;
 
-        for_each_region([&](auto& region) { region.remap(); });
+        remap_regions();
         return {};
     }
     // When a VMObject is made non-volatile, we try to commit however many pages are not currently available.
@@ -267,19 +258,30 @@ ErrorOr<void> AnonymousVMObject::set_volatile(bool is_volatile, bool& was_purged
 
     m_volatile = false;
     m_was_purged = false;
-    for_each_region([&](auto& region) { region.remap(); });
+    remap_regions();
     return {};
 }
 
-NonnullRefPtr<PhysicalPage> AnonymousVMObject::allocate_committed_page(Badge<Region>)
+NonnullRefPtr<PhysicalRAMPage> AnonymousVMObject::allocate_committed_page(Badge<Region>)
 {
     return m_unused_committed_pages->take_one();
 }
 
+void AnonymousVMObject::reset_cow_map()
+{
+    for (size_t i = 0; i < page_count(); ++i) {
+        auto& page = physical_pages()[i];
+        bool should_cow = !page->is_shared_zero_page() && !page->is_lazy_committed_page();
+        m_cow_map.set(i, should_cow);
+    }
+}
+
 ErrorOr<void> AnonymousVMObject::ensure_cow_map()
 {
-    if (m_cow_map.is_null())
+    if (m_cow_map.is_null()) {
         m_cow_map = TRY(Bitmap::create(page_count(), true));
+        reset_cow_map();
+    }
     return {};
 }
 
@@ -288,7 +290,7 @@ ErrorOr<void> AnonymousVMObject::ensure_or_reset_cow_map()
     if (m_cow_map.is_null())
         TRY(ensure_cow_map());
     else
-        m_cow_map.fill(true);
+        reset_cow_map();
     return {};
 }
 
@@ -345,7 +347,7 @@ PageFaultResponse AnonymousVMObject::handle_cow_fault(size_t page_index, Virtual
         return PageFaultResponse::Continue;
     }
 
-    RefPtr<PhysicalPage> page;
+    RefPtr<PhysicalRAMPage> page;
     if (m_shared_committed_cow_pages) {
         dbgln_if(PAGE_FAULT_DEBUG, "    >> It's a committed COW page and it's time to COW!");
         page = m_shared_committed_cow_pages->take_one();
@@ -388,7 +390,7 @@ AnonymousVMObject::SharedCommittedCowPages::SharedCommittedCowPages(CommittedPhy
 
 AnonymousVMObject::SharedCommittedCowPages::~SharedCommittedCowPages() = default;
 
-NonnullRefPtr<PhysicalPage> AnonymousVMObject::SharedCommittedCowPages::take_one()
+NonnullRefPtr<PhysicalRAMPage> AnonymousVMObject::SharedCommittedCowPages::take_one()
 {
     SpinlockLocker locker(m_lock);
     return m_committed_pages.take_one();

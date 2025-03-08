@@ -28,20 +28,27 @@ class Body final : public JS::Cell {
 public:
     using SourceType = Variant<Empty, ByteBuffer, JS::Handle<FileAPI::Blob>>;
     // processBody must be an algorithm accepting a byte sequence.
-    using ProcessBodyCallback = JS::SafeFunction<void(ByteBuffer)>;
+    using ProcessBodyCallback = JS::NonnullGCPtr<JS::HeapFunction<void(ByteBuffer)>>;
     // processBodyError must be an algorithm optionally accepting an exception.
-    using ProcessBodyErrorCallback = JS::SafeFunction<void(JS::GCPtr<WebIDL::DOMException>)>;
+    using ProcessBodyErrorCallback = JS::NonnullGCPtr<JS::HeapFunction<void(JS::Value)>>;
+    // processBodyChunk must be an algorithm accepting a byte sequence.
+    using ProcessBodyChunkCallback = JS::NonnullGCPtr<JS::HeapFunction<void(ByteBuffer)>>;
+    // processEndOfBody must be an algorithm accepting no arguments
+    using ProcessEndOfBodyCallback = JS::NonnullGCPtr<JS::HeapFunction<void()>>;
 
     [[nodiscard]] static JS::NonnullGCPtr<Body> create(JS::VM&, JS::NonnullGCPtr<Streams::ReadableStream>);
     [[nodiscard]] static JS::NonnullGCPtr<Body> create(JS::VM&, JS::NonnullGCPtr<Streams::ReadableStream>, SourceType, Optional<u64>);
 
     [[nodiscard]] JS::NonnullGCPtr<Streams::ReadableStream> stream() const { return *m_stream; }
+    void set_stream(JS::NonnullGCPtr<Streams::ReadableStream> value) { m_stream = value; }
     [[nodiscard]] SourceType const& source() const { return m_source; }
     [[nodiscard]] Optional<u64> const& length() const { return m_length; }
 
     [[nodiscard]] JS::NonnullGCPtr<Body> clone(JS::Realm&);
 
-    WebIDL::ExceptionOr<void> fully_read(JS::Realm&, ProcessBodyCallback process_body, ProcessBodyErrorCallback process_body_error, TaskDestination task_destination) const;
+    void fully_read(JS::Realm&, ProcessBodyCallback process_body, ProcessBodyErrorCallback process_body_error, TaskDestination task_destination) const;
+    void incrementally_read(ProcessBodyChunkCallback process_body_chunk, ProcessEndOfBodyCallback process_end_of_body, ProcessBodyErrorCallback process_body_error, TaskDestination task_destination);
+    void incrementally_read_loop(Streams::ReadableStreamDefaultReader& reader, JS::NonnullGCPtr<JS::Object> task_destination, ProcessBodyChunkCallback process_body_chunk, ProcessEndOfBodyCallback process_end_of_body, ProcessBodyErrorCallback process_body_error);
 
     virtual void visit_edges(JS::Cell::Visitor&) override;
 

@@ -28,55 +28,8 @@
 
 namespace Kernel {
 
-static bool should_make_executable_exception_for_dynamic_loader(bool make_readable, bool make_writable, bool make_executable, Memory::Region const& region)
-{
-    // Normally we don't allow W -> X transitions, but we have to make an exception
-    // for the dynamic loader, which needs to do this after performing text relocations.
-
-    // FIXME: Investigate whether we could get rid of all text relocations entirely.
-
-    // The exception is only made if all the following criteria is fulfilled:
-
-    // The region must be RW
-    if (!(region.is_readable() && region.is_writable() && !region.is_executable()))
-        return false;
-
-    // The region wants to become RX
-    if (!(make_readable && !make_writable && make_executable))
-        return false;
-
-    // The region is backed by a file
-    if (!region.vmobject().is_inode())
-        return false;
-
-    // The file mapping is private, not shared (no relocations in a shared mapping!)
-    if (!region.vmobject().is_private_inode())
-        return false;
-
-    auto const& inode_vm = static_cast<Memory::InodeVMObject const&>(region.vmobject());
-    auto const& inode = inode_vm.inode();
-
-    Elf_Ehdr header;
-    auto buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&header);
-    auto result = inode.read_bytes(0, sizeof(header), buffer, nullptr);
-    if (result.is_error() || result.value() != sizeof(header))
-        return false;
-
-    // The file is a valid ELF binary
-    if (!ELF::validate_elf_header(header, inode.size()))
-        return false;
-
-    // The file is an ELF shared object
-    if (header.e_type != ET_DYN)
-        return false;
-
-    // FIXME: Are there any additional checks/validations we could do here?
-    return true;
-}
-
 ErrorOr<void> Process::validate_mmap_prot(int prot, bool map_stack, bool map_anonymous, Memory::Region const* region) const
 {
-    bool make_readable = prot & PROT_READ;
     bool make_writable = prot & PROT_WRITE;
     bool make_executable = prot & PROT_EXEC;
 
@@ -96,13 +49,8 @@ ErrorOr<void> Process::validate_mmap_prot(int prot, bool map_stack, bool map_ano
         if (make_writable && region->has_been_executable())
             return EINVAL;
 
-        if (make_executable && region->has_been_writable()) {
-            if (should_make_executable_exception_for_dynamic_loader(make_readable, make_writable, make_executable, *region)) {
-                return {};
-            } else {
-                return EINVAL;
-            };
-        }
+        if (make_executable && region->has_been_writable() && should_reject_transition_to_executable_from_writable_prot())
+            return EINVAL;
     }
 
     return {};
@@ -198,6 +146,7 @@ ErrorOr<FlatPtr> Process::sys$mmap(Userspace<Syscall::SC_mmap_params const*> use
     RefPtr<OpenFileDescription> description;
     LockRefPtr<Memory::VMObject> vmobject;
     u64 used_offset = 0;
+    auto memory_type = Memory::MemoryType::Normal;
 
     if (map_anonymous) {
         auto strategy = map_noreserve ? AllocationStrategy::None : AllocationStrategy::Reserve;
@@ -226,7 +175,9 @@ ErrorOr<FlatPtr> Process::sys$mmap(Userspace<Syscall::SC_mmap_params const*> use
         if (description->inode())
             TRY(validate_inode_mmap_prot(prot, description->is_readable(), description->is_writable(), map_shared));
 
-        vmobject = TRY(description->vmobject_for_mmap(*this, requested_range, used_offset, map_shared));
+        auto vmobject_and_memory_type = TRY(description->vmobject_for_mmap(*this, requested_range, used_offset, map_shared));
+        vmobject = vmobject_and_memory_type.vmobject;
+        memory_type = vmobject_and_memory_type.memory_type;
     }
 
     return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
@@ -243,7 +194,8 @@ ErrorOr<FlatPtr> Process::sys$mmap(Userspace<Syscall::SC_mmap_params const*> use
             used_offset,
             {},
             prot,
-            map_shared));
+            map_shared,
+            memory_type));
 
         if (!region)
             return ENOMEM;
@@ -522,57 +474,6 @@ ErrorOr<FlatPtr> Process::sys$mremap(Userspace<Syscall::SC_mremap_params const*>
     });
 }
 
-ErrorOr<FlatPtr> Process::sys$allocate_tls(Userspace<char const*> initial_data, size_t size)
-{
-    VERIFY_NO_PROCESS_BIG_LOCK(this);
-    TRY(require_promise(Pledge::stdio));
-
-    if (!size || size % PAGE_SIZE != 0)
-        return EINVAL;
-
-    return m_master_tls.with([&](auto& master_tls) -> ErrorOr<FlatPtr> {
-        if (!master_tls.region.is_null())
-            return EEXIST;
-
-        if (thread_count() != 1)
-            return EFAULT;
-
-        Thread* main_thread = nullptr;
-        bool multiple_threads = false;
-        for_each_thread([&main_thread, &multiple_threads](auto& thread) {
-            if (main_thread)
-                multiple_threads = true;
-            main_thread = &thread;
-            return IterationDecision::Break;
-        });
-        VERIFY(main_thread);
-
-        if (multiple_threads)
-            return EINVAL;
-
-        return address_space().with([&](auto& space) -> ErrorOr<FlatPtr> {
-            auto* region = TRY(space->allocate_region(Memory::RandomizeVirtualAddress::Yes, {}, size, PAGE_SIZE, "Master TLS"sv, PROT_READ | PROT_WRITE));
-
-            master_tls.region = TRY(region->try_make_weak_ptr());
-            master_tls.size = size;
-            master_tls.alignment = PAGE_SIZE;
-
-            {
-                Kernel::SmapDisabler disabler;
-                void* fault_at;
-                if (!Kernel::safe_memcpy((char*)master_tls.region.unsafe_ptr()->vaddr().as_ptr(), (char*)initial_data.ptr(), size, fault_at))
-                    return EFAULT;
-            }
-
-            TRY(main_thread->make_thread_specific_region({}));
-
-            Processor::set_thread_specific_data(main_thread->thread_specific_data());
-
-            return master_tls.region.unsafe_ptr()->vaddr().get();
-        });
-    });
-}
-
 ErrorOr<FlatPtr> Process::sys$annotate_mapping(Userspace<void*> address, int flags)
 {
     VERIFY_NO_PROCESS_BIG_LOCK(this);
@@ -593,7 +494,7 @@ ErrorOr<FlatPtr> Process::sys$annotate_mapping(Userspace<void*> address, int fla
         if (!region)
             return EINVAL;
 
-        if (!region->is_mmap())
+        if (!region->is_mmap() && !region->is_initially_loaded_executable_segment())
             return EINVAL;
         if (region->is_immutable())
             return EPERM;

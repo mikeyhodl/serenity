@@ -43,8 +43,9 @@ DownloadWidget::DownloadWidget(const URL::URL& url)
     m_elapsed_timer.start();
     m_download = Web::ResourceLoader::the().connector().start_request("GET", url);
     VERIFY(m_download);
+
     m_download->on_progress = [this](Optional<u64> total_size, u64 downloaded_size) {
-        did_progress(total_size.value(), downloaded_size);
+        did_progress(move(total_size), downloaded_size);
     };
 
     {
@@ -57,8 +58,15 @@ DownloadWidget::DownloadWidget(const URL::URL& url)
         m_output_file_stream = file_or_error.release_value();
     }
 
-    m_download->on_finish = [this](bool success, auto) { did_finish(success); };
-    m_download->stream_into(*m_output_file_stream);
+    auto on_data_received = [this](auto data) {
+        m_output_file_stream->write_until_depleted(data).release_value_but_fixme_should_propagate_errors();
+    };
+
+    auto on_finished = [this](bool success, auto) {
+        did_finish(success);
+    };
+
+    m_download->set_unbuffered_request_callbacks({}, move(on_data_received), move(on_finished));
 
     set_fill_with_background_color(true);
     set_layout<GUI::VerticalBoxLayout>(4);

@@ -5,7 +5,7 @@
  */
 
 #include <AK/StringView.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Loop/LoopDevice.h>
 #include <Kernel/FileSystem/DevLoopFS/Inode.h>
 #include <Kernel/FileSystem/RAMBackedFileType.h>
@@ -102,11 +102,6 @@ ErrorOr<NonnullRefPtr<Inode>> DevLoopFSInode::create_child(StringView, mode_t, d
 }
 
 ErrorOr<void> DevLoopFSInode::remove_child(StringView)
-{
-    return EROFS;
-}
-
-ErrorOr<void> DevLoopFSInode::replace_child(StringView, Inode&)
 {
     return EROFS;
 }

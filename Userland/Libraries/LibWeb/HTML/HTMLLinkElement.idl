@@ -1,5 +1,7 @@
 #import <CSS/LinkStyle.idl>
+#import <Fetch/Request.idl>
 #import <HTML/HTMLElement.idl>
+#import <HTML/Scripting/Fetching.idl>
 
 // https://html.spec.whatwg.org/multipage/semantics.html#htmllinkelement
 [Exposed=Window]
@@ -7,22 +9,22 @@ interface HTMLLinkElement : HTMLElement {
 
     [HTMLConstructor] constructor();
 
-    [CEReactions, Reflect] attribute DOMString href;
-    // FIXME: [CEReactions] attribute DOMString? crossOrigin;
+    [CEReactions, Reflect, URL] attribute USVString href;
+    [CEReactions, Reflect=crossorigin, Enumerated=CORSSettingsAttribute] attribute DOMString? crossOrigin;
     [CEReactions, Reflect] attribute DOMString rel;
-    // FIXME: [CEReactions] attribute DOMString as;
-    // FIXME: [SameObject, PutForwards=value] readonly attribute DOMTokenList relList;
+    [CEReactions] attribute DOMString as;
+    [SameObject, PutForwards=value] readonly attribute DOMTokenList relList;
     [CEReactions, Reflect] attribute DOMString media;
     [CEReactions, Reflect] attribute DOMString integrity;
     [CEReactions, Reflect] attribute DOMString hreflang;
     [CEReactions, Reflect] attribute DOMString type;
-    // FIXME: [SameObject, PutForwards=value] readonly attribute DOMTokenList sizes;
-    [CEReactions, Reflect=imagesrcset] attribute DOMString imageSrcset;
+    [FIXME, SameObject, PutForwards=value] readonly attribute DOMTokenList sizes;
+    [CEReactions, Reflect=imagesrcset] attribute USVString imageSrcset;
     [CEReactions, Reflect=imagesizes] attribute DOMString imageSizes;
-    // FIXME: [CEReactions] attribute DOMString referrerPolicy;
-    // FIXME: [SameObject, PutForwards=value] readonly attribute DOMTokenList blocking;
+    [CEReactions, Reflect=referrerpolicy, Enumerated=ReferrerPolicy] attribute DOMString referrerPolicy;
+    [FIXME, SameObject, PutForwards=value] readonly attribute DOMTokenList blocking;
     [CEReactions, Reflect] attribute boolean disabled;
-    // FIXME: [CEReactions] attribute DOMString fetchPriority;
+    [CEReactions, Enumerated=FetchPriorityAttribute, Reflect=fetchpriority] attribute DOMString fetchPriority;
 
     // Obsolete
     [CEReactions, Reflect] attribute DOMString charset;

@@ -16,8 +16,6 @@
 #    include <Kernel/Arch/RegisterState.h>
 #endif
 
-constexpr int syscall_vector = 0x82;
-
 extern "C" {
 struct pollfd;
 struct timeval;
@@ -49,7 +47,7 @@ enum class NeedsBigProcessLock {
     S(accept4, NeedsBigProcessLock::No)                    \
     S(adjtime, NeedsBigProcessLock::No)                    \
     S(alarm, NeedsBigProcessLock::No)                      \
-    S(allocate_tls, NeedsBigProcessLock::No)               \
+    S(archctl, NeedsBigProcessLock::No)                    \
     S(anon_create, NeedsBigProcessLock::No)                \
     S(annotate_mapping, NeedsBigProcessLock::No)           \
     S(bind, NeedsBigProcessLock::No)                       \
@@ -63,6 +61,7 @@ enum class NeedsBigProcessLock {
     S(clock_settime, NeedsBigProcessLock::No)              \
     S(close, NeedsBigProcessLock::No)                      \
     S(connect, NeedsBigProcessLock::No)                    \
+    S(copy_mount, NeedsBigProcessLock::No)                 \
     S(create_inode_watcher, NeedsBigProcessLock::No)       \
     S(create_thread, NeedsBigProcessLock::No)              \
     S(dbgputstr, NeedsBigProcessLock::No)                  \
@@ -116,8 +115,6 @@ enum class NeedsBigProcessLock {
     S(inode_watcher_remove_watch, NeedsBigProcessLock::No) \
     S(ioctl, NeedsBigProcessLock::No)                      \
     S(join_thread, NeedsBigProcessLock::No)                \
-    S(jail_create, NeedsBigProcessLock::No)                \
-    S(jail_attach, NeedsBigProcessLock::No)                \
     S(kill, NeedsBigProcessLock::No)                       \
     S(kill_thread, NeedsBigProcessLock::No)                \
     S(killpg, NeedsBigProcessLock::No)                     \
@@ -195,6 +192,8 @@ enum class NeedsBigProcessLock {
     S(umount, NeedsBigProcessLock::No)                     \
     S(uname, NeedsBigProcessLock::No)                      \
     S(unlink, NeedsBigProcessLock::No)                     \
+    S(unshare_attach, NeedsBigProcessLock::No)             \
+    S(unshare_create, NeedsBigProcessLock::No)             \
     S(unveil, NeedsBigProcessLock::No)                     \
     S(utime, NeedsBigProcessLock::No)                      \
     S(utimensat, NeedsBigProcessLock::No)                  \
@@ -341,14 +340,14 @@ struct SC_setkeymap_params {
     StringArgument map_name;
 };
 
-struct SC_jail_create_params {
-    u64 index;
-    StringArgument name;
+struct SC_unshare_create_params {
+    int type;
     int flags;
 };
 
-struct SC_jail_attach_params {
-    u64 index;
+struct SC_unshare_attach_params {
+    int type;
+    int id;
 };
 
 struct SC_getkeymap_params {
@@ -374,6 +373,7 @@ struct SC_create_thread_params {
     void* stack_location;                      // nullptr means any, o.w. process virtual address
     void* (*entry)(void*);
     void* entry_argument;
+    void* tls_pointer;
 };
 
 struct SC_realpath_params {
@@ -416,6 +416,7 @@ struct SC_mknod_params {
     StringArgument path;
     u16 mode;
     dev_t dev;
+    int dirfd;
 };
 
 struct SC_symlink_params {
@@ -437,19 +438,35 @@ struct SC_fsopen_params {
 };
 
 struct SC_fsmount_params {
+    int vfs_root_context_id;
     int mount_fd;
     StringArgument target;
     int source_fd;
 };
 
 struct SC_bindmount_params {
+    int vfs_root_context_id;
     StringArgument target;
     int source_fd;
     int flags;
 };
 
 struct SC_remount_params {
+    int vfs_root_context_id;
     StringArgument target;
+    int flags;
+};
+
+struct SC_umount_params {
+    int vfs_root_context_id;
+    StringArgument target;
+};
+
+struct SC_copy_mount_params {
+    int original_vfs_root_context_id;
+    int target_vfs_root_context_id;
+    StringArgument original_path;
+    StringArgument target_path;
     int flags;
 };
 
@@ -681,7 +698,7 @@ inline uintptr_t invoke(Function function, T1 arg1, T2 arg2, T3 arg3, T4 arg4)
     asm volatile("syscall"
                  : "=a"(result)
                  : "a"(function), "d"((uintptr_t)arg1), "D"((uintptr_t)arg2), "b"((uintptr_t)arg3), "S"((uintptr_t)arg4)
-                 : "memory");
+                 : "rcx", "r11", "memory");
 #        elif ARCH(AARCH64)
     uintptr_t result;
     register uintptr_t x0 asm("x0");

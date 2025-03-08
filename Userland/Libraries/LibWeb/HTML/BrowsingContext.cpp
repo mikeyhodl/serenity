@@ -13,7 +13,7 @@
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/BrowsingContextGroup.h>
-#include <LibWeb/HTML/CrossOrigin/CrossOriginOpenerPolicy.h>
+#include <LibWeb/HTML/CrossOrigin/OpenerPolicy.h>
 #include <LibWeb/HTML/DocumentState.h>
 #include <LibWeb/HTML/HTMLAnchorElement.h>
 #include <LibWeb/HTML/HTMLDocument.h>
@@ -40,9 +40,9 @@ bool url_matches_about_blank(URL::URL const& url)
 {
     // A URL matches about:blank if its scheme is "about", its path contains a single string "blank", its username and password are the empty string, and its host is null.
     return url.scheme() == "about"sv
-        && url.serialize_path() == "blank"sv
-        && url.raw_username().is_empty()
-        && url.raw_password().is_empty()
+        && url.paths().size() == 1 && url.paths()[0] == "blank"sv
+        && url.username().is_empty()
+        && url.password().is_empty()
         && url.host().has<Empty>();
 }
 
@@ -51,23 +51,25 @@ bool url_matches_about_srcdoc(URL::URL const& url)
 {
     // A URL matches about:srcdoc if its scheme is "about", its path contains a single string "srcdoc", its query is null, its username and password are the empty string, and its host is null.
     return url.scheme() == "about"sv
-        && url.serialize_path() == "srcdoc"sv
+        && url.paths().size() == 1 && url.paths()[0] == "srcdoc"sv
         && !url.query().has_value()
-        && url.raw_username().is_empty()
-        && url.raw_password().is_empty()
+        && url.username().is_empty()
+        && url.password().is_empty()
         && url.host().has<Empty>();
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#determining-the-origin
-HTML::Origin determine_the_origin(URL::URL const& url, SandboxingFlagSet sandbox_flags, Optional<HTML::Origin> source_origin)
+URL::Origin determine_the_origin(Optional<URL::URL const&> url, SandboxingFlagSet sandbox_flags, Optional<URL::Origin> source_origin)
 {
     // 1. If sandboxFlags has its sandboxed origin browsing context flag set, then return a new opaque origin.
     if (has_flag(sandbox_flags, SandboxingFlagSet::SandboxedOrigin)) {
-        return HTML::Origin {};
+        return URL::Origin {};
     }
 
-    // FIXME: 2. If url is null, then return a new opaque origin.
-    // FIXME: There appears to be no way to get a null URL here, so it might be a spec bug.
+    // 2. If url is null, then return a new opaque origin.
+    if (!url.has_value()) {
+        return URL::Origin {};
+    }
 
     // 3. If url is about:srcdoc, then:
     if (url == "about:srcdoc"sv) {
@@ -79,11 +81,11 @@ HTML::Origin determine_the_origin(URL::URL const& url, SandboxingFlagSet sandbox
     }
 
     // 4. If url matches about:blank and sourceOrigin is non-null, then return sourceOrigin.
-    if (url_matches_about_blank(url) && source_origin.has_value())
+    if (url_matches_about_blank(*url) && source_origin.has_value())
         return source_origin.release_value();
 
     // 5. Return url's origin.
-    return DOMURL::url_origin(url);
+    return url->origin();
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
@@ -101,7 +103,8 @@ WebIDL::ExceptionOr<BrowsingContext::BrowsingContextAndDocument> BrowsingContext
     // 4. Set browsingContext and document be the result of creating a new browsing context and document with opener's active document, null, and group.
     auto [browsing_context, document] = TRY(create_a_new_browsing_context_and_document(page, opener->active_document(), nullptr, *group));
 
-    // FIXME: 5. Set browsingContext's is auxiliary to true.
+    // 5. Set browsingContext's is auxiliary to true.
+    browsing_context->m_is_auxiliary = true;
 
     // 6. Append browsingContext to group.
     group->append(browsing_context);
@@ -109,12 +112,24 @@ WebIDL::ExceptionOr<BrowsingContext::BrowsingContextAndDocument> BrowsingContext
     // 7. Set browsingContext's opener browsing context to opener.
     browsing_context->set_opener_browsing_context(opener);
 
-    // FIXME: 8. Set browsingContext's virtual browsing context group ID to openerTopLevelBrowsingContext's virtual browsing context group ID.
+    // 8. Set browsingContext's virtual browsing context group ID to openerTopLevelBrowsingContext's virtual browsing context group ID.
+    browsing_context->m_virtual_browsing_context_group_id = opener_top_level_browsing_context->m_virtual_browsing_context_group_id;
 
-    // FIXME: 9. Set browsingContext's opener origin at creation to opener's active document's origin.
+    // 9. Set browsingContext's opener origin at creation to opener's active document's origin.
+    browsing_context->m_opener_origin_at_creation = opener->active_document()->origin();
 
     // 10. Return browsingContext and document.
     return BrowsingContext::BrowsingContextAndDocument { browsing_context, document };
+}
+
+static void populate_with_html_head_body(JS::NonnullGCPtr<DOM::Document> document)
+{
+    auto html_node = MUST(DOM::create_element(document, HTML::TagNames::html, Namespace::HTML));
+    auto head_element = MUST(DOM::create_element(document, HTML::TagNames::head, Namespace::HTML));
+    MUST(html_node->append_child(head_element));
+    auto body_element = MUST(DOM::create_element(document, HTML::TagNames::body, Namespace::HTML));
+    MUST(html_node->append_child(body_element));
+    MUST(document->append_child(html_node));
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-browsing-context
@@ -129,37 +144,37 @@ WebIDL::ExceptionOr<BrowsingContext::BrowsingContextAndDocument> BrowsingContext
     [[maybe_unused]] auto unsafe_context_creation_time = HighResolutionTime::unsafe_shared_current_time();
 
     // 3. Let creatorOrigin be null.
-    Optional<Origin> creator_origin = {};
+    Optional<URL::Origin> creator_origin = {};
 
-    // FIXME: This algorithm needs re-aligned with the spec
+    // 4. Let creatorBaseURL be null.
     Optional<URL::URL> creator_base_url = {};
 
-    // 4. If creator is non-null, then:
+    // 5. If creator is non-null, then:
     if (creator) {
         // 1. Set creatorOrigin to creator's origin.
         creator_origin = creator->origin();
 
-        // FIXME: This algorithm needs re-aligned with the spec
+        // 2. Set creatorBaseURL to creator's document base URL.
         creator_base_url = creator->base_url();
 
-        // FIXME: 2. Set browsingContext's creator base URL to an algorithm which returns creator's base URL.
-
-        // FIXME: 3. Set browsingContext's virtual browsing context group ID to creator's browsing context's top-level browsing context's virtual browsing context group ID.
+        // 3. Set browsingContext's virtual browsing context group ID to creator's browsing context's top-level browsing context's virtual browsing context group ID.
+        VERIFY(creator->browsing_context());
+        browsing_context->m_virtual_browsing_context_group_id = creator->browsing_context()->top_level_browsing_context()->m_virtual_browsing_context_group_id;
     }
 
-    // FIXME: 5. Let sandboxFlags be the result of determining the creation sandboxing flags given browsingContext and embedder.
+    // FIXME: 6. Let sandboxFlags be the result of determining the creation sandboxing flags given browsingContext and embedder.
     SandboxingFlagSet sandbox_flags = {};
 
-    // 6. Let origin be the result of determining the origin given about:blank, sandboxFlags, and creatorOrigin.
+    // 7. Let origin be the result of determining the origin given about:blank, sandboxFlags, and creatorOrigin.
     auto origin = determine_the_origin(URL::URL("about:blank"sv), sandbox_flags, creator_origin);
 
-    // FIXME: 7. Let permissionsPolicy be the result of creating a permissions policy given browsingContext and origin. [PERMISSIONSPOLICY]
+    // FIXME: 8. Let permissionsPolicy be the result of creating a permissions policy given embedder and origin. [PERMISSIONSPOLICY]
 
-    // FIXME: 8. Let agent be the result of obtaining a similar-origin window agent given origin, group, and false.
+    // FIXME: 9. Let agent be the result of obtaining a similar-origin window agent given origin, group, and false.
 
     JS::GCPtr<Window> window;
 
-    // 9. Let realm execution context be the result of creating a new JavaScript realm given agent and the following customizations:
+    // 10. Let realm execution context be the result of creating a new JavaScript realm given agent and the following customizations:
     auto realm_execution_context = Bindings::create_a_new_javascript_realm(
         Bindings::main_thread_vm(),
         [&](JS::Realm& realm) -> JS::Object* {
@@ -175,13 +190,13 @@ WebIDL::ExceptionOr<BrowsingContext::BrowsingContextAndDocument> BrowsingContext
             return browsing_context->window_proxy();
         });
 
-    // 10. Let topLevelCreationURL be about:blank if embedder is null; otherwise embedder's relevant settings object's top-level creation URL.
+    // 11. Let topLevelCreationURL be about:blank if embedder is null; otherwise embedder's relevant settings object's top-level creation URL.
     auto top_level_creation_url = !embedder ? URL::URL("about:blank") : relevant_settings_object(*embedder).top_level_creation_url;
 
-    // 11. Let topLevelOrigin be origin if embedder is null; otherwise embedder's relevant settings object's top-level origin.
+    // 12. Let topLevelOrigin be origin if embedder is null; otherwise embedder's relevant settings object's top-level origin.
     auto top_level_origin = !embedder ? origin : relevant_settings_object(*embedder).origin();
 
-    // 12. Set up a window environment settings object with about:blank, realm execution context, null, topLevelCreationURL, and topLevelOrigin.
+    // 13. Set up a window environment settings object with about:blank, realm execution context, null, topLevelCreationURL, and topLevelOrigin.
     WindowEnvironmentSettingsObject::setup(
         page,
         URL::URL("about:blank"),
@@ -190,14 +205,14 @@ WebIDL::ExceptionOr<BrowsingContext::BrowsingContextAndDocument> BrowsingContext
         top_level_creation_url,
         top_level_origin);
 
-    // 13. Let loadTimingInfo be a new document load timing info with its navigation start time set to the result of calling
+    // 14. Let loadTimingInfo be a new document load timing info with its navigation start time set to the result of calling
     //     coarsen time with unsafeContextCreationTime and the new environment settings object's cross-origin isolated capability.
     auto load_timing_info = DOM::DocumentLoadTimingInfo();
     load_timing_info.navigation_start_time = HighResolutionTime::coarsen_time(
         unsafe_context_creation_time,
         verify_cast<WindowEnvironmentSettingsObject>(Bindings::host_defined_environment_settings_object(window->realm())).cross_origin_isolated_capability() == CanUseCrossOriginIsolatedAPIs::Yes);
 
-    // 14. Let document be a new Document, with:
+    // 15. Let document be a new Document, with:
     auto document = HTML::HTMLDocument::create(window->realm());
 
     // Non-standard
@@ -220,76 +235,63 @@ WebIDL::ExceptionOr<BrowsingContext::BrowsingContextAndDocument> BrowsingContext
 
     // FIXME: permissions policy: permissionsPolicy
 
-    // FIXME: active sandboxing flag set: sandboxFlags
+    // active sandboxing flag set: sandboxFlags
+    document->set_active_sandboxing_flag_set(sandbox_flags);
 
     // load timing info: loadTimingInfo
     document->set_load_timing_info(load_timing_info);
 
     // is initial about:blank: true
     document->set_is_initial_about_blank(true);
+    // Spec issue: https://github.com/whatwg/html/issues/10261
+    document->set_ready_to_run_scripts();
 
     // about base URL: creatorBaseURL
     document->set_about_base_url(creator_base_url);
 
-    // 15. If creator is non-null, then:
+    // allow declarative shadow roots: true
+    document->set_allow_declarative_shadow_roots(true);
+
+    // 16. If creator is non-null, then:
     if (creator) {
         // 1. Set document's referrer to the serialization of creator's URL.
         document->set_referrer(MUST(String::from_byte_string(creator->url().serialize())));
 
-        // FIXME: 2. Set document's policy container to a clone of creator's policy container.
+        // 2. Set document's policy container to a clone of creator's policy container.
+        document->set_policy_container(creator->policy_container());
 
         // 3. If creator's origin is same origin with creator's relevant settings object's top-level origin,
         if (creator->origin().is_same_origin(creator->relevant_settings_object().top_level_origin)) {
-            // then set document's cross-origin opener policy to creator's browsing context's top-level browsing context's active document's cross-origin opener policy.
+            // then set document's opener policy to creator's browsing context's top-level browsing context's active document's opener policy.
             VERIFY(creator->browsing_context());
             VERIFY(creator->browsing_context()->top_level_browsing_context()->active_document());
-            document->set_cross_origin_opener_policy(creator->browsing_context()->top_level_browsing_context()->active_document()->cross_origin_opener_policy());
+            document->set_opener_policy(creator->browsing_context()->top_level_browsing_context()->active_document()->opener_policy());
         }
     }
 
-    // 16. Assert: document's URL and document's relevant settings object's creation URL are about:blank.
+    // 17. Assert: document's URL and document's relevant settings object's creation URL are about:blank.
     VERIFY(document->url() == "about:blank"sv);
     VERIFY(document->relevant_settings_object().creation_url == "about:blank"sv);
 
-    // 17. Mark document as ready for post-load tasks.
+    // 18. Mark document as ready for post-load tasks.
     document->set_ready_for_post_load_tasks(true);
 
-    // 18. Ensure that document has a single child html node, which itself has two empty child nodes: a head element, and a body element.
-    auto html_node = TRY(DOM::create_element(document, HTML::TagNames::html, Namespace::HTML));
-    auto head_element = TRY(DOM::create_element(document, HTML::TagNames::head, Namespace::HTML));
-    TRY(html_node->append_child(head_element));
-    auto body_element = TRY(DOM::create_element(document, HTML::TagNames::body, Namespace::HTML));
-    TRY(html_node->append_child(body_element));
-    TRY(document->append_child(html_node));
+    // 19. Populate with html/head/body given document.
+    populate_with_html_head_body(*document);
 
-    // 19. Make active document.
+    // 20. Make active document.
     document->make_active();
 
-    // 20. Completely finish loading document.
+    // 21. Completely finish loading document.
     document->completely_finish_loading();
 
-    // 21. Return browsingContext and document.
+    // 22. Return browsingContext and document.
     return BrowsingContext::BrowsingContextAndDocument { browsing_context, document };
 }
 
 BrowsingContext::BrowsingContext(JS::NonnullGCPtr<Page> page)
     : m_page(page)
-    , m_event_handler({}, *this)
 {
-    m_cursor_blink_timer = Core::Timer::create_repeating(500, [this] {
-        if (!is_focused_context())
-            return;
-        if (!m_cursor_position)
-            return;
-        auto node = m_cursor_position->node();
-        if (!node)
-            return;
-        node->document().update_layout();
-        if (node->paintable()) {
-            m_cursor_blink_state = !m_cursor_blink_state;
-            node->paintable()->set_needs_display();
-        }
-    }).release_value_but_fixme_should_propagate_errors();
 }
 
 BrowsingContext::~BrowsingContext() = default;
@@ -299,17 +301,13 @@ void BrowsingContext::visit_edges(Cell::Visitor& visitor)
     Base::visit_edges(visitor);
 
     visitor.visit(m_page);
-    visitor.visit(m_cursor_position);
     visitor.visit(m_window_proxy);
     visitor.visit(m_group);
-    visitor.visit(m_parent);
     visitor.visit(m_first_child);
     visitor.visit(m_last_child);
     visitor.visit(m_next_sibling);
     visitor.visit(m_previous_sibling);
     visitor.visit(m_opener_browsing_context);
-
-    m_event_handler.visit_edges(visitor);
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#bc-traversable
@@ -322,35 +320,13 @@ JS::NonnullGCPtr<HTML::TraversableNavigable> BrowsingContext::top_level_traversa
     return *traversable;
 }
 
-void BrowsingContext::did_edit(Badge<EditEventHandler>)
-{
-    reset_cursor_blink_cycle();
-
-    if (m_cursor_position && is<DOM::Text>(*m_cursor_position->node())) {
-        auto& text_node = static_cast<DOM::Text&>(*m_cursor_position->node());
-        if (auto* text_node_owner = text_node.editable_text_node_owner())
-            text_node_owner->did_edit_text_node({});
-    }
-}
-
-void BrowsingContext::reset_cursor_blink_cycle()
-{
-    m_cursor_blink_state = true;
-    m_cursor_blink_timer->restart();
-    if (m_cursor_position && m_cursor_position->node()->paintable())
-        m_cursor_position->node()->paintable()->set_needs_display();
-}
-
 // https://html.spec.whatwg.org/multipage/browsers.html#top-level-browsing-context
 bool BrowsingContext::is_top_level() const
 {
-    // A browsing context that has no parent browsing context is the top-level browsing context for itself and all of the browsing contexts for which it is an ancestor browsing context.
-    return !parent();
-}
-
-bool BrowsingContext::is_focused_context() const
-{
-    return &m_page->focused_context() == this;
+    // FIXME: Remove this. The active document's navigable is sometimes null when it shouldn't be, failing assertions.
+    return true;
+    // A top-level browsing context is a browsing context whose active document's node navigable is a traversable navigable.
+    return active_document() != nullptr && active_document()->navigable() != nullptr && active_document()->navigable()->is_traversable();
 }
 
 JS::GCPtr<BrowsingContext> BrowsingContext::top_level_browsing_context() const
@@ -372,118 +348,6 @@ JS::GCPtr<BrowsingContext> BrowsingContext::top_level_browsing_context() const
 
     // 4. Return navigable's active browsing context.
     return navigable->active_browsing_context();
-}
-
-void BrowsingContext::set_cursor_position(JS::NonnullGCPtr<DOM::Position> position)
-{
-    if (m_cursor_position && m_cursor_position->equals(position))
-        return;
-
-    if (m_cursor_position && m_cursor_position->node()->paintable())
-        m_cursor_position->node()->paintable()->set_needs_display();
-
-    m_cursor_position = position;
-
-    if (m_cursor_position && m_cursor_position->node()->paintable())
-        m_cursor_position->node()->paintable()->set_needs_display();
-
-    reset_cursor_blink_cycle();
-}
-
-static String visible_text_in_range(DOM::Range const& range)
-{
-    // NOTE: This is an adaption of Range stringification, but we skip over DOM nodes that don't have a corresponding layout node.
-    StringBuilder builder;
-
-    if (range.start_container() == range.end_container() && is<DOM::Text>(*range.start_container())) {
-        if (!range.start_container()->layout_node())
-            return String {};
-        return MUST(static_cast<DOM::Text const&>(*range.start_container()).data().substring_from_byte_offset(range.start_offset(), range.end_offset() - range.start_offset()));
-    }
-
-    if (is<DOM::Text>(*range.start_container()) && range.start_container()->layout_node())
-        builder.append(static_cast<DOM::Text const&>(*range.start_container()).data().bytes_as_string_view().substring_view(range.start_offset()));
-
-    for (DOM::Node const* node = range.start_container(); node != range.end_container()->next_sibling(); node = node->next_in_pre_order()) {
-        if (is<DOM::Text>(*node) && range.contains_node(*node) && node->layout_node())
-            builder.append(static_cast<DOM::Text const&>(*node).data());
-    }
-
-    if (is<DOM::Text>(*range.end_container()) && range.end_container()->layout_node())
-        builder.append(static_cast<DOM::Text const&>(*range.end_container()).data().bytes_as_string_view().substring_view(0, range.end_offset()));
-
-    return MUST(builder.to_string());
-}
-
-String BrowsingContext::selected_text() const
-{
-    auto const* document = active_document();
-    if (!document)
-        return String {};
-    auto selection = const_cast<DOM::Document&>(*document).get_selection();
-    auto range = selection->range();
-    if (!range)
-        return String {};
-    return visible_text_in_range(*range);
-}
-
-void BrowsingContext::select_all()
-{
-    auto* document = active_document();
-    if (!document)
-        return;
-    auto* body = document->body();
-    if (!body)
-        return;
-    auto selection = document->get_selection();
-    if (!selection)
-        return;
-    (void)selection->select_all_children(*document->body());
-}
-
-bool BrowsingContext::increment_cursor_position_offset()
-{
-    if (!m_cursor_position->increment_offset())
-        return false;
-    reset_cursor_blink_cycle();
-    return true;
-}
-
-bool BrowsingContext::decrement_cursor_position_offset()
-{
-    if (!m_cursor_position->decrement_offset())
-        return false;
-    reset_cursor_blink_cycle();
-    return true;
-}
-
-// https://html.spec.whatwg.org/multipage/interaction.html#currently-focused-area-of-a-top-level-browsing-context
-JS::GCPtr<DOM::Node> BrowsingContext::currently_focused_area()
-{
-    // 1. If topLevelBC does not have system focus, then return null.
-    if (!is_focused_context())
-        return nullptr;
-
-    // 2. Let candidate be topLevelBC's active document.
-    auto* candidate = active_document();
-
-    // 3. While candidate's focused area is a browsing context container with a non-null nested browsing context:
-    //    set candidate to the active document of that browsing context container's nested browsing context.
-    while (candidate->focused_element()
-        && is<HTML::NavigableContainer>(candidate->focused_element())
-        && static_cast<HTML::NavigableContainer&>(*candidate->focused_element()).nested_browsing_context()) {
-        candidate = static_cast<HTML::NavigableContainer&>(*candidate->focused_element()).nested_browsing_context()->active_document();
-    }
-
-    // 4. If candidate's focused area is non-null, set candidate to candidate's focused area.
-    if (candidate->focused_element()) {
-        // NOTE: We return right away here instead of assigning to candidate,
-        //       since that would require compromising type safety.
-        return candidate->focused_element();
-    }
-
-    // 5. Return candidate.
-    return candidate;
 }
 
 DOM::Document const* BrowsingContext::active_document() const
@@ -574,12 +438,28 @@ JS::GCPtr<BrowsingContext> BrowsingContext::next_sibling() const
     return m_next_sibling;
 }
 
-bool BrowsingContext::is_ancestor_of(BrowsingContext const& other) const
+// https://html.spec.whatwg.org/multipage/document-sequences.html#ancestor-browsing-context
+bool BrowsingContext::is_ancestor_of(BrowsingContext const& potential_descendant) const
 {
-    for (auto ancestor = other.parent(); ancestor; ancestor = ancestor->parent()) {
-        if (ancestor == this)
+    // A browsing context potentialDescendant is said to be an ancestor of a browsing context potentialAncestor if the following algorithm returns true:
+
+    // 1. Let potentialDescendantDocument be potentialDescendant's active document.
+    auto const* potential_descendant_document = potential_descendant.active_document();
+
+    // 2. If potentialDescendantDocument is not fully active, then return false.
+    if (!potential_descendant_document->is_fully_active())
+        return false;
+
+    // 3. Let ancestorBCs be the list obtained by taking the browsing context of the active document of each member of potentialDescendantDocument's ancestor navigables.
+    for (auto const& ancestor : potential_descendant_document->ancestor_navigables()) {
+        auto ancestor_browsing_context = ancestor->active_browsing_context();
+
+        // 4. If ancestorBCs contains potentialAncestor, then return true.
+        if (ancestor_browsing_context == this)
             return true;
     }
+
+    // 5. Return false.
     return false;
 }
 
@@ -604,7 +484,12 @@ bool BrowsingContext::is_familiar_with(BrowsingContext const& other) const
 
     // 4. If there exists an ancestor browsing context of B whose active document has the same origin as the active document of A, then return true.
     // NOTE: This includes the case where A is an ancestor browsing context of B.
-    for (auto ancestor = B.parent(); ancestor; ancestor = ancestor->parent()) {
+
+    // If B's active document is not fully active then it cannot have ancestor browsing context
+    if (!B.active_document()->is_fully_active())
+        return false;
+
+    for (auto const& ancestor : B.active_document()->ancestor_navigables()) {
         if (ancestor->active_document()->origin().is_same_origin(A.active_document()->origin()))
             return true;
     }
@@ -623,7 +508,7 @@ SandboxingFlagSet determine_the_creation_sandboxing_flags(BrowsingContext const&
 bool BrowsingContext::has_navigable_been_destroyed() const
 {
     auto navigable = active_document()->navigable();
-    return navigable && navigable->has_been_destroyed();
+    return !navigable || navigable->has_been_destroyed();
 }
 
 }

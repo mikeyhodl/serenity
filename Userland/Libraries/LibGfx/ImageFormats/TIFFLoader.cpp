@@ -9,7 +9,7 @@
 #include <AK/Debug.h>
 #include <AK/Endian.h>
 #include <AK/String.h>
-#include <LibCompress/LZWDecoder.h>
+#include <LibCompress/Lzw.h>
 #include <LibCompress/PackBitsDecoder.h>
 #include <LibCompress/Zlib.h>
 #include <LibGfx/CMYKBitmap.h>
@@ -34,6 +34,11 @@ CCITT::Group3Options parse_t4_options(u32 bit_field)
         options.use_fill_bits = CCITT::Group3Options::UseFillBits::Yes;
 
     return options;
+}
+
+bool is_bilevel(TIFF::PhotometricInterpretation interpretation)
+{
+    return interpretation == TIFF::PhotometricInterpretation::WhiteIsZero || interpretation == TIFF::PhotometricInterpretation::BlackIsZero;
 }
 
 }
@@ -103,14 +108,25 @@ public:
         if (!m_metadata.rows_per_strip().has_value() && segment_byte_counts()->size() != 1 && !is_tiled())
             return Error::from_string_literal("TIFFImageDecoderPlugin: RowsPerStrip is not provided and impossible to deduce");
 
-        if (any_of(*m_metadata.bits_per_sample(), [](auto bit_depth) { return bit_depth == 0 || bit_depth > 32; }))
-            return Error::from_string_literal("TIFFImageDecoderPlugin: Invalid value in BitsPerSample");
+        if (!is_bilevel(*m_metadata.photometric_interpretation())) {
+            if (!m_metadata.bits_per_sample().has_value())
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Tag BitsPerSample is missing");
 
-        if (m_metadata.bits_per_sample()->size() != m_metadata.samples_per_pixel())
-            return Error::from_string_literal("TIFFImageDecoderPlugin: Invalid number of values in BitsPerSample");
+            if (!m_metadata.samples_per_pixel().has_value())
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Tag SamplesPerPixel is missing");
 
-        if (*m_metadata.samples_per_pixel() < samples_for_photometric_interpretation())
-            return Error::from_string_literal("TIFFImageDecoderPlugin: Not enough values in BitsPerSample for given PhotometricInterpretation");
+            if (any_of(*m_metadata.bits_per_sample(), [](auto bit_depth) { return bit_depth == 0 || bit_depth > 32; }))
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Invalid value in BitsPerSample");
+
+            if (m_metadata.bits_per_sample()->size() != m_metadata.samples_per_pixel())
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Invalid number of values in BitsPerSample");
+
+            if (*m_metadata.samples_per_pixel() < samples_for_photometric_interpretation(*m_metadata.photometric_interpretation()))
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Not enough values in BitsPerSample for given PhotometricInterpretation");
+        } else {
+            if (m_metadata.bits_per_sample().has_value() && any_of(*m_metadata.bits_per_sample(), [](auto bit_depth) { return bit_depth == 0 || bit_depth > 32; }))
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Invalid value in BitsPerSample");
+        }
 
         return {};
     }
@@ -121,6 +137,8 @@ public:
             m_photometric_interpretation = m_metadata.photometric_interpretation().value();
         if (m_metadata.bits_per_sample().has_value())
             m_bits_per_sample = m_metadata.bits_per_sample().value();
+        else if (is_bilevel(m_photometric_interpretation))
+            m_bits_per_sample.append(1);
         if (m_metadata.image_width().has_value())
             m_image_width = m_metadata.image_width().value();
         if (m_metadata.predictor().has_value())
@@ -185,9 +203,9 @@ private:
         return NumericLimits<u8>::max() * value / ((1 << bits) - 1);
     }
 
-    u8 samples_for_photometric_interpretation() const
+    static u8 samples_for_photometric_interpretation(PhotometricInterpretation photometric_interpretation)
     {
-        switch (m_photometric_interpretation) {
+        switch (photometric_interpretation) {
         case PhotometricInterpretation::WhiteIsZero:
         case PhotometricInterpretation::BlackIsZero:
         case PhotometricInterpretation::RGBPalette:
@@ -207,7 +225,7 @@ private:
             auto const extra_samples = m_metadata.extra_samples().value();
             for (u8 i = 0; i < extra_samples.size(); ++i) {
                 if (extra_samples[i] == ExtraSample::UnassociatedAlpha)
-                    return i + samples_for_photometric_interpretation();
+                    return i + samples_for_photometric_interpretation(m_photometric_interpretation);
             }
         }
         return OptionalNone {};
@@ -222,7 +240,7 @@ private:
         // Both unknown and alpha channels are considered as extra channels, so let's iterate over
         // them, conserve the alpha value (if any) and discard everything else.
 
-        auto const number_base_channels = samples_for_photometric_interpretation();
+        auto const number_base_channels = samples_for_photometric_interpretation(m_photometric_interpretation);
 
         Optional<u8> alpha {};
 
@@ -313,6 +331,9 @@ private:
         auto const segment_per_rows = m_metadata.tile_width().map([&](u32 w) { return ceil_div(m_image_width, w); }).value_or(1);
 
         Variant<ExifOrientedBitmap, ExifOrientedCMYKBitmap> oriented_bitmap = TRY(([&]() -> ErrorOr<Variant<ExifOrientedBitmap, ExifOrientedCMYKBitmap>> {
+            if (m_image_width > NumericLimits<int>::max() || *metadata().image_length() > NumericLimits<int>::max())
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Image dimensions are bigger than the int range");
+
             if (m_photometric_interpretation == PhotometricInterpretation::CMYK)
                 return ExifOrientedCMYKBitmap::create(*metadata().orientation(), { m_image_width, *metadata().image_length() });
             return ExifOrientedBitmap::create(*metadata().orientation(), { m_image_width, *metadata().image_length() }, BitmapFormat::BGRA8888);
@@ -380,9 +401,9 @@ private:
     {
         // Section 8: Baseline Field Reference Guide
         // BitsPerSample must be 1, since this type of compression is defined only for bilevel images.
-        if (m_metadata.bits_per_sample()->size() > 1)
+        if (m_bits_per_sample.size() > 1)
             return Error::from_string_literal("TIFFImageDecoderPlugin: CCITT image with BitsPerSample greater than one");
-        if (m_metadata.photometric_interpretation() != PhotometricInterpretation::WhiteIsZero && m_metadata.photometric_interpretation() != PhotometricInterpretation::BlackIsZero)
+        if (!is_bilevel(*m_metadata.photometric_interpretation()))
             return Error::from_string_literal("TIFFImageDecoderPlugin: CCITT compression is used on a non bilevel image");
 
         return {};
@@ -475,9 +496,9 @@ private:
                 //       Fortunately, as the first byte of a LZW stream is a constant we can guess the endianess
                 //       and deduce the version from it. The first code is 0x100 (9-bits).
                 if (encoded_bytes[0] == 0x00)
-                    decoded_bytes = TRY(Compress::LZWDecoder<LittleEndianInputBitStream>::decode_all(encoded_bytes, 8, 0));
+                    decoded_bytes = TRY(Compress::LzwDecompressor<LittleEndianInputBitStream>::decompress_all(encoded_bytes, 8, 0));
                 else
-                    decoded_bytes = TRY(Compress::LZWDecoder<BigEndianInputBitStream>::decode_all(encoded_bytes, 8, -1));
+                    decoded_bytes = TRY(Compress::LzwDecompressor<BigEndianInputBitStream>::decompress_all(encoded_bytes, 8, -1));
 
                 return decoded_bytes;
             };
@@ -530,14 +551,24 @@ private:
         VERIFY_NOT_REACHED();
     }
 
+    ErrorOr<void> set_next_ifd(u32 ifd_offset)
+    {
+        if (ifd_offset != 0) {
+            if (ifd_offset < TRY(m_stream->tell()))
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Can not accept an IFD pointing to previous data");
+
+            m_next_ifd = Optional<u32> { ifd_offset };
+        } else {
+            m_next_ifd = OptionalNone {};
+        }
+        return {};
+    }
+
     ErrorOr<void> read_next_idf_offset()
     {
         auto const next_block_position = TRY(read_value<u32>());
+        TRY(set_next_ifd(next_block_position));
 
-        if (next_block_position != 0)
-            m_next_ifd = Optional<u32> { next_block_position };
-        else
-            m_next_ifd = OptionalNone {};
         return {};
     }
 
@@ -684,7 +715,10 @@ private:
         }()));
 
         auto subifd_handler = [&](u32 ifd_offset) -> ErrorOr<void> {
-            m_next_ifd = ifd_offset;
+            if (auto result = set_next_ifd(ifd_offset); result.is_error()) {
+                dbgln("{}", result.error());
+                return {};
+            }
             TRY(read_next_image_file_directory());
             return {};
         };
@@ -719,6 +753,8 @@ TIFFImageDecoderPlugin::TIFFImageDecoderPlugin(NonnullOwnPtr<FixedMemoryStream> 
 {
     m_context = make<TIFF::TIFFLoadingContext>(move(stream));
 }
+
+TIFFImageDecoderPlugin::~TIFFImageDecoderPlugin() = default;
 
 bool TIFFImageDecoderPlugin::sniff(ReadonlyBytes bytes)
 {

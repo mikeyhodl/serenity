@@ -7,7 +7,6 @@
 #include <AK/ByteReader.h>
 #include <Kernel/API/Syscall.h>
 #include <Kernel/Arch/Interrupts.h>
-#include <Kernel/Arch/x86_64/Firmware/MultiProcessor/Parser.h>
 #include <Kernel/Arch/x86_64/InterruptManagement.h>
 #include <Kernel/Arch/x86_64/Interrupts/APIC.h>
 #include <Kernel/Arch/x86_64/Interrupts/IOAPIC.h>
@@ -41,7 +40,7 @@ UNMAP_AFTER_INIT void InterruptManagement::initialize()
 {
     VERIFY(!InterruptManagement::initialized());
     s_interrupt_management = new InterruptManagement();
-    if (!kernel_command_line().is_smp_enabled_without_ioapic_enabled()) {
+    if (kernel_command_line().is_smp_enabled_without_ioapic_enabled()) {
         dbgln("Can't enable SMP mode without IOAPIC mode being enabled");
     }
     if (!kernel_command_line().is_ioapic_enabled() && !kernel_command_line().is_smp_enabled())
@@ -86,8 +85,6 @@ u8 InterruptManagement::acquire_irq_number(u8 mapped_interrupt_vector)
 u8 InterruptManagement::get_mapped_interrupt_vector(u8 original_irq)
 {
     // FIXME: For SMP configuration (with IOAPICs) use a better routing scheme to make redirections more efficient.
-    // FIXME: Find a better way to handle conflict with Syscall interrupt gate.
-    VERIFY((original_irq + IRQ_VECTOR_BASE) != syscall_vector);
     return original_irq;
 }
 
@@ -122,7 +119,7 @@ NonnullLockRefPtr<IRQController> InterruptManagement::get_responsible_irq_contro
 UNMAP_AFTER_INIT ErrorOr<Optional<PhysicalAddress>> InterruptManagement::find_madt_physical_address()
 {
     dbgln("Early access to ACPI tables for interrupt setup");
-    auto possible_rsdp_physical_address = TRY(ACPI::StaticParsing::find_rsdp_in_platform_specific_memory_locations());
+    auto possible_rsdp_physical_address = ACPI::StaticParsing::find_rsdp();
     if (!possible_rsdp_physical_address.has_value())
         return Optional<PhysicalAddress> {};
     auto possible_apic_physical_address = TRY(ACPI::StaticParsing::find_table(possible_rsdp_physical_address.value(), "APIC"sv));
@@ -177,10 +174,6 @@ UNMAP_AFTER_INIT void InterruptManagement::switch_to_ioapic_mode()
         } else {
             dbgln("Interrupts: Detected {}", irq_controller->model());
         }
-    }
-
-    if (auto mp_parser = MultiProcessorParser::autodetect()) {
-        m_pci_interrupt_overrides = mp_parser->get_pci_interrupt_redirections();
     }
 
     APIC::initialize();

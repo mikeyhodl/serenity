@@ -300,10 +300,12 @@ typedef struct {
 #define SHT_SUNW_verneed 0x6ffffffe /* symbol versioning req */
 #define SHT_SUNW_versym 0x6fffffff  /* symbol versioning table */
 #define SHT_HIOS 0x6fffffff         /*  section header types */
-#define SHT_LOPROC 0x70000000       /* reserved range for processor */
-#define SHT_HIPROC 0x7fffffff       /*  specific section header types */
 #define SHT_LOUSER 0x80000000       /* reserved range for application */
 #define SHT_HIUSER 0xffffffff       /*  specific indices */
+
+#define SHT_LOPROC 0x70000000           /* start of reserved range for processor specific section header types */
+#define SHT_RISCV_ATTRIBUTES 0x70000003 /* RISC-V ELF attribute section */
+#define SHT_HIPROC 0x7fffffff           /* end of reserved range for processor specific section header types */
 
 #define SHT_GNU_HASH 0x6ffffff6 /* GNU-style hash table section */
 
@@ -373,11 +375,11 @@ typedef struct {
 /* Extract symbol info - st_info */
 #define ELF32_ST_BIND(x) ((x) >> 4)
 #define ELF32_ST_TYPE(x) (((unsigned int)x) & 0xf)
-#define ELF32_ST_INFO(b, t) (((b) << 4) + ((t)&0xf))
+#define ELF32_ST_INFO(b, t) (((b) << 4) + ((t) & 0xf))
 
 #define ELF64_ST_BIND(x) ((x) >> 4)
 #define ELF64_ST_TYPE(x) (((unsigned int)x) & 0xf)
-#define ELF64_ST_INFO(b, t) (((b) << 4) + ((t)&0xf))
+#define ELF64_ST_INFO(b, t) (((b) << 4) + ((t) & 0xf))
 
 /* Symbol Binding - ELF32_ST_BIND - st_info */
 #define STB_LOCAL 0   /* Local symbol */
@@ -399,7 +401,7 @@ typedef struct {
 #define STT_HIPROC 15 /*  specific symbol types */
 
 /* Extract symbol visibility - st_other */
-#define ELF_ST_VISIBILITY(v) ((v)&0x3)
+#define ELF_ST_VISIBILITY(v) ((v) & 0x3)
 #define ELF32_ST_VISIBILITY ELF_ST_VISIBILITY
 #define ELF64_ST_VISIBILITY ELF_ST_VISIBILITY
 
@@ -438,7 +440,7 @@ typedef struct {
 } Elf64_Rela;
 
 #define ELF64_R_SYM(info) ((info) >> 32)
-#define ELF64_R_TYPE(info) ((info)&0xFFFFFFFF)
+#define ELF64_R_TYPE(info) ((info) & 0xFFFFFFFF)
 #define ELF64_R_INFO(s, t) (((s) << 32) + (uint32_t)(t))
 
 #if defined(__mips64__) && defined(__MIPSEL__)
@@ -451,7 +453,7 @@ typedef struct {
 #    undef ELF64_R_TYPE
 #    undef ELF64_R_INFO
 #    define ELF64_R_TYPE(info) ((uint64_t)swap32((info) >> 32))
-#    define ELF64_R_SYM(info) ((info)&0xFFFFFFFF)
+#    define ELF64_R_SYM(info) ((info) & 0xFFFFFFFF)
 #    define ELF64_R_INFO(s, t) (((uint64_t)swap32(t) << 32) + (uint32_t)(s))
 #endif /* __mips64__ && __MIPSEL__ */
 

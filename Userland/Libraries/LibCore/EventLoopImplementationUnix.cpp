@@ -16,6 +16,7 @@
 #include <LibCore/Socket.h>
 #include <LibCore/System.h>
 #include <LibCore/ThreadEventQueue.h>
+#include <pthread.h>
 #include <sys/select.h>
 #include <unistd.h>
 
@@ -25,7 +26,12 @@ namespace {
 struct ThreadData;
 class TimeoutSet;
 
-thread_local ThreadData* s_thread_data;
+HashMap<pthread_t, ThreadData*> s_thread_data;
+pthread_key_t s_thread_key;
+static pthread_rwlock_t s_thread_data_lock_impl;
+static pthread_rwlock_t* s_thread_data_lock = nullptr;
+thread_local pthread_t s_thread_id;
+thread_local OwnPtr<ThreadData> s_this_thread_data;
 
 short notification_type_to_poll_events(NotificationType type)
 {
@@ -165,8 +171,6 @@ private:
 
 class EventLoopTimer final : public EventLoopTimeout {
 public:
-    static constexpr auto delay_tolerance = Duration::from_milliseconds(5);
-
     EventLoopTimer() = default;
 
     void reload(MonotonicTime const& now) { m_fire_time = now + interval; }
@@ -181,11 +185,6 @@ public:
         if (should_reload) {
             MonotonicTime next_fire_time = m_fire_time + interval;
             if (next_fire_time <= current_time) {
-                auto delay = current_time - next_fire_time;
-                if (delay >= delay_tolerance && !interval.is_zero()) {
-                    auto iterations = delay.to_milliseconds() / max<i64>(1, interval.to_milliseconds()) + 1;
-                    dbgln("Can't keep up! Skipping approximately {} iteration(s) of a reloading timer (delayed by {}ms).", iterations, delay.to_milliseconds());
-                }
                 next_fire_time = current_time + interval;
             }
             m_fire_time = next_fire_time;
@@ -214,22 +213,56 @@ public:
     bool should_reload { false };
     TimerShouldFireWhenNotVisible fire_when_not_visible { TimerShouldFireWhenNotVisible::No };
     WeakPtr<EventReceiver> owner;
+    pthread_t owner_thread { 0 };
+    Atomic<bool> is_being_deleted { false };
 };
 
 struct ThreadData {
     static ThreadData& the()
     {
-        if (!s_thread_data) {
-            // FIXME: Don't leak this.
-            s_thread_data = new ThreadData;
+        if (!s_thread_data_lock) {
+            pthread_rwlock_init(&s_thread_data_lock_impl, nullptr);
+            s_thread_data_lock = &s_thread_data_lock_impl;
+            pthread_key_create(&s_thread_key, [](void*) {
+                s_this_thread_data.clear();
+            });
         }
-        return *s_thread_data;
+
+        if (s_thread_id == 0)
+            s_thread_id = pthread_self();
+        ThreadData* data = nullptr;
+        if (!s_this_thread_data) {
+            data = new ThreadData;
+            s_this_thread_data = adopt_own(*data);
+
+            pthread_rwlock_wrlock(&*s_thread_data_lock);
+            s_thread_data.set(s_thread_id, s_this_thread_data.ptr());
+            pthread_rwlock_unlock(&*s_thread_data_lock);
+        } else {
+            data = s_this_thread_data.ptr();
+        }
+        return *data;
+    }
+
+    static ThreadData* for_thread(pthread_t thread_id)
+    {
+        pthread_rwlock_rdlock(&*s_thread_data_lock);
+        auto result = s_thread_data.get(thread_id).value_or(nullptr);
+        pthread_rwlock_unlock(&*s_thread_data_lock);
+        return result;
     }
 
     ThreadData()
     {
         pid = getpid();
         initialize_wake_pipe();
+    }
+
+    ~ThreadData()
+    {
+        pthread_rwlock_wrlock(&*s_thread_data_lock);
+        s_thread_data.remove(s_thread_id);
+        pthread_rwlock_unlock(&*s_thread_data_lock);
     }
 
     void initialize_wake_pipe()
@@ -239,7 +272,13 @@ struct ThreadData {
         if (wake_pipe_fds[1] != -1)
             close(wake_pipe_fds[1]);
 
-        wake_pipe_fds = MUST(Core::System::pipe2(O_CLOEXEC));
+        auto result = Core::System::pipe2(O_CLOEXEC);
+        if (result.is_error()) {
+            warnln("\033[31;1mFailed to create event loop pipe:\033[0m {}", result.error());
+            VERIFY_NOT_REACHED();
+        }
+
+        wake_pipe_fds = result.release_value();
 
         // The wake pipe informs us of POSIX signals as well as manual calls to wake()
         VERIFY(poll_fds.size() == 0);
@@ -610,6 +649,7 @@ intptr_t EventLoopManagerUnix::register_timer(EventReceiver& object, int millise
     VERIFY(milliseconds >= 0);
     auto& thread_data = ThreadData::the();
     auto timer = new EventLoopTimer;
+    timer->owner_thread = s_thread_id;
     timer->owner = object;
     timer->interval = Duration::from_milliseconds(milliseconds);
     timer->reload(MonotonicTime::now_coarse());
@@ -621,11 +661,17 @@ intptr_t EventLoopManagerUnix::register_timer(EventReceiver& object, int millise
 
 void EventLoopManagerUnix::unregister_timer(intptr_t timer_id)
 {
-    auto& thread_data = ThreadData::the();
     auto* timer = bit_cast<EventLoopTimer*>(timer_id);
-    if (timer->is_scheduled())
-        thread_data.timeouts.unschedule(timer);
-    delete timer;
+    auto thread_data_ptr = ThreadData::for_thread(timer->owner_thread);
+    if (!thread_data_ptr)
+        return;
+    auto& thread_data = *thread_data_ptr;
+    auto expected = false;
+    if (timer->is_being_deleted.compare_exchange_strong(expected, true, AK::MemoryOrder::memory_order_acq_rel)) {
+        if (timer->is_scheduled())
+            thread_data.timeouts.unschedule(timer);
+        delete timer;
+    }
 }
 
 void EventLoopManagerUnix::register_notifier(Notifier& notifier)
@@ -639,12 +685,17 @@ void EventLoopManagerUnix::register_notifier(Notifier& notifier)
         .events = notification_type_to_poll_events(notifier.type()),
         .revents = 0,
     });
+
+    notifier.set_owner_thread(s_thread_id);
 }
 
 void EventLoopManagerUnix::unregister_notifier(Notifier& notifier)
 {
-    auto& thread_data = ThreadData::the();
+    auto thread_data_ptr = ThreadData::for_thread(notifier.owner_thread());
+    if (!thread_data_ptr)
+        return;
 
+    auto& thread_data = *thread_data_ptr;
     auto it = thread_data.notifier_by_ptr.find(&notifier);
     VERIFY(it != thread_data.notifier_by_ptr.end());
 

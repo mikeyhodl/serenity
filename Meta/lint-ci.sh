@@ -23,6 +23,7 @@ for cmd in \
         Meta/check-ak-test-files.sh \
         Meta/check-debug-flags.sh \
         Meta/check-emoji.py \
+        Meta/check-idl-files.py \
         Meta/check-markdown.sh \
         Meta/check-newlines-at-eof.py \
         Meta/check-png-sizes.sh \
@@ -74,7 +75,5 @@ if [ "$ports" = true ]; then
         ((FAILURES+=1))
     fi
 fi
-
-echo "(Also look out for check-symbols.sh, which can only be executed after the build!)"
 
 exit "${FAILURES}"

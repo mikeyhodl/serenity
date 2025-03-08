@@ -6,15 +6,15 @@
 
 #include <AK/IPv4Address.h>
 #include <AK/IPv6Address.h>
+#include <LibURL/Origin.h>
 #include <LibURL/URL.h>
 #include <LibWeb/DOMURL/DOMURL.h>
-#include <LibWeb/HTML/Origin.h>
 #include <LibWeb/SecureContexts/AbstractOperations.h>
 
 namespace Web::SecureContexts {
 
 // https://w3c.github.io/webappsec-secure-contexts/#is-origin-trustworthy
-Trustworthiness is_origin_potentially_trustworthy(HTML::Origin const& origin)
+Trustworthiness is_origin_potentially_trustworthy(URL::Origin const& origin)
 {
     // 1. If origin is an opaque origin, return "Not Trustworthy".
     if (origin.is_opaque())
@@ -54,7 +54,8 @@ Trustworthiness is_origin_potentially_trustworthy(HTML::Origin const& origin)
     }
 
     // 6. If origin’s scheme is "file", return "Potentially Trustworthy".
-    if (origin.scheme() == "file"sv)
+    // AD-HOC: Our resource:// is basically an alias to file://
+    if (origin.scheme() == "file"sv || origin.scheme() == "resource"sv)
         return Trustworthiness::PotentiallyTrustworthy;
 
     // 7. If origin’s scheme component is one which the user agent considers to be authenticated, return "Potentially Trustworthy".
@@ -79,7 +80,7 @@ Trustworthiness is_url_potentially_trustworthy(URL::URL const& url)
         return Trustworthiness::PotentiallyTrustworthy;
 
     // 3. Return the result of executing § 3.1 Is origin potentially trustworthy? on url’s origin.
-    return is_origin_potentially_trustworthy(DOMURL::url_origin(url));
+    return is_origin_potentially_trustworthy(url.origin());
 }
 
 }

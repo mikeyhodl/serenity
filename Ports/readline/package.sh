@@ -1,21 +1,18 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='readline'
-version='8.2'
+version='8.2.13'
+depends=('ncurses')
 useconfigure='true'
 use_fresh_config_sub='true'
 config_sub_paths=(
     'support/config.sub'
 )
 files=(
-    "https://ftpmirror.gnu.org/gnu/readline/readline-${version}.tar.gz#3feb7171f16a84ee82ca18a36d7b9be109a52c04f492a053331d7d1095007c35"
+    "https://ftpmirror.gnu.org/gnu/readline/readline-${version}.tar.gz#0e5be4d2937e8bd9b7cd60d46721ce79f88a33415dd68c2d738fb5924638f656"
 )
 configopts=(
     '--disable-static'
     '--enable-shared'
+    '--with-curses'
+    '--with-shared-termcap-library'
 )
-
-post_install() {
-    # readline specifies termcap as a dependency in its pkgconfig file, without checking if it exists.
-    # Remove it manually to keep other ports from discarding readline because termcap is supposedly missing.
-    sed_in_place '/^Requires.private:/s/termcap//' "${SERENITY_INSTALL_ROOT}/usr/local/lib/pkgconfig/readline.pc"
-}

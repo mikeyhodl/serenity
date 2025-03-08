@@ -8,6 +8,7 @@
 #include <Kernel/Arch/x86_64/InterruptManagement.h>
 #include <Kernel/Arch/x86_64/Interrupts/APIC.h>
 #include <Kernel/Arch/x86_64/Interrupts/IOAPIC.h>
+#include <Kernel/Arch/x86_64/ProcessorInfo.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Sections.h>
@@ -49,7 +50,8 @@ void IOAPIC::map_interrupt_redirection(u8 interrupt_vector)
         if (redirection_override.source() != interrupt_vector)
             continue;
         bool active_low = false;
-        // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
+        // See https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#interrupt-source-override-structure
+        // to learn more about Interrupt Overriding Flags.
         switch ((redirection_override.flags() & 0b11)) {
         case 0:
             active_low = false;
@@ -65,7 +67,8 @@ void IOAPIC::map_interrupt_redirection(u8 interrupt_vector)
         }
 
         bool trigger_level_mode = false;
-        // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
+        // See https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#interrupt-source-override-structure
+        // to learn more about Interrupt Overriding Flags.
         switch (((redirection_override.flags() >> 2) & 0b11)) {
         case 0:
             trigger_level_mode = false;
@@ -79,7 +82,7 @@ void IOAPIC::map_interrupt_redirection(u8 interrupt_vector)
             trigger_level_mode = true;
             break;
         }
-        configure_redirection_entry(redirection_override.gsi() - gsi_base(), InterruptManagement::acquire_mapped_interrupt_number(redirection_override.source()) + IRQ_VECTOR_BASE, DeliveryMode::Normal, false, active_low, trigger_level_mode, true, 0);
+        configure_redirection_entry(redirection_override.gsi() - gsi_base(), InterruptManagement::acquire_mapped_interrupt_number(redirection_override.source()) + IRQ_VECTOR_BASE, DeliveryMode::Normal, false, active_low, trigger_level_mode, true, Processor::by_id(0).info().apic_id());
         return;
     }
     isa_identity_map(interrupt_vector);
@@ -88,13 +91,7 @@ void IOAPIC::map_interrupt_redirection(u8 interrupt_vector)
 void IOAPIC::isa_identity_map(size_t index)
 {
     InterruptDisabler disabler;
-    configure_redirection_entry(index, InterruptManagement::acquire_mapped_interrupt_number(index) + IRQ_VECTOR_BASE, DeliveryMode::Normal, false, false, false, true, 0);
-}
-
-void IOAPIC::map_pci_interrupts()
-{
-    InterruptDisabler disabler;
-    configure_redirection_entry(11, 11 + IRQ_VECTOR_BASE, DeliveryMode::Normal, false, false, true, true, 0);
+    configure_redirection_entry(index, InterruptManagement::acquire_mapped_interrupt_number(index) + IRQ_VECTOR_BASE, DeliveryMode::Normal, false, false, false, true, Processor::by_id(0).info().apic_id());
 }
 
 bool IOAPIC::is_enabled() const
@@ -108,47 +105,6 @@ void IOAPIC::spurious_eoi(GenericInterruptHandler const& handler) const
     VERIFY(handler.type() == HandlerType::SpuriousInterruptHandler);
     VERIFY(handler.interrupt_number() == APIC::spurious_interrupt_vector());
     dbgln("IOAPIC: Spurious interrupt");
-}
-
-void IOAPIC::map_isa_interrupts()
-{
-    InterruptDisabler disabler;
-    for (auto redirection_override : InterruptManagement::the().isa_overrides()) {
-        if ((redirection_override.gsi() < gsi_base()) || (redirection_override.gsi() >= (gsi_base() + m_redirection_entries_count)))
-            continue;
-        bool active_low = false;
-        // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
-        switch ((redirection_override.flags() & 0b11)) {
-        case 0:
-            active_low = false;
-            break;
-        case 1:
-            active_low = false;
-            break;
-        case 2:
-            VERIFY_NOT_REACHED();
-        case 3:
-            active_low = true;
-            break;
-        }
-
-        bool trigger_level_mode = false;
-        // See ACPI spec Version 6.2, page 205 to learn more about Interrupt Overriding Flags.
-        switch (((redirection_override.flags() >> 2) & 0b11)) {
-        case 0:
-            trigger_level_mode = false;
-            break;
-        case 1:
-            trigger_level_mode = false;
-            break;
-        case 2:
-            VERIFY_NOT_REACHED();
-        case 3:
-            trigger_level_mode = true;
-            break;
-        }
-        configure_redirection_entry(redirection_override.gsi() - gsi_base(), InterruptManagement::acquire_mapped_interrupt_number(redirection_override.source()) + IRQ_VECTOR_BASE, 0, false, active_low, trigger_level_mode, true, 0);
-    }
 }
 
 void IOAPIC::reset_all_redirection_entries() const
@@ -168,7 +124,7 @@ void IOAPIC::hard_disable()
 void IOAPIC::reset_redirection_entry(size_t index) const
 {
     InterruptDisabler disabler;
-    configure_redirection_entry(index, 0, 0, false, false, false, true, 0);
+    configure_redirection_entry(index, 0, 0, false, false, false, true, Processor::by_id(0).info().apic_id());
 }
 
 void IOAPIC::configure_redirection_entry(size_t index, u8 interrupt_vector, u8 delivery_mode, bool logical_destination, bool active_low, bool trigger_level_mode, bool masked, u8 destination) const

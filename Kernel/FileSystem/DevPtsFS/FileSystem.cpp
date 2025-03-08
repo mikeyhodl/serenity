@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/API/DeviceFileTypes.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/TTY/SlavePTY.h>
 #include <Kernel/FileSystem/DevPtsFS/FileSystem.h>
 #include <Kernel/FileSystem/DevPtsFS/Inode.h>
@@ -13,7 +14,7 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullRefPtr<FileSystem>> DevPtsFS::try_create(ReadonlyBytes)
+ErrorOr<NonnullRefPtr<FileSystem>> DevPtsFS::try_create(FileSystemSpecificOptions const&)
 {
     return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) DevPtsFS));
 }
@@ -44,6 +45,11 @@ Inode& DevPtsFS::root_inode()
     return *m_root_inode;
 }
 
+ErrorOr<void> DevPtsFS::rename(Inode&, StringView, Inode&, StringView)
+{
+    return EROFS;
+}
+
 u8 DevPtsFS::internal_file_type_to_directory_entry_type(DirectoryEntryView const& entry) const
 {
     return ram_backed_file_type_to_directory_entry_type(entry);
@@ -55,7 +61,7 @@ ErrorOr<NonnullRefPtr<Inode>> DevPtsFS::get_inode(InodeIdentifier inode_id) cons
         return *m_root_inode;
 
     unsigned pty_index = inode_index_to_pty_index(inode_id.index());
-    auto device = DeviceManagement::the().get_device(201, pty_index);
+    auto device = Device::acquire_by_type_and_major_minor_numbers(DeviceNodeType::Character, 201, pty_index);
     VERIFY(device);
 
     auto& pts_device = static_cast<SlavePTY&>(*device);

@@ -63,6 +63,8 @@ static Array constexpr s_plaintext_suffixes = {
     "CMakeLists.txt"sv,
 };
 
+// See https://www.iana.org/assignments/media-types/<mime-type> for a list of registered MIME types.
+// For example, https://www.iana.org/assignments/media-types/application/gzip
 static Array const s_registered_mime_type = {
     MimeType { .name = "application/gzip"sv, .common_extensions = { ".gz"sv, ".gzip"sv }, .description = "GZIP compressed data"sv, .magic_bytes = Vector<u8> { 0x1F, 0x8B } },
     MimeType { .name = "application/javascript"sv, .common_extensions = { ".js"sv, ".mjs"sv }, .description = "JavaScript source"sv },
@@ -77,6 +79,7 @@ static Array const s_registered_mime_type = {
     MimeType { .name = "application/x-blender"sv, .common_extensions = { ".blend"sv, ".blended"sv }, .description = "Blender project file"sv, .magic_bytes = Vector<u8> { 'B', 'L', 'E', 'N', 'D', 'E', 'R' } },
     MimeType { .name = "application/x-bzip2"sv, .common_extensions = { ".bz2"sv }, .description = "BZIP2 compressed data"sv, .magic_bytes = Vector<u8> { 'B', 'Z', 'h' } },
     MimeType { .name = "application/x-sheets+json"sv, .common_extensions = { ".sheets"sv }, .description = "Serenity Spreadsheet document"sv },
+    MimeType { .name = "application/xhtml+xml"sv, .common_extensions = { ".xhtml"sv, ".xht"sv }, .description = "XHTML document"sv },
     MimeType { .name = "application/zip"sv, .common_extensions = { ".zip"sv }, .description = "ZIP archive"sv, .magic_bytes = Vector<u8> { 0x50, 0x4B } },
 
     MimeType { .name = "audio/flac"sv, .common_extensions = { ".flac"sv }, .description = "FLAC audio"sv, .magic_bytes = Vector<u8> { 'f', 'L', 'a', 'C' } },
@@ -113,6 +116,8 @@ static Array const s_registered_mime_type = {
     MimeType { .name = "image/bmp"sv, .common_extensions = { ".bmp"sv }, .description = "BMP image data"sv, .magic_bytes = Vector<u8> { 'B', 'M' } },
     MimeType { .name = "image/gif"sv, .common_extensions = { ".gif"sv }, .description = "GIF image data"sv, .magic_bytes = Vector<u8> { 'G', 'I', 'F', '8', '7', 'a' } },
     MimeType { .name = "image/gif"sv, .common_extensions = { ".gif"sv }, .description = "GIF image data"sv, .magic_bytes = Vector<u8> { 'G', 'I', 'F', '8', '9', 'a' } },
+    MimeType { .name = "image/j2c"sv, .common_extensions = { ".j2c"sv, ".j2k"sv }, .description = "JPEG2000 image data codestream"sv, .magic_bytes = Vector<u8> { 0xFF, 0x4F, 0xFF, 0x51 } },
+    MimeType { .name = "image/jp2"sv, .common_extensions = { ".jp2"sv, ".jpf"sv, ".jpx"sv }, .description = "JPEG2000 image data"sv, .magic_bytes = Vector<u8> { 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A } },
     MimeType { .name = "image/jpeg"sv, .common_extensions = { ".jpg"sv, ".jpeg"sv }, .description = "JPEG image data"sv, .magic_bytes = Vector<u8> { 0xFF, 0xD8, 0xFF } },
     MimeType { .name = "image/jxl"sv, .common_extensions = { ".jxl"sv }, .description = "JPEG XL image data"sv, .magic_bytes = Vector<u8> { 0xFF, 0x0A } },
     MimeType { .name = "image/png"sv, .common_extensions = { ".png"sv }, .description = "PNG image data"sv, .magic_bytes = Vector<u8> { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A } },
@@ -135,6 +140,7 @@ static Array const s_registered_mime_type = {
     MimeType { .name = "text/css"sv, .common_extensions = { ".css"sv }, .description = "Cascading Style Sheet"sv },
     MimeType { .name = "text/csv"sv, .common_extensions = { ".csv"sv }, .description = "CSV text"sv },
     MimeType { .name = "text/html"sv, .common_extensions = { ".html"sv, ".htm"sv, ".xht"sv, "/"sv }, .description = "HTML document"sv }, // FIXME: The "/" seems dubious
+    MimeType { .name = "text/xml"sv, .common_extensions = { ".xml"sv }, .description = "XML document"sv },
     MimeType { .name = "text/markdown"sv, .common_extensions = { ".md"sv }, .description = "Markdown document"sv },
     MimeType { .name = "text/plain"sv, .common_extensions = Vector(s_plaintext_suffixes.span()), .description = "plain text"sv },
     MimeType { .name = "text/x-shellscript"sv, .common_extensions = { ".sh"sv }, .description = "POSIX shell script text executable"sv, .magic_bytes = Vector<u8> { '#', '!', '/', 'b', 'i', 'n', '/', 's', 'h', '\n' } },

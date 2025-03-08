@@ -73,7 +73,7 @@ public:
     Device* device();
 
     bool is_tty() const;
-    const TTY* tty() const;
+    TTY const* tty() const;
     TTY* tty();
 
     bool is_inode_watcher() const;
@@ -95,7 +95,7 @@ public:
     RefPtr<Custody> custody();
     RefPtr<Custody const> custody() const;
 
-    ErrorOr<NonnullLockRefPtr<Memory::VMObject>> vmobject_for_mmap(Process&, Memory::VirtualRange const&, u64& offset, bool shared);
+    ErrorOr<File::VMObjectAndMemoryType> vmobject_for_mmap(Process&, Memory::VirtualRange const&, u64& offset, bool shared);
 
     bool is_blocking() const;
     void set_blocking(bool b);
@@ -116,8 +116,9 @@ public:
 
     OwnPtr<OpenFileDescriptionData>& data();
 
-    void set_original_inode(Badge<VirtualFileSystem>, NonnullRefPtr<Inode> inode) { m_inode = move(inode); }
-    void set_original_custody(Badge<VirtualFileSystem>, Custody& custody);
+    // NOTE: These methods are (and should be only) called from Kernel/FileSystem/VirtualFileSystem.cpp
+    void set_original_inode(NonnullRefPtr<Inode> inode) { m_inode = move(inode); }
+    void set_original_custody(Custody& custody);
 
     ErrorOr<void> truncate(u64);
     ErrorOr<void> sync();
@@ -132,7 +133,6 @@ public:
     ErrorOr<void> get_flock(Userspace<flock*>) const;
 
 private:
-    friend class VirtualFileSystem;
     explicit OpenFileDescription(File&);
 
     ErrorOr<void> attach();

@@ -37,6 +37,7 @@ struct RequestInit {
     Optional<bool> keepalive;
     Optional<JS::GCPtr<DOM::AbortSignal>> signal;
     Optional<Bindings::RequestDuplex> duplex;
+    Optional<Bindings::RequestPriority> priority;
     Optional<JS::Value> window;
 
     // https://infra.spec.whatwg.org/#map-is-empty
@@ -55,6 +56,7 @@ struct RequestInit {
             || keepalive.has_value()
             || signal.has_value()
             || duplex.has_value()
+            || priority.has_value()
             || window.has_value());
     }
 };
@@ -67,13 +69,13 @@ class Request final
     JS_DECLARE_ALLOCATOR(Request);
 
 public:
-    [[nodiscard]] static JS::NonnullGCPtr<Request> create(JS::Realm&, JS::NonnullGCPtr<Infrastructure::Request>, Headers::Guard);
+    [[nodiscard]] static JS::NonnullGCPtr<Request> create(JS::Realm&, JS::NonnullGCPtr<Infrastructure::Request>, Headers::Guard, JS::NonnullGCPtr<DOM::AbortSignal>);
     static WebIDL::ExceptionOr<JS::NonnullGCPtr<Request>> construct_impl(JS::Realm&, RequestInfo const& input, RequestInit const& init = {});
 
     virtual ~Request() override;
 
     // ^BodyMixin
-    virtual ErrorOr<Optional<MimeSniff::MimeType>> mime_type_impl() const override;
+    virtual Optional<MimeSniff::MimeType> mime_type_impl() const override;
     virtual JS::GCPtr<Infrastructure::Body> body_impl() override;
     virtual JS::GCPtr<Infrastructure::Body const> body_impl() const override;
     virtual Bindings::PlatformObject& as_platform_object() override { return *this; }
@@ -82,11 +84,11 @@ public:
     [[nodiscard]] JS::NonnullGCPtr<Infrastructure::Request> request() const { return m_request; }
 
     // JS API functions
-    [[nodiscard]] WebIDL::ExceptionOr<String> method() const;
-    [[nodiscard]] WebIDL::ExceptionOr<String> url() const;
+    [[nodiscard]] String method() const;
+    [[nodiscard]] String url() const;
     [[nodiscard]] JS::NonnullGCPtr<Headers> headers() const;
     [[nodiscard]] Bindings::RequestDestination destination() const;
-    [[nodiscard]] WebIDL::ExceptionOr<String> referrer() const;
+    [[nodiscard]] String referrer() const;
     [[nodiscard]] Bindings::ReferrerPolicy referrer_policy() const;
     [[nodiscard]] Bindings::RequestMode mode() const;
     [[nodiscard]] Bindings::RequestCredentials credentials() const;

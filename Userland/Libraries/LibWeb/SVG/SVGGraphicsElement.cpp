@@ -8,11 +8,16 @@
  */
 
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/SVGGraphicsElementPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Layout/Node.h>
+#include <LibWeb/Painting/PaintStyle.h>
+#include <LibWeb/Painting/PaintableBox.h>
+#include <LibWeb/Painting/SVGGraphicsPaintable.h>
 #include <LibWeb/SVG/AttributeNames.h>
 #include <LibWeb/SVG/AttributeParser.h>
+#include <LibWeb/SVG/SVGClipPathElement.h>
 #include <LibWeb/SVG/SVGGradientElement.h>
 #include <LibWeb/SVG/SVGGraphicsElement.h>
 #include <LibWeb/SVG/SVGMaskElement.h>
@@ -32,19 +37,19 @@ void SVGGraphicsElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGGraphicsElement);
 }
 
-void SVGGraphicsElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void SVGGraphicsElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGElement::attribute_changed(name, value);
+    SVGElement::attribute_changed(name, old_value, value);
     if (name == "transform"sv) {
         auto transform_list = AttributeParser::parse_transform(value.value_or(String {}));
         if (transform_list.has_value())
             m_transform = transform_from_transform_list(*transform_list);
         // FIXME: This should only invalidate the contents of the SVG.
-        document().invalidate_layout();
+        document().invalidate_layout_tree();
     }
 }
 
-Optional<Gfx::PaintStyle const&> SVGGraphicsElement::svg_paint_computed_value_to_gfx_paint_style(SVGPaintContext const& paint_context, Optional<CSS::SVGPaint> const& paint_value) const
+Optional<Painting::PaintStyle> SVGGraphicsElement::svg_paint_computed_value_to_gfx_paint_style(SVGPaintContext const& paint_context, Optional<CSS::SVGPaint> const& paint_value) const
 {
     // FIXME: This entire function is an ad-hoc hack:
     if (!paint_value.has_value() || !paint_value->is_url())
@@ -54,14 +59,14 @@ Optional<Gfx::PaintStyle const&> SVGGraphicsElement::svg_paint_computed_value_to
     return {};
 }
 
-Optional<Gfx::PaintStyle const&> SVGGraphicsElement::fill_paint_style(SVGPaintContext const& paint_context) const
+Optional<Painting::PaintStyle> SVGGraphicsElement::fill_paint_style(SVGPaintContext const& paint_context) const
 {
     if (!layout_node())
         return {};
     return svg_paint_computed_value_to_gfx_paint_style(paint_context, layout_node()->computed_values().fill());
 }
 
-Optional<Gfx::PaintStyle const&> SVGGraphicsElement::stroke_paint_style(SVGPaintContext const& paint_context) const
+Optional<Painting::PaintStyle> SVGGraphicsElement::stroke_paint_style(SVGPaintContext const& paint_context) const
 {
     if (!layout_node())
         return {};
@@ -74,6 +79,14 @@ JS::GCPtr<SVG::SVGMaskElement const> SVGGraphicsElement::mask() const
     if (!mask_reference.has_value())
         return {};
     return try_resolve_url_to<SVG::SVGMaskElement const>(mask_reference->url());
+}
+
+JS::GCPtr<SVG::SVGClipPathElement const> SVGGraphicsElement::clip_path() const
+{
+    auto const& clip_path_reference = layout_node()->computed_values().clip_path();
+    if (!clip_path_reference.has_value() || !clip_path_reference->is_url())
+        return {};
+    return try_resolve_url_to<SVG::SVGClipPathElement const>(clip_path_reference->url());
 }
 
 Gfx::AffineTransform transform_from_transform_list(ReadonlySpan<Transform> transform_list)
@@ -131,11 +144,14 @@ struct NamedPropertyID {
 
 void SVGGraphicsElement::apply_presentational_hints(CSS::StyleProperties& style) const
 {
-    static const Array attribute_style_properties {
+    static Array const attribute_style_properties {
         // FIXME: The `fill` attribute and CSS `fill` property are not the same! But our support is limited enough that they are equivalent for now.
         NamedPropertyID(CSS::PropertyID::Fill),
         // FIXME: The `stroke` attribute and CSS `stroke` property are not the same! But our support is limited enough that they are equivalent for now.
         NamedPropertyID(CSS::PropertyID::Stroke),
+        NamedPropertyID(CSS::PropertyID::StrokeLinecap),
+        NamedPropertyID(CSS::PropertyID::StrokeLinejoin),
+        NamedPropertyID(CSS::PropertyID::StrokeMiterlimit),
         NamedPropertyID(CSS::PropertyID::StrokeWidth),
         NamedPropertyID(CSS::PropertyID::FillRule),
         NamedPropertyID(CSS::PropertyID::FillOpacity),
@@ -144,7 +160,10 @@ void SVGGraphicsElement::apply_presentational_hints(CSS::StyleProperties& style)
         NamedPropertyID(CSS::PropertyID::TextAnchor),
         NamedPropertyID(CSS::PropertyID::FontSize),
         NamedPropertyID(CSS::PropertyID::Mask),
-        NamedPropertyID(CSS::PropertyID::MaskType)
+        NamedPropertyID(CSS::PropertyID::MaskType),
+        NamedPropertyID(CSS::PropertyID::ClipPath),
+        NamedPropertyID(CSS::PropertyID::ClipRule),
+        NamedPropertyID(CSS::PropertyID::Display),
     };
 
     CSS::Parser::ParsingContext parsing_context { document(), CSS::Parser::ParsingContext::Mode::SVGPresentationAttribute };
@@ -159,11 +178,9 @@ void SVGGraphicsElement::apply_presentational_hints(CSS::StyleProperties& style)
     });
 }
 
-Optional<FillRule> SVGGraphicsElement::fill_rule() const
+static FillRule to_svg_fill_rule(CSS::FillRule fill_rule)
 {
-    if (!layout_node())
-        return {};
-    switch (layout_node()->computed_values().fill_rule()) {
+    switch (fill_rule) {
     case CSS::FillRule::Nonzero:
         return FillRule::Nonzero;
     case CSS::FillRule::Evenodd:
@@ -171,6 +188,20 @@ Optional<FillRule> SVGGraphicsElement::fill_rule() const
     default:
         VERIFY_NOT_REACHED();
     }
+}
+
+Optional<FillRule> SVGGraphicsElement::fill_rule() const
+{
+    if (!layout_node())
+        return {};
+    return to_svg_fill_rule(layout_node()->computed_values().fill_rule());
+}
+
+Optional<ClipRule> SVGGraphicsElement::clip_rule() const
+{
+    if (!layout_node())
+        return {};
+    return to_svg_fill_rule(layout_node()->computed_values().clip_rule());
 }
 
 Optional<Gfx::Color> SVGGraphicsElement::fill_color() const
@@ -206,6 +237,27 @@ Optional<float> SVGGraphicsElement::fill_opacity() const
     return layout_node()->computed_values().fill_opacity();
 }
 
+Optional<CSS::StrokeLinecap> SVGGraphicsElement::stroke_linecap() const
+{
+    if (!layout_node())
+        return {};
+    return layout_node()->computed_values().stroke_linecap();
+}
+
+Optional<CSS::StrokeLinejoin> SVGGraphicsElement::stroke_linejoin() const
+{
+    if (!layout_node())
+        return {};
+    return layout_node()->computed_values().stroke_linejoin();
+}
+
+Optional<CSS::NumberOrCalculated> SVGGraphicsElement::stroke_miterlimit() const
+{
+    if (!layout_node())
+        return {};
+    return layout_node()->computed_values().stroke_miterlimit();
+}
+
 Optional<float> SVGGraphicsElement::stroke_opacity() const
 {
     if (!layout_node())
@@ -225,13 +277,49 @@ Optional<float> SVGGraphicsElement::stroke_width() const
     CSSPixels viewport_width = 0;
     CSSPixels viewport_height = 0;
     if (auto* svg_svg_element = shadow_including_first_ancestor_of_type<SVGSVGElement>()) {
-        if (auto* svg_svg_layout_node = svg_svg_element->layout_node()) {
+        if (auto svg_svg_layout_node = svg_svg_element->layout_node()) {
             viewport_width = svg_svg_layout_node->computed_values().width().to_px(*svg_svg_layout_node, 0);
             viewport_height = svg_svg_layout_node->computed_values().height().to_px(*svg_svg_layout_node, 0);
         }
     }
     auto scaled_viewport_size = (viewport_width + viewport_height) * CSSPixels(0.5);
     return width.to_px(*layout_node(), scaled_viewport_size).to_double();
+}
+
+// https://svgwg.org/svg2-draft/types.html#__svg__SVGGraphicsElement__getBBox
+JS::NonnullGCPtr<Geometry::DOMRect> SVGGraphicsElement::get_b_box(Optional<SVGBoundingBoxOptions>)
+{
+    // FIXME: It should be possible to compute this without layout updates. The bounding box is within the
+    // SVG coordinate space (before any viewbox or other transformations), so it should be possible to
+    // calculate this from SVG geometry without a full layout tree (at least for simple cases).
+    // See: https://svgwg.org/svg2-draft/coords.html#BoundingBoxes
+    const_cast<DOM::Document&>(document()).update_layout();
+    if (!layout_node())
+        return Geometry::DOMRect::create(realm());
+    // Invert the SVG -> screen space transform.
+    auto owner_svg_element = this->owner_svg_element();
+    if (!owner_svg_element)
+        return Geometry::DOMRect::create(realm());
+    auto svg_element_rect = owner_svg_element->paintable_box()->absolute_rect();
+    auto inverse_transform = static_cast<Painting::SVGGraphicsPaintable&>(*paintable_box()).computed_transforms().svg_to_css_pixels_transform().inverse();
+    auto translated_rect = paintable_box()->absolute_rect().to_type<float>().translated(-svg_element_rect.location().to_type<float>());
+    if (inverse_transform.has_value())
+        translated_rect = inverse_transform->map(translated_rect);
+    return Geometry::DOMRect::create(realm(), translated_rect);
+}
+
+JS::NonnullGCPtr<SVGAnimatedTransformList> SVGGraphicsElement::transform() const
+{
+    dbgln("(STUBBED) SVGGraphicsElement::transform(). Called on: {}", debug_description());
+    auto base_val = SVGTransformList::create(realm());
+    auto anim_val = SVGTransformList::create(realm());
+    return SVGAnimatedTransformList::create(realm(), base_val, anim_val);
+}
+
+JS::GCPtr<Geometry::DOMMatrix> SVGGraphicsElement::get_screen_ctm()
+{
+    dbgln("(STUBBED) SVGGraphicsElement::get_screen_ctm(). Called on: {}", debug_description());
+    return Geometry::DOMMatrix::create(realm());
 }
 
 }

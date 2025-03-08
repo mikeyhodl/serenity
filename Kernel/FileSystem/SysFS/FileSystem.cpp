@@ -12,7 +12,7 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullRefPtr<FileSystem>> SysFS::try_create(ReadonlyBytes)
+ErrorOr<NonnullRefPtr<FileSystem>> SysFS::try_create(FileSystemSpecificOptions const&)
 {
     return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) SysFS));
 }
@@ -34,6 +34,11 @@ u8 SysFS::internal_file_type_to_directory_entry_type(DirectoryEntryView const& e
 Inode& SysFS::root_inode()
 {
     return *m_root_inode;
+}
+
+ErrorOr<void> SysFS::rename(Inode&, StringView, Inode&, StringView)
+{
+    return EROFS;
 }
 
 }

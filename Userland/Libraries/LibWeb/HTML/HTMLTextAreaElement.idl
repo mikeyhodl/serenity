@@ -6,7 +6,7 @@
 interface HTMLTextAreaElement : HTMLElement {
     [HTMLConstructor] constructor();
 
-    [CEReactions, Reflect] attribute DOMString autocomplete;
+    [CEReactions, Enumerated=Autocomplete, Reflect] attribute DOMString autocomplete;
     [CEReactions] attribute unsigned long cols;
     [CEReactions, Reflect=dirname] attribute DOMString dirName;
     [CEReactions, Reflect] attribute boolean disabled;
@@ -25,20 +25,20 @@ interface HTMLTextAreaElement : HTMLElement {
     [LegacyNullToEmptyString] attribute DOMString value;
     readonly attribute unsigned long textLength;
 
-    // FIXME: readonly attribute boolean willValidate;
-    // FIXME: readonly attribute ValidityState validity;
-    // FIXME: readonly attribute DOMString validationMessage;
+    [FIXME] readonly attribute boolean willValidate;
+    [FIXME] readonly attribute ValidityState validity;
+    [FIXME] readonly attribute DOMString validationMessage;
     boolean checkValidity();
     boolean reportValidity();
     undefined setCustomValidity(DOMString error);
 
-    // FIXME: readonly attribute NodeList labels;
+    readonly attribute NodeList labels;
 
-    // FIXME: undefined select();
-    attribute unsigned long selectionStart;
-    attribute unsigned long selectionEnd;
-    // FIXME: attribute DOMString selectionDirection;
-    // FIXME: undefined setRangeText(DOMString replacement);
-    // FIXME: undefined setRangeText(DOMString replacement, unsigned long start, unsigned long end, optional SelectionMode selectionMode = "preserve");
-    // FIXME: undefined setSelectionRange(unsigned long start, unsigned long end, optional DOMString direction);
+    undefined select();
+    [ImplementedAs=selection_start_binding] attribute unsigned long selectionStart;
+    [ImplementedAs=selection_end_binding] attribute unsigned long selectionEnd;
+    [ImplementedAs=selection_direction_binding] attribute DOMString selectionDirection;
+    undefined setRangeText(DOMString replacement);
+    undefined setRangeText(DOMString replacement, unsigned long start, unsigned long end, optional SelectionMode selectionMode = "preserve");
+    undefined setSelectionRange(unsigned long start, unsigned long end, optional DOMString direction);
 };

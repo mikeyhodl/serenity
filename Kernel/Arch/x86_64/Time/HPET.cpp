@@ -46,26 +46,26 @@ enum class TimerConfiguration : u32 {
 
 struct [[gnu::packed]] HPETRegister {
     union {
-        volatile u64 full;
+        u64 volatile full;
         struct {
-            volatile u32 low;
-            volatile u32 high;
+            u32 volatile low;
+            u32 volatile high;
         };
     };
 };
 
 struct [[gnu::packed]] TimerStructure {
-    volatile u32 capabilities;
-    volatile u32 interrupt_routing;
+    u32 volatile capabilities;
+    u32 volatile interrupt_routing;
     HPETRegister comparator_value;
-    volatile u64 fsb_interrupt_route;
+    u64 volatile fsb_interrupt_route;
     u64 reserved;
 };
 
 struct [[gnu::packed]] HPETCapabilityRegister {
     // Note: We must do a 32 bit access to offsets 0x0, or 0x4 only, according to HPET spec.
-    volatile u32 attributes;
-    volatile u32 main_counter_tick_period;
+    u32 volatile attributes;
+    u32 volatile main_counter_tick_period;
     u64 reserved;
 };
 
@@ -417,7 +417,7 @@ u64 HPET::ns_to_raw_counter_ticks(u64 ns) const
 UNMAP_AFTER_INIT HPET::HPET(PhysicalAddress acpi_hpet)
     : m_physical_acpi_hpet_table(acpi_hpet)
     , m_physical_acpi_hpet_registers(find_acpi_hpet_registers_block())
-    , m_hpet_mmio_region(MM.allocate_kernel_region(m_physical_acpi_hpet_registers.page_base(), PAGE_SIZE, "HPET MMIO"sv, Memory::Region::Access::ReadWrite).release_value())
+    , m_hpet_mmio_region(MM.allocate_mmio_kernel_region(m_physical_acpi_hpet_registers.page_base(), PAGE_SIZE, "HPET MMIO"sv, Memory::Region::Access::ReadWrite).release_value())
 {
     s_hpet = this; // Make available as soon as possible so that IRQs can use it
 

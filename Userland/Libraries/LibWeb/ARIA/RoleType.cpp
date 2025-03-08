@@ -15,6 +15,7 @@ RoleType::RoleType(AriaData const& data)
 {
 }
 
+// https://w3c.github.io/aria/#global_states
 constexpr StateAndProperties supported_state_array[] = {
     StateAndProperties::AriaBusy,
     StateAndProperties::AriaCurrent,
@@ -23,10 +24,14 @@ constexpr StateAndProperties supported_state_array[] = {
     StateAndProperties::AriaHidden,
     StateAndProperties::AriaInvalid
 };
+// https://w3c.github.io/aria/#global_states
 constexpr StateAndProperties supported_properties_array[] = {
     StateAndProperties::AriaAtomic,
+    StateAndProperties::AriaBrailleLabel,
+    StateAndProperties::AriaBrailleRoleDescription,
     StateAndProperties::AriaControls,
     StateAndProperties::AriaDescribedBy,
+    StateAndProperties::AriaDescription,
     StateAndProperties::AriaDetails,
     StateAndProperties::AriaDropEffect,
     StateAndProperties::AriaFlowTo,
@@ -142,7 +147,7 @@ ErrorOr<void> RoleType::serialize_as_json(JsonObjectSerializer<StringBuilder>& o
 ErrorOr<NonnullOwnPtr<RoleType>> RoleType::build_role_object(Role role, bool focusable, AriaData const& data)
 {
     if (is_abstract_role(role))
-        return Error::from_string_view("Cannot construct a role object for an abstract role."sv);
+        return Error::from_string_literal("Cannot construct a role object for an abstract role.");
 
     switch (role) {
     case Role::alert:

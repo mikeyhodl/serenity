@@ -9,12 +9,15 @@
 #include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/CSS/CSSStyleValue.h>
+#include <LibWeb/CSS/GeneratedCSSStyleProperties.h>
 #include <LibWeb/CSS/StyleProperty.h>
-#include <LibWeb/CSS/StyleValue.h>
 
 namespace Web::CSS {
 
-class CSSStyleDeclaration : public Bindings::PlatformObject {
+class CSSStyleDeclaration
+    : public Bindings::PlatformObject
+    , public Bindings::GeneratedCSSStyleProperties {
     WEB_PLATFORM_OBJECT(CSSStyleDeclaration, Bindings::PlatformObject);
     JS_DECLARE_ALLOCATOR(CSSStyleDeclaration);
 
@@ -30,8 +33,8 @@ public:
     virtual WebIDL::ExceptionOr<void> set_property(PropertyID, StringView css_text, StringView priority = ""sv) = 0;
     virtual WebIDL::ExceptionOr<String> remove_property(PropertyID) = 0;
 
-    WebIDL::ExceptionOr<void> set_property(StringView property_name, StringView css_text, StringView priority);
-    WebIDL::ExceptionOr<String> remove_property(StringView property_name);
+    virtual WebIDL::ExceptionOr<void> set_property(StringView property_name, StringView css_text, StringView priority);
+    virtual WebIDL::ExceptionOr<String> remove_property(StringView property_name);
 
     String get_property_value(StringView property) const;
     StringView get_property_priority(StringView property) const;
@@ -39,14 +42,21 @@ public:
     String css_text() const;
     virtual WebIDL::ExceptionOr<void> set_css_text(StringView) = 0;
 
+    String css_float() const;
+    WebIDL::ExceptionOr<void> set_css_float(StringView);
+
     virtual String serialized() const = 0;
 
-    virtual JS::ThrowCompletionOr<bool> internal_has_property(JS::PropertyKey const& name) const override;
-    virtual JS::ThrowCompletionOr<JS::Value> internal_get(JS::PropertyKey const&, JS::Value receiver, JS::CacheablePropertyMetadata*) const override;
-    virtual JS::ThrowCompletionOr<bool> internal_set(JS::PropertyKey const&, JS::Value value, JS::Value receiver, JS::CacheablePropertyMetadata*) override;
+    virtual JS::GCPtr<CSSRule> parent_rule() const;
 
 protected:
     explicit CSSStyleDeclaration(JS::Realm&);
+
+    virtual CSSStyleDeclaration& generated_style_properties_to_css_style_declaration() override { return *this; }
+
+private:
+    // ^PlatformObject
+    virtual Optional<JS::Value> item_value(size_t index) const override;
 };
 
 class PropertyOwningCSSStyleDeclaration : public CSSStyleDeclaration {
@@ -71,11 +81,14 @@ public:
 
     Vector<StyleProperty> const& properties() const { return m_properties; }
     HashMap<FlyString, StyleProperty> const& custom_properties() const { return m_custom_properties; }
-    Optional<StyleProperty> custom_property(FlyString const& custom_property_name) const { return m_custom_properties.get(custom_property_name); }
+    Optional<StyleProperty> custom_property(FlyString const& custom_property_name) const { return m_custom_properties.get(custom_property_name).copy(); }
     size_t custom_property_count() const { return m_custom_properties.size(); }
 
     virtual String serialized() const final override;
     virtual WebIDL::ExceptionOr<void> set_css_text(StringView) override;
+
+    virtual JS::GCPtr<CSSRule> parent_rule() const override;
+    void set_parent_rule(JS::NonnullGCPtr<CSSRule>);
 
 protected:
     PropertyOwningCSSStyleDeclaration(JS::Realm&, Vector<StyleProperty>, HashMap<FlyString, StyleProperty>);
@@ -86,10 +99,11 @@ protected:
     void set_the_declarations(Vector<StyleProperty> properties, HashMap<FlyString, StyleProperty> custom_properties);
 
 private:
-    bool set_a_css_declaration(PropertyID, NonnullRefPtr<StyleValue const>, Important);
+    bool set_a_css_declaration(PropertyID, NonnullRefPtr<CSSStyleValue const>, Important);
 
     virtual void visit_edges(Cell::Visitor&) override;
 
+    JS::GCPtr<CSSRule> m_parent_rule;
     Vector<StyleProperty> m_properties;
     HashMap<FlyString, StyleProperty> m_custom_properties;
 };

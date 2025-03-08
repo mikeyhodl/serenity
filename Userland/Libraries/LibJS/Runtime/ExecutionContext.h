@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2020-2024, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2020-2021, Linus Groh <linusg@serenityos.org>
  * Copyright (c) 2022, Luke Wilde <lukew@serenityos.org>
  *
@@ -10,7 +10,7 @@
 
 #include <AK/DeprecatedFlyString.h>
 #include <AK/WeakPtr.h>
-#include <LibJS/Bytecode/Instruction.h>
+#include <LibJS/Bytecode/BasicBlock.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Module.h>
 #include <LibJS/Runtime/PrivateEnvironment.h>
@@ -23,7 +23,7 @@ using ScriptOrModule = Variant<Empty, NonnullGCPtr<Script>, NonnullGCPtr<Module>
 
 // 9.4 Execution Contexts, https://tc39.es/ecma262/#sec-execution-contexts
 struct ExecutionContext {
-    static NonnullOwnPtr<ExecutionContext> create(Heap&);
+    static NonnullOwnPtr<ExecutionContext> create();
     [[nodiscard]] NonnullOwnPtr<ExecutionContext> copy() const;
 
     ~ExecutionContext();
@@ -31,14 +31,12 @@ struct ExecutionContext {
     void visit_edges(Cell::Visitor&);
 
 private:
-    ExecutionContext(Heap&);
+    friend class ExecutionContextAllocator;
 
-    IntrusiveListNode<ExecutionContext> m_list_node;
+    ExecutionContext();
 
 public:
-    Heap& m_heap;
-
-    using List = IntrusiveList<&ExecutionContext::m_list_node>;
+    void operator delete(void* ptr);
 
     GCPtr<FunctionObject> function;                // [[Function]]
     GCPtr<Realm> realm;                            // [[Realm]]
@@ -50,10 +48,9 @@ public:
     // Non-standard: This points at something that owns this ExecutionContext, in case it needs to be protected from GC.
     GCPtr<Cell> context_owner;
 
-    Optional<Bytecode::InstructionStreamIterator> instruction_stream_iterator;
+    Optional<size_t> program_counter;
     GCPtr<PrimitiveString> function_name;
     Value this_value;
-    bool is_strict_mode { false };
 
     GCPtr<Bytecode::Executable> executable;
 
@@ -70,11 +67,17 @@ public:
 
     Value& local(size_t index)
     {
-        return locals[index];
+        return registers_and_constants_and_locals[index];
     }
 
+    u32 passed_argument_count { 0 };
+    bool is_strict_mode { false };
+
     Vector<Value> arguments;
-    Vector<Value> locals;
+    Vector<Value> registers_and_constants_and_locals;
+    Vector<Bytecode::UnwindInfo> unwind_contexts;
+    Vector<Optional<size_t>> previously_scheduled_jumps;
+    Vector<GCPtr<Environment>> saved_lexical_environments;
 };
 
 struct StackTraceElement {

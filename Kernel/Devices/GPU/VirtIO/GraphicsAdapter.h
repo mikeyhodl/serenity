@@ -10,7 +10,7 @@
 #include <AK/DistinctNumeric.h>
 #include <Kernel/Bus/VirtIO/Device.h>
 #include <Kernel/Bus/VirtIO/Queue.h>
-#include <Kernel/Devices/GPU/GenericGraphicsAdapter.h>
+#include <Kernel/Devices/GPU/GPUDevice.h>
 #include <Kernel/Devices/GPU/VirtIO/Protocol.h>
 
 namespace Kernel {
@@ -31,14 +31,14 @@ namespace Kernel {
 class VirtIODisplayConnector;
 class VirtIOGPU3DDevice;
 class VirtIOGraphicsAdapter final
-    : public GenericGraphicsAdapter
+    : public GPUDevice
     , public VirtIO::Device {
     friend class VirtIODisplayConnector;
     friend class VirtIOGPU3DDevice;
 
 public:
     static ErrorOr<bool> probe(PCI::DeviceIdentifier const&);
-    static ErrorOr<NonnullLockRefPtr<GenericGraphicsAdapter>> create(PCI::DeviceIdentifier const&);
+    static ErrorOr<NonnullLockRefPtr<GPUDevice>> create(PCI::DeviceIdentifier const&);
 
     virtual ErrorOr<void> initialize_virtio_resources() override;
 
@@ -60,7 +60,7 @@ private:
             Graphics::VirtIOGPU::ResourceID resource_id { 0 };
         };
 
-        LockRefPtr<VirtIODisplayConnector> display_connector;
+        RefPtr<VirtIODisplayConnector> display_connector;
         PhysicalBuffer main_buffer;
         PhysicalBuffer back_buffer;
     };
@@ -114,7 +114,7 @@ private:
     // Note: Resource ID 0 is invalid, and we must not allocate 0 as the first resource ID.
     Atomic<u32> m_resource_id_counter { 1 };
     SpinlockProtected<Bitmap, LockRank::None> m_active_context_ids {};
-    LockRefPtr<VirtIOGPU3DDevice> m_3d_device;
+    RefPtr<VirtIOGPU3DDevice> m_3d_device;
     bool m_has_virgl_support { false };
 
     Spinlock<LockRank::None> m_operation_lock {};

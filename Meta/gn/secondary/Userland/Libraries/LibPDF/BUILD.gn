@@ -9,6 +9,7 @@ shared_library("LibPDF") {
     "Encoding.cpp",
     "Encryption.cpp",
     "Filter.cpp",
+    "Fonts/AdobeGlyphList.cpp",
     "Fonts/CFF.cpp",
     "Fonts/PDFFont.cpp",
     "Fonts/PS1FontProgram.cpp",
@@ -25,11 +26,13 @@ shared_library("LibPDF") {
     "Parser.cpp",
     "Reader.cpp",
     "Renderer.cpp",
+    "Shading.cpp",
     "Value.cpp",
   ]
   deps = [
     "//AK",
     "//Userland/Libraries/LibCompress",
+    "//Userland/Libraries/LibCore",
     "//Userland/Libraries/LibCrypto",
     "//Userland/Libraries/LibGfx",
     "//Userland/Libraries/LibIPC",

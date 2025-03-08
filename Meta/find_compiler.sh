@@ -19,10 +19,10 @@ is_supported_compiler() {
         [ "$BUILD_VERSION" -ge 14030022 ] && return 0
     elif $COMPILER --version 2>&1 | grep "clang" >/dev/null; then
         # Clang version check
-        [ "$MAJOR_VERSION" -ge 15 ] && return 0
+        [ "$MAJOR_VERSION" -ge 17 ] && return 0
     else
         # GCC version check
-        [ "$MAJOR_VERSION" -ge 12 ] && return 0
+        [ "$MAJOR_VERSION" -ge 13 ] && return 0
     fi
     return 1
 }
@@ -50,20 +50,20 @@ find_newest_compiler() {
 
 pick_host_compiler() {
     CC=${CC:-"cc"}
-    CXX=${CXX:-"cxx"}
+    CXX=${CXX:-"c++"}
 
     if is_supported_compiler "$CC" && is_supported_compiler "$CXX"; then
         return
     fi
 
-    find_newest_compiler clang clang-15 clang-16 /opt/homebrew/opt/llvm/bin/clang
+    find_newest_compiler clang clang-17 clang-18 /opt/homebrew/opt/llvm/bin/clang
     if is_supported_compiler "$HOST_COMPILER"; then
         export CC="${HOST_COMPILER}"
         export CXX="${HOST_COMPILER/clang/clang++}"
         return
     fi
 
-    find_newest_compiler egcc gcc gcc-12 gcc-13 /usr/local/bin/gcc-{12,13} /opt/homebrew/bin/gcc-{12,13}
+    find_newest_compiler egcc gcc gcc-13 gcc-14 /usr/local/bin/gcc-{13,14} /opt/homebrew/bin/gcc-{13,14}
     if is_supported_compiler "$HOST_COMPILER"; then
         export CC="${HOST_COMPILER}"
         export CXX="${HOST_COMPILER/gcc/g++}"
@@ -71,8 +71,8 @@ pick_host_compiler() {
     fi
 
     if [ "$(uname -s)" = "Darwin" ]; then
-        die "Please make sure that Xcode 14.3, Homebrew Clang 15, or higher is installed."
+        die "Please make sure that Xcode 14.3, Homebrew Clang 17, or higher is installed."
     else
-        die "Please make sure that GCC version 12, Clang version 15, or higher is installed."
+        die "Please make sure that GCC version 13, Clang version 17, or higher is installed."
     fi
 }

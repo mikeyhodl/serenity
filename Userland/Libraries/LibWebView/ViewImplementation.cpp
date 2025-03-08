@@ -18,13 +18,13 @@ ViewImplementation::ViewImplementation()
 {
     m_backing_store_shrink_timer = Core::Timer::create_single_shot(3000, [this] {
         resize_backing_stores_if_needed(WindowResizeInProgress::No);
-    }).release_value_but_fixme_should_propagate_errors();
+    });
 
     m_repeated_crash_timer = Core::Timer::create_single_shot(1000, [this] {
         // Reset the "crashing a lot" counter after 1 second in case we just
         // happen to be visiting crashy websites a lot.
         this->m_crash_count = 0;
-    }).release_value_but_fixme_should_propagate_errors();
+    });
 
     on_request_file = [this](auto const& path, auto request_id) {
         auto file = Core::File::open(path, Core::File::OpenMode::Read);
@@ -32,7 +32,7 @@ ViewImplementation::ViewImplementation()
         if (file.is_error())
             client().async_handle_file_return(page_id(), file.error().code(), {}, request_id);
         else
-            client().async_handle_file_return(page_id(), 0, IPC::File(*file.value()), request_id);
+            client().async_handle_file_return(page_id(), 0, IPC::File::adopt_file(file.release_value()), request_id);
     };
 }
 
@@ -90,11 +90,21 @@ void ViewImplementation::load_empty_document()
     load_html(""sv);
 }
 
+void ViewImplementation::reload()
+{
+    client().async_reload(page_id());
+}
+
+void ViewImplementation::traverse_the_history_by_delta(int delta)
+{
+    client().async_traverse_the_history_by_delta(page_id(), delta);
+}
+
 void ViewImplementation::zoom_in()
 {
     if (m_zoom_level >= ZOOM_MAX_LEVEL)
         return;
-    m_zoom_level += ZOOM_STEP;
+    m_zoom_level = round_to<int>((m_zoom_level + ZOOM_STEP) * 100) / 100.0f;
     update_zoom();
 }
 
@@ -102,7 +112,7 @@ void ViewImplementation::zoom_out()
 {
     if (m_zoom_level <= ZOOM_MIN_LEVEL)
         return;
-    m_zoom_level -= ZOOM_STEP;
+    m_zoom_level = round_to<int>((m_zoom_level - ZOOM_STEP) * 100) / 100.0f;
     update_zoom();
 }
 
@@ -125,26 +135,59 @@ void ViewImplementation::enqueue_input_event(Web::InputEvent event)
         },
         [this](Web::MouseEvent const& event) {
             client().async_mouse_event(m_client_state.page_index, event.clone_without_chrome_data());
+        },
+        [this](Web::DragEvent& event) {
+            auto cloned_event = event.clone_without_chrome_data();
+            cloned_event.files = move(event.files);
+
+            client().async_drag_event(m_client_state.page_index, move(cloned_event));
         });
 }
 
-void ViewImplementation::did_finish_handling_input_event(Badge<WebContentClient>, bool event_was_accepted)
+void ViewImplementation::did_finish_handling_input_event(Badge<WebContentClient>, Web::EventResult event_result)
 {
     auto event = m_pending_input_events.dequeue();
 
-    if (!event_was_accepted && event.has<Web::KeyEvent>()) {
-        auto const& key_event = event.get<Web::KeyEvent>();
+    if (event_result == Web::EventResult::Handled)
+        return;
 
-        // Here we handle events that were not consumed or cancelled by the WebContent. Propagate the event back
-        // to the concrete view implementation.
-        if (on_finish_handling_key_event)
-            on_finish_handling_key_event(key_event);
-    }
+    // Here we handle events that were not consumed or cancelled by the WebContent. Propagate the event back
+    // to the concrete view implementation.
+    event.visit(
+        [this](Web::KeyEvent const& event) {
+            if (on_finish_handling_key_event)
+                on_finish_handling_key_event(event);
+        },
+        [this](Web::DragEvent const& event) {
+            if (on_finish_handling_drag_event)
+                on_finish_handling_drag_event(event);
+        },
+        [](auto const&) {});
 }
 
 void ViewImplementation::set_preferred_color_scheme(Web::CSS::PreferredColorScheme color_scheme)
 {
     client().async_set_preferred_color_scheme(page_id(), color_scheme);
+}
+
+void ViewImplementation::set_preferred_contrast(Web::CSS::PreferredContrast contrast)
+{
+    client().async_set_preferred_contrast(page_id(), contrast);
+}
+
+void ViewImplementation::set_preferred_motion(Web::CSS::PreferredMotion motion)
+{
+    client().async_set_preferred_motion(page_id(), motion);
+}
+
+void ViewImplementation::set_preferred_languages(Vector<String> preferred_languages)
+{
+    client().async_set_preferred_languages(page_id(), move(preferred_languages));
+}
+
+void ViewImplementation::set_enable_do_not_track(bool enable)
+{
+    client().async_set_enable_do_not_track(page_id(), enable);
 }
 
 ByteString ViewImplementation::selected_text()
@@ -163,6 +206,26 @@ Optional<String> ViewImplementation::selected_text_with_whitespace_collapsed()
 void ViewImplementation::select_all()
 {
     client().async_select_all(page_id());
+}
+
+void ViewImplementation::paste(String const& text)
+{
+    client().async_paste(page_id(), text);
+}
+
+void ViewImplementation::find_in_page(String const& query, CaseSensitivity case_sensitivity)
+{
+    client().async_find_in_page(page_id(), query, case_sensitivity);
+}
+
+void ViewImplementation::find_in_page_next_match()
+{
+    client().async_find_in_page_next_match(page_id());
+}
+
+void ViewImplementation::find_in_page_previous_match()
+{
+    client().async_find_in_page_previous_match(page_id());
 }
 
 void ViewImplementation::get_source()
@@ -240,6 +303,16 @@ void ViewImplementation::get_dom_node_html(i32 node_id)
     client().async_get_dom_node_html(page_id(), node_id);
 }
 
+void ViewImplementation::list_style_sheets()
+{
+    client().async_list_style_sheets(page_id());
+}
+
+void ViewImplementation::request_style_sheet_source(Web::CSS::StyleSheetIdentifier const& identifier)
+{
+    client().async_request_style_sheet_source(page_id(), identifier);
+}
+
 void ViewImplementation::debug_request(ByteString const& request, ByteString const& argument)
 {
     client().async_debug_request(page_id(), request, argument);
@@ -285,9 +358,9 @@ void ViewImplementation::file_picker_closed(Vector<Web::HTML::SelectedFile> sele
     client().async_file_picker_closed(page_id(), move(selected_files));
 }
 
-void ViewImplementation::select_dropdown_closed(Optional<String> value)
+void ViewImplementation::select_dropdown_closed(Optional<u32> const& selected_item_id)
 {
-    client().async_select_dropdown_closed(page_id(), value);
+    client().async_select_dropdown_closed(page_id(), selected_item_id);
 }
 
 void ViewImplementation::toggle_media_play_state()
@@ -310,6 +383,42 @@ void ViewImplementation::toggle_media_controls_state()
     client().async_toggle_media_controls_state(page_id());
 }
 
+void ViewImplementation::toggle_page_mute_state()
+{
+    m_mute_state = Web::HTML::invert_mute_state(m_mute_state);
+    client().async_toggle_page_mute_state(page_id());
+}
+
+void ViewImplementation::did_change_audio_play_state(Badge<WebContentClient>, Web::HTML::AudioPlayState play_state)
+{
+    bool state_changed = false;
+
+    switch (play_state) {
+    case Web::HTML::AudioPlayState::Paused:
+        if (--m_number_of_elements_playing_audio == 0) {
+            m_audio_play_state = play_state;
+            state_changed = true;
+        }
+        break;
+
+    case Web::HTML::AudioPlayState::Playing:
+        if (m_number_of_elements_playing_audio++ == 0) {
+            m_audio_play_state = play_state;
+            state_changed = true;
+        }
+        break;
+    }
+
+    if (state_changed && on_audio_play_state_changed)
+        on_audio_play_state_changed(m_audio_play_state);
+}
+
+void ViewImplementation::did_update_navigation_buttons_state(Badge<WebContentClient>, bool back_enabled, bool forward_enabled) const
+{
+    if (on_navigation_buttons_state_changed)
+        on_navigation_buttons_state_changed(back_enabled, forward_enabled);
+}
+
 void ViewImplementation::handle_resize()
 {
     resize_backing_stores_if_needed(WindowResizeInProgress::Yes);
@@ -326,18 +435,18 @@ void ViewImplementation::resize_backing_stores_if_needed(WindowResizeInProgress 
 
     m_client_state.has_usable_bitmap = false;
 
-    auto viewport_rect = this->viewport_rect();
-    if (viewport_rect.is_empty())
+    auto viewport_size = this->viewport_size();
+    if (viewport_size.is_empty())
         return;
 
     Web::DevicePixelSize minimum_needed_size;
 
     if (window_resize_in_progress == WindowResizeInProgress::Yes) {
         // Pad the minimum needed size so that we don't have to keep reallocating backing stores while the window is being resized.
-        minimum_needed_size = { viewport_rect.width() + 256, viewport_rect.height() + 256 };
+        minimum_needed_size = { viewport_size.width() + 256, viewport_size.height() + 256 };
     } else {
         // If we're not in the middle of a resize, we can shrink the backing store size to match the viewport size.
-        minimum_needed_size = viewport_rect.size();
+        minimum_needed_size = viewport_size;
         m_client_state.front_bitmap = {};
         m_client_state.back_bitmap = {};
     }
@@ -351,7 +460,7 @@ void ViewImplementation::resize_backing_stores_if_needed(WindowResizeInProgress 
                 backing_store.bitmap = new_bitmap_or_error.release_value();
                 backing_store.id = m_client_state.next_bitmap_id++;
             }
-            backing_store.last_painted_size = viewport_rect.size();
+            backing_store.last_painted_size = viewport_size;
         }
     };
 
@@ -364,7 +473,7 @@ void ViewImplementation::resize_backing_stores_if_needed(WindowResizeInProgress 
     if (front_bitmap.id != old_front_bitmap_id || back_bitmap.id != old_back_bitmap_id) {
         client().async_add_backing_store(page_id(), front_bitmap.id, front_bitmap.bitmap->to_shareable_bitmap(), back_bitmap.id,
             back_bitmap.bitmap->to_shareable_bitmap());
-        client().async_set_viewport_rect(page_id(), viewport_rect);
+        client().async_set_viewport_size(page_id(), viewport_size);
     }
 }
 
@@ -406,7 +515,7 @@ void ViewImplementation::handle_web_content_process_crash()
 static ErrorOr<LexicalPath> save_screenshot(Gfx::ShareableBitmap const& bitmap)
 {
     if (!bitmap.is_valid())
-        return Error::from_string_view("Failed to take a screenshot"sv);
+        return Error::from_string_literal("Failed to take a screenshot");
 
     LexicalPath path { Core::StandardPaths::downloads_directory() };
     path = path.append(TRY(Core::DateTime::now().to_string("screenshot-%Y-%m-%d-%H-%M-%S.png"sv)));
@@ -480,15 +589,40 @@ void ViewImplementation::did_receive_screenshot(Badge<WebContentClient>, Gfx::Sh
     m_pending_screenshot = nullptr;
 }
 
+NonnullRefPtr<Core::Promise<String>> ViewImplementation::request_internal_page_info(PageInfoType type)
+{
+    auto promise = Core::Promise<String>::construct();
+
+    if (m_pending_info_request) {
+        // For simplicitly, only allow one info request at a time for now.
+        promise->reject(Error::from_string_literal("A page info request is already in progress"));
+        return promise;
+    }
+
+    m_pending_info_request = promise;
+    client().async_request_internal_page_info(page_id(), type);
+
+    return promise;
+}
+
+void ViewImplementation::did_receive_internal_page_info(Badge<WebContentClient>, PageInfoType, String const& info)
+{
+    VERIFY(m_pending_info_request);
+
+    m_pending_info_request->resolve(String { info });
+    m_pending_info_request = nullptr;
+}
+
 ErrorOr<LexicalPath> ViewImplementation::dump_gc_graph()
 {
-    auto gc_graph_json = client().dump_gc_graph(page_id());
+    auto promise = request_internal_page_info(PageInfoType::GCGraph);
+    auto gc_graph_json = TRY(promise->await());
 
     LexicalPath path { Core::StandardPaths::tempfile_directory() };
     path = path.append(TRY(Core::DateTime::now().to_string("gc-graph-%Y-%m-%d-%H-%M-%S.json"sv)));
 
-    auto screenshot_file = TRY(Core::File::open(path.string(), Core::File::OpenMode::Write));
-    TRY(screenshot_file->write_until_depleted(gc_graph_json.bytes()));
+    auto dump_file = TRY(Core::File::open(path.string(), Core::File::OpenMode::Write));
+    TRY(dump_file->write_until_depleted(gc_graph_json.bytes()));
 
     return path;
 }
@@ -500,8 +634,8 @@ void ViewImplementation::set_user_style_sheet(String source)
 
 void ViewImplementation::use_native_user_style_sheet()
 {
-    extern StringView native_stylesheet_source;
-    set_user_style_sheet(MUST(String::from_utf8(native_stylesheet_source)));
+    extern String native_stylesheet_source;
+    set_user_style_sheet(native_stylesheet_source);
 }
 
 void ViewImplementation::enable_inspector_prototype()

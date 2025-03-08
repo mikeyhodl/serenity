@@ -23,6 +23,8 @@ class HTMLOutputElement final
 public:
     virtual ~HTMLOutputElement() override;
 
+    JS::NonnullGCPtr<DOM::DOMTokenList> html_for();
+
     String const& type() const
     {
         static String const output = "output"_string;
@@ -50,6 +52,7 @@ public:
     virtual bool is_labelable() const override { return true; }
 
     virtual void reset_algorithm() override;
+    virtual void clear_algorithm() override;
 
     // https://www.w3.org/TR/html-aria/#el-output
     virtual Optional<ARIA::Role> default_role() const override { return ARIA::Role::status; }
@@ -58,6 +61,11 @@ private:
     HTMLOutputElement(DOM::Document&, DOM::QualifiedName);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor& visitor) override;
+
+    virtual void form_associated_element_attribute_changed(FlyString const& name, Optional<String> const& value) override;
+
+    JS::GCPtr<DOM::DOMTokenList> m_html_for;
 
     Optional<String> m_default_value_override {};
 };

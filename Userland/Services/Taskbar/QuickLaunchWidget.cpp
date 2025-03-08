@@ -61,22 +61,7 @@ OwnPtr<QuickLaunchEntry> QuickLaunchEntry::create_from_path(StringView path)
 
 ErrorOr<void> QuickLaunchEntryAppFile::launch() const
 {
-    auto executable = m_app_file->executable();
-
-    pid_t pid = TRY(Core::System::fork());
-    if (pid == 0) {
-        if (chdir(Core::StandardPaths::home_directory().characters()) < 0) {
-            perror("chdir");
-            exit(1);
-        }
-        if (m_app_file->run_in_terminal())
-            execl("/bin/Terminal", "Terminal", "-e", executable.characters(), nullptr);
-        else
-            execl(executable.characters(), executable.characters(), nullptr);
-        perror("execl");
-        VERIFY_NOT_REACHED();
-    } else
-        TRY(Core::System::disown(pid));
+    TRY(m_app_file->spawn_with_escalation());
     return {};
 }
 
@@ -167,8 +152,7 @@ void QuickLaunchWidget::config_string_did_change(StringView domain, StringView g
 
 void QuickLaunchWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -179,7 +163,7 @@ void QuickLaunchWidget::drop_event(GUI::DropEvent& event)
     if (event.mime_data().has_urls()) {
         auto urls = event.mime_data().urls();
         for (auto& url : urls) {
-            auto path = url.serialize_path();
+            auto path = URL::percent_decode(url.serialize_path());
             auto entry = QuickLaunchEntry::create_from_path(path);
             if (entry) {
                 auto entry_name = entry->name();

@@ -6,12 +6,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLProgressElementPrototype.h>
+#include <LibWeb/CSS/StyleProperties.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/HTML/HTMLProgressElement.h>
 #include <LibWeb/HTML/Numbers.h>
 #include <LibWeb/Namespace.h>
+#include <LibWeb/Page/Page.h>
 
 namespace Web::HTML {
 
@@ -51,17 +54,18 @@ WebIDL::ExceptionOr<void> HTMLProgressElement::set_value(double value)
     if (value < 0)
         value = 0;
 
-    TRY(set_attribute(HTML::AttributeNames::value, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::value, String::number(value)));
     update_progress_value_element();
     return {};
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max
-double HTMLProgressElement::max() const
+WebIDL::Double HTMLProgressElement::max() const
 {
     if (auto max_string = get_attribute(HTML::AttributeNames::max); max_string.has_value()) {
         if (auto max = parse_floating_point_number(*max_string); max.has_value())
-            return AK::max(*max, 0);
+            if (*max > 0)
+                return *max;
     }
     return 1;
 }
@@ -69,9 +73,9 @@ double HTMLProgressElement::max() const
 WebIDL::ExceptionOr<void> HTMLProgressElement::set_max(double value)
 {
     if (value <= 0)
-        value = 1;
+        return {};
 
-    TRY(set_attribute(HTML::AttributeNames::max, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::max, String::number(value)));
     update_progress_value_element();
     return {};
 }
@@ -96,7 +100,7 @@ void HTMLProgressElement::removed_from(DOM::Node*)
 
 void HTMLProgressElement::create_shadow_tree_if_needed()
 {
-    if (shadow_root_internal())
+    if (shadow_root())
         return;
 
     auto shadow_root = heap().allocate<DOM::ShadowRoot>(realm(), document(), *this, Bindings::ShadowRootMode::Closed);
@@ -116,6 +120,19 @@ void HTMLProgressElement::update_progress_value_element()
 {
     if (m_progress_value_element)
         MUST(m_progress_value_element->style_for_bindings()->set_property(CSS::PropertyID::Width, MUST(String::formatted("{}%", position() * 100))));
+}
+
+void HTMLProgressElement::computed_css_values_changed()
+{
+    auto palette = document().page().palette();
+    auto accent_color = palette.color(ColorRole::Accent).to_string();
+
+    auto accent_color_property = computed_css_values()->property(CSS::PropertyID::AccentColor);
+    if (accent_color_property->has_color())
+        accent_color = accent_color_property->to_string();
+
+    if (m_progress_value_element)
+        MUST(m_progress_value_element->style_for_bindings()->set_property(CSS::PropertyID::BackgroundColor, accent_color));
 }
 
 }

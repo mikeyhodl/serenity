@@ -9,8 +9,8 @@
 #include <LibGfx/Bitmap.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/VM.h>
-#include <LibVideo/PlaybackManager.h>
-#include <LibVideo/Track.h>
+#include <LibMedia/PlaybackManager.h>
+#include <LibMedia/Track.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/VideoTrackPrototype.h>
 #include <LibWeb/DOM/Event.h>
@@ -26,7 +26,7 @@ JS_DEFINE_ALLOCATOR(VideoTrack);
 
 static IDAllocator s_video_track_id_allocator;
 
-VideoTrack::VideoTrack(JS::Realm& realm, JS::NonnullGCPtr<HTMLMediaElement> media_element, NonnullOwnPtr<Video::PlaybackManager> playback_manager)
+VideoTrack::VideoTrack(JS::Realm& realm, JS::NonnullGCPtr<HTMLMediaElement> media_element, NonnullOwnPtr<Media::PlaybackManager> playback_manager)
     : PlatformObject(realm)
     , m_media_element(media_element)
     , m_playback_manager(move(playback_manager))
@@ -42,7 +42,7 @@ VideoTrack::VideoTrack(JS::Realm& realm, JS::NonnullGCPtr<HTMLMediaElement> medi
 
     m_playback_manager->on_playback_state_change = [this]() {
         switch (m_playback_manager->get_state()) {
-        case Video::PlaybackState::Stopped: {
+        case Media::PlaybackState::Stopped: {
             auto playback_position_ms = static_cast<double>(duration().to_milliseconds());
             m_media_element->set_current_playback_position(playback_position_ms / 1000.0);
             break;
@@ -54,13 +54,13 @@ VideoTrack::VideoTrack(JS::Realm& realm, JS::NonnullGCPtr<HTMLMediaElement> medi
     };
 
     m_playback_manager->on_decoder_error = [this](auto error) {
-        auto error_message = String::from_utf8(error.description()).release_value_but_fixme_should_propagate_errors();
-        m_media_element->set_decoder_error(move(error_message)).release_value_but_fixme_should_propagate_errors();
+        auto error_message = MUST(String::from_utf8(error.description()));
+        m_media_element->set_decoder_error(move(error_message));
     };
 
     m_playback_manager->on_fatal_playback_error = [this](auto error) {
-        auto error_message = String::from_utf8(error.string_literal()).release_value_but_fixme_should_propagate_errors();
-        m_media_element->set_decoder_error(move(error_message)).release_value_but_fixme_should_propagate_errors();
+        auto error_message = MUST(String::from_utf8(error.string_literal()));
+        m_media_element->set_decoder_error(move(error_message));
     };
 }
 
@@ -78,7 +78,7 @@ void VideoTrack::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(VideoTrack);
 
     auto id = s_video_track_id_allocator.allocate();
-    m_id = MUST(String::number(id));
+    m_id = String::number(id);
 }
 
 void VideoTrack::visit_edges(Cell::Visitor& visitor)
@@ -98,24 +98,29 @@ void VideoTrack::pause_video(Badge<HTMLVideoElement>)
     m_playback_manager->pause_playback();
 }
 
-Duration VideoTrack::position() const
+void VideoTrack::stop_video(Badge<HTMLVideoElement>)
+{
+    m_playback_manager->terminate_playback();
+}
+
+AK::Duration VideoTrack::position() const
 {
     return m_playback_manager->current_playback_time();
 }
 
-Duration VideoTrack::duration() const
+AK::Duration VideoTrack::duration() const
 {
     return m_playback_manager->selected_video_track().video_data().duration;
 }
 
-void VideoTrack::seek(Duration position, MediaSeekMode seek_mode)
+void VideoTrack::seek(AK::Duration position, MediaSeekMode seek_mode)
 {
     switch (seek_mode) {
     case MediaSeekMode::Accurate:
-        m_playback_manager->seek_to_timestamp(position, Video::PlaybackManager::SeekMode::Accurate);
+        m_playback_manager->seek_to_timestamp(position, Media::PlaybackManager::SeekMode::Accurate);
         break;
     case MediaSeekMode::ApproximateForSpeed:
-        m_playback_manager->seek_to_timestamp(position, Video::PlaybackManager::SeekMode::Fast);
+        m_playback_manager->seek_to_timestamp(position, Media::PlaybackManager::SeekMode::Fast);
         break;
     }
 }
@@ -141,7 +146,7 @@ void VideoTrack::set_selected(bool selected)
     // no longer in a VideoTrackList object, then the track being selected or unselected has no effect beyond changing the value of
     // the attribute on the VideoTrack object.)
     if (m_video_track_list) {
-        for (auto video_track : m_video_track_list->video_tracks({})) {
+        for (auto video_track : m_video_track_list->video_tracks()) {
             if (video_track.ptr() != this)
                 video_track->m_selected = false;
         }

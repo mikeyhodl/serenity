@@ -8,7 +8,6 @@
 #include "MainWidget.h"
 #include <AK/Optional.h>
 #include <AK/StringBuilder.h>
-#include <Applications/TextEditor/TextEditorWindowGML.h>
 #include <LibCMake/CMakeCache/SyntaxHighlighter.h>
 #include <LibCMake/SyntaxHighlighter.h>
 #include <LibConfig/Client.h>
@@ -35,23 +34,22 @@
 #include <LibGUI/Toolbar.h>
 #include <LibGUI/ToolbarContainer.h>
 #include <LibGUI/VimEditingEngine.h>
+#include <LibGemini/Document.h>
 #include <LibGfx/Font/Font.h>
 #include <LibJS/SyntaxHighlighter.h>
 #include <LibMarkdown/Document.h>
 #include <LibMarkdown/SyntaxHighlighter.h>
 #include <LibSQL/AST/SyntaxHighlighter.h>
+#include <LibShell/SyntaxHighlighter.h>
 #include <LibURL/URL.h>
 #include <LibWeb/CSS/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWebView/OutOfProcessWebView.h>
-#include <Shell/SyntaxHighlighter.h>
 
 namespace TextEditor {
 
-MainWidget::MainWidget()
+ErrorOr<void> MainWidget::initialize()
 {
-    load_from_gml(text_editor_window_gml).release_value_but_fixme_should_propagate_errors();
-
     m_toolbar = *find_descendant_of_type_named<GUI::Toolbar>("toolbar");
     m_toolbar_container = *find_descendant_of_type_named<GUI::ToolbarContainer>("toolbar_container");
 
@@ -337,6 +335,8 @@ MainWidget::MainWidget()
 
     m_toolbar->add_action(m_editor->undo_action());
     m_toolbar->add_action(m_editor->redo_action());
+
+    return {};
 }
 
 WebView::OutOfProcessWebView& MainWidget::ensure_web_view()
@@ -430,9 +430,16 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         },
         this);
 
+    m_gemtext_preview_action = GUI::Action::create_checkable(
+        "&Gemtext Preview", [this](auto&) {
+            set_preview_mode(PreviewMode::Gemtext);
+        },
+        this);
+
     m_preview_actions.add_action(*m_no_preview_action);
     m_preview_actions.add_action(*m_markdown_preview_action);
     m_preview_actions.add_action(*m_html_preview_action);
+    m_preview_actions.add_action(*m_gemtext_preview_action);
     m_preview_actions.set_exclusive(true);
 
     m_layout_toolbar_action = GUI::Action::create_checkable("&Toolbar", [&](auto& action) {
@@ -589,6 +596,7 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
     view_menu->add_action(*m_no_preview_action);
     view_menu->add_action(*m_markdown_preview_action);
     view_menu->add_action(*m_html_preview_action);
+    view_menu->add_action(*m_gemtext_preview_action);
     m_no_preview_action->set_checked(true);
     view_menu->add_separator();
 
@@ -780,6 +788,8 @@ void MainWidget::set_path(StringView path)
             set_preview_mode(PreviewMode::Markdown);
         else if (m_extension == "html" || m_extension == "htm")
             set_preview_mode(PreviewMode::HTML);
+        else if (m_extension == "gmi")
+            set_preview_mode(PreviewMode::Gemtext);
         else
             set_preview_mode(PreviewMode::None);
     }
@@ -836,8 +846,7 @@ bool MainWidget::request_close()
 
 void MainWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_urls())
         event.accept();
 }
 
@@ -857,7 +866,7 @@ void MainWidget::drop_event(GUI::DropEvent& event)
         if (!request_close())
             return;
 
-        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window(), urls.first().serialize_path());
+        auto response = FileSystemAccessClient::Client::the().request_file_read_only_approved(window(), URL::percent_decode(urls.first().serialize_path()));
         if (response.is_error())
             return;
         if (auto result = read_file(response.value().filename(), response.value().stream()); result.is_error())
@@ -888,6 +897,10 @@ void MainWidget::set_preview_mode(PreviewMode mode)
         m_markdown_preview_action->set_checked(true);
         set_web_view_visible(true);
         update_markdown_preview();
+    } else if (m_preview_mode == PreviewMode::Gemtext) {
+        m_gemtext_preview_action->set_checked(true);
+        set_web_view_visible(true);
+        update_gemtext_preview();
     } else {
         m_no_preview_action->set_checked(true);
         set_web_view_visible(false);
@@ -903,6 +916,9 @@ void MainWidget::update_preview()
     case PreviewMode::HTML:
         update_html_preview();
         break;
+    case PreviewMode::Gemtext:
+        update_gemtext_preview();
+        break;
     default:
         break;
     }
@@ -912,18 +928,23 @@ void MainWidget::update_markdown_preview()
 {
     auto document = Markdown::Document::parse(m_editor->text());
     if (document) {
+        // FIXME: Retain original scroll after loading new preview
         auto html = document->render_to_html();
-        auto current_scroll_pos = m_page_view->visible_content_rect();
         m_page_view->load_html(html);
-        m_page_view->scroll_into_view(current_scroll_pos, true, true);
     }
 }
 
 void MainWidget::update_html_preview()
 {
-    auto current_scroll_pos = m_page_view->visible_content_rect();
+    // FIXME: Retain original scroll after loading new preview
     m_page_view->load_html(m_editor->text());
-    m_page_view->scroll_into_view(current_scroll_pos, true, true);
+}
+
+void MainWidget::update_gemtext_preview()
+{
+    auto document = Gemini::Document::parse(m_editor->text(), {});
+    auto html = document->render_to_html();
+    m_page_view->load_html(html);
 }
 
 void MainWidget::update_statusbar()

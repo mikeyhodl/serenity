@@ -11,9 +11,6 @@
   "checked": {
     "argument": ""
   },
-  "closed": {
-    "argument": ""
-  },
   "defined": {
     "argument": ""
   },
@@ -44,6 +41,9 @@
   "focus-within": {
     "argument": ""
   },
+  "has": {
+    "argument": "<forgiving-relative-selector-list>"
+  },
   "host": {
     "argument": "<compound-selector>?"
   },
@@ -69,6 +69,9 @@
     "argument": ""
   },
   "local-link": {
+    "argument": ""
+  },
+  "modal": {
     "argument": ""
   },
   "muted": {

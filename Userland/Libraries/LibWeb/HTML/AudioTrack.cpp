@@ -37,6 +37,10 @@ AudioTrack::AudioTrack(JS::Realm& realm, JS::NonnullGCPtr<HTMLMediaElement> medi
         auto playback_position = static_cast<double>(position.to_milliseconds()) / 1000.0;
         m_media_element->set_current_playback_position(playback_position);
     };
+
+    m_audio_plugin->on_decoder_error = [this](String error_message) {
+        m_media_element->set_decoder_error(move(error_message));
+    };
 }
 
 AudioTrack::~AudioTrack()
@@ -53,7 +57,7 @@ void AudioTrack::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(AudioTrack);
 
     auto id = s_audio_track_id_allocator.allocate();
-    m_id = MUST(String::number(id));
+    m_id = String::number(id);
 }
 
 void AudioTrack::play(Badge<HTMLAudioElement>)
@@ -66,7 +70,7 @@ void AudioTrack::pause(Badge<HTMLAudioElement>)
     m_audio_plugin->pause_playback();
 }
 
-Duration AudioTrack::duration()
+AK::Duration AudioTrack::duration()
 {
     return m_audio_plugin->duration();
 }

@@ -1,3 +1,5 @@
+#import <CSS/GeneratedCSSStyleProperties.idl>
+
 // https://drafts.csswg.org/cssom/#cssstyledeclaration
 [Exposed=Window]
 interface CSSStyleDeclaration {
@@ -13,7 +15,10 @@ interface CSSStyleDeclaration {
     [CEReactions] undefined setProperty(CSSOMString property, [LegacyNullToEmptyString] CSSOMString value, optional [LegacyNullToEmptyString] CSSOMString priority = "");
     [CEReactions] CSSOMString removeProperty(CSSOMString property);
 
-    // FIXME: readonly attribute CSSRule? parentRule;
-    // FIXME: [CEReactions] attribute [LegacyNullToEmptyString] CSSOMString cssFloat;
+    readonly attribute CSSRule? parentRule;
+
+    [CEReactions, LegacyNullToEmptyString] attribute CSSOMString cssFloat;
 
 };
+
+CSSStyleDeclaration includes GeneratedCSSStyleProperties;

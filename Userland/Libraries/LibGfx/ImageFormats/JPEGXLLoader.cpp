@@ -10,70 +10,11 @@
 #include <AK/String.h>
 #include <LibCompress/Brotli.h>
 #include <LibGfx/ImageFormats/ExifOrientedBitmap.h>
+#include <LibGfx/ImageFormats/JPEGXLCommon.h>
+#include <LibGfx/ImageFormats/JPEGXLEntropyDecoder.h>
 #include <LibGfx/ImageFormats/JPEGXLLoader.h>
 
 namespace Gfx {
-
-/// 4.2 - Functions
-static ALWAYS_INLINE i32 unpack_signed(u32 u)
-{
-    if (u % 2 == 0)
-        return static_cast<i32>(u / 2);
-    return -static_cast<i32>((u + 1) / 2);
-}
-///
-
-/// B.2 - Field types
-// This is defined as a macro in order to get lazy-evaluated parameter
-// Note that the lambda will capture your context by reference.
-#define U32(d0, d1, d2, d3)                            \
-    ({                                                 \
-        u8 const selector = TRY(stream.read_bits(2));  \
-        auto value = [&, selector]() -> ErrorOr<u32> { \
-            if (selector == 0)                         \
-                return (d0);                           \
-            if (selector == 1)                         \
-                return (d1);                           \
-            if (selector == 2)                         \
-                return (d2);                           \
-            if (selector == 3)                         \
-                return (d3);                           \
-            VERIFY_NOT_REACHED();                      \
-        }();                                           \
-        TRY(value);                                    \
-    })
-
-static ALWAYS_INLINE ErrorOr<u64> U64(LittleEndianInputBitStream& stream)
-{
-    u8 const selector = TRY(stream.read_bits(2));
-    if (selector == 0)
-        return 0;
-    if (selector == 1)
-        return 1 + TRY(stream.read_bits(4));
-    if (selector == 2)
-        return 17 + TRY(stream.read_bits(8));
-
-    VERIFY(selector == 3);
-
-    u64 value = TRY(stream.read_bits(12));
-    u8 shift = 12;
-    while (TRY(stream.read_bits(1)) == 1) {
-        if (shift == 60) {
-            value += TRY(stream.read_bits(4)) << shift;
-            break;
-        }
-        value += TRY(stream.read_bits(8)) << shift;
-        shift += 8;
-    }
-
-    return value;
-}
-
-template<Enum E>
-ErrorOr<E> read_enum(LittleEndianInputBitStream& stream)
-{
-    return static_cast<E>(U32(0, 1, 2 + TRY(stream.read_bits(4)), 18 + TRY(stream.read_bits(6))));
-}
 
 // This is not specified
 static ErrorOr<String> read_string(LittleEndianInputBitStream& stream)
@@ -83,7 +24,6 @@ static ErrorOr<String> read_string(LittleEndianInputBitStream& stream)
     TRY(stream.read_until_filled(string_buffer.span()));
     return String::from_utf8(StringView { string_buffer.span() });
 }
-///
 
 /// D.2 - Image dimensions
 struct SizeHeader {
@@ -592,14 +532,42 @@ static ErrorOr<BlendingInfo> read_blending_info(LittleEndianInputBitStream& stre
 }
 ///
 
+// From FrameHeader, but used in RestorationFilter
+enum class Encoding {
+    kVarDCT = 0,
+    kModular = 1,
+};
+
 /// J.1 - General
 struct RestorationFilter {
     bool gab { true };
+    bool gab_custom { false };
+    f32 gab_x_weight1 { 0.115169525 };
+    f32 gab_x_weight2 { 0.061248592 };
+    f32 gab_y_weight1 { 0.115169525 };
+    f32 gab_y_weight2 { 0.061248592 };
+    f32 gab_b_weight1 { 0.115169525 };
+    f32 gab_b_weight2 { 0.061248592 };
+
     u8 epf_iters { 2 };
+
+    bool epf_sharp_custom { false };
+    Array<f32, 8> epf_sharp_lut { 0, 1. / 7, 2. / 7, 3. / 7, 4. / 7, 5. / 7, 6. / 7, 1 };
+
+    bool epf_weight_custom { false };
+    Array<f32, 3> epf_channel_scale { 40.0, 5.0, 3.5 };
+
+    bool epf_sigma_custom { false };
+    f32 epf_quant_mul { 0.46 };
+    f32 epf_pass0_sigma_scale { 0.9 };
+    f32 epf_pass2_sigma_scale { 6.5 };
+    f32 epf_border_sad_mul { 2. / 3 };
+    f32 epf_sigma_for_modular { 1.0 };
+
     Extensions extensions;
 };
 
-static ErrorOr<RestorationFilter> read_restoration_filter(LittleEndianInputBitStream& stream)
+static ErrorOr<RestorationFilter> read_restoration_filter(LittleEndianInputBitStream& stream, Encoding encoding)
 {
     RestorationFilter restoration_filter;
 
@@ -609,12 +577,29 @@ static ErrorOr<RestorationFilter> read_restoration_filter(LittleEndianInputBitSt
         restoration_filter.gab = TRY(stream.read_bit());
 
         if (restoration_filter.gab) {
-            TODO();
+            restoration_filter.gab_custom = TRY(stream.read_bit());
+            if (restoration_filter.gab_custom) {
+                return Error::from_string_literal("JPEGXLLoader: Implement custom restoration filters");
+            }
         }
 
         restoration_filter.epf_iters = TRY(stream.read_bits(2));
         if (restoration_filter.epf_iters != 0) {
-            TODO();
+            if (encoding == Encoding::kVarDCT) {
+                restoration_filter.epf_sharp_custom = TRY(stream.read_bit());
+                if (restoration_filter.epf_sharp_custom)
+                    return Error::from_string_literal("JPEGXLLoader: Implement custom restoration filters");
+            }
+            restoration_filter.epf_weight_custom = TRY(stream.read_bit());
+            if (restoration_filter.epf_sharp_custom)
+                return Error::from_string_literal("JPEGXLLoader: Implement custom restoration filters");
+
+            restoration_filter.epf_sigma_custom = TRY(stream.read_bit());
+            if (restoration_filter.epf_sharp_custom)
+                return Error::from_string_literal("JPEGXLLoader: Implement custom restoration filters");
+
+            if (encoding == Encoding::kModular)
+                return Error::from_string_literal("JPEGXLLoader: Implement custom restoration filters");
         }
 
         restoration_filter.extensions = TRY(read_extensions(stream));
@@ -652,11 +637,6 @@ struct FrameHeader {
         kSkipProgressive = 3,
     };
 
-    enum class Encoding {
-        kVarDCT = 0,
-        kModular = 1,
-    };
-
     enum class Flags {
         None = 0,
         kNoise = 1,
@@ -677,6 +657,8 @@ struct FrameHeader {
     FixedArray<u8> ec_upsampling {};
 
     u8 group_size_shift { 1 };
+    u8 x_qm_scale { 3 };
+    u8 b_qm_scale { 2 };
     Passes passes {};
 
     u8 lf_level {};
@@ -714,7 +696,7 @@ static ErrorOr<FrameHeader> read_frame_header(LittleEndianInputBitStream& stream
 
     if (!all_default) {
         frame_header.frame_type = static_cast<FrameHeader::FrameType>(TRY(stream.read_bits(2)));
-        frame_header.encoding = static_cast<FrameHeader::Encoding>(TRY(stream.read_bits(1)));
+        frame_header.encoding = static_cast<Encoding>(TRY(stream.read_bits(1)));
 
         frame_header.flags = static_cast<FrameHeader::Flags>(TRY(U64(stream)));
 
@@ -735,11 +717,16 @@ static ErrorOr<FrameHeader> read_frame_header(LittleEndianInputBitStream& stream
                 frame_header.ec_upsampling[i] = U32(1, 2, 4, 8);
         }
 
-        if (frame_header.encoding == FrameHeader::Encoding::kModular)
+        if (frame_header.encoding == Encoding::kModular)
             frame_header.group_size_shift = TRY(stream.read_bits(2));
 
-        if (frame_header.encoding == FrameHeader::Encoding::kVarDCT)
-            TODO();
+        // Set x_qm_scale default value
+        frame_header.x_qm_scale = metadata.xyb_encoded && frame_header.encoding == Encoding::kVarDCT ? 3 : 2;
+
+        if (metadata.xyb_encoded && frame_header.encoding == Encoding::kVarDCT) {
+            frame_header.x_qm_scale = TRY(stream.read_bits(3));
+            frame_header.b_qm_scale = TRY(stream.read_bits(3));
+        }
 
         if (frame_header.frame_type != FrameHeader::FrameType::kReferenceOnly)
             frame_header.passes = TRY(read_passes(stream));
@@ -774,6 +761,9 @@ static ErrorOr<FrameHeader> read_frame_header(LittleEndianInputBitStream& stream
             && (frame_header.height + frame_header.y0 == size_header.height);
         bool const full_frame = !frame_header.have_crop || cover_image_area;
 
+        // Set default value for is_last
+        frame_header.is_last = frame_header.frame_type == FrameHeader::FrameType::kRegularFrame;
+
         if (normal_frame) {
             frame_header.blending_info = TRY(read_blending_info(stream, metadata, full_frame));
 
@@ -787,16 +777,11 @@ static ErrorOr<FrameHeader> read_frame_header(LittleEndianInputBitStream& stream
             frame_header.is_last = TRY(stream.read_bit());
         }
 
-        // FIXME: Ensure that is_last has the correct default value
-        VERIFY(normal_frame);
+        if (frame_header.frame_type != FrameHeader::FrameType::kLFFrame && !frame_header.is_last)
+            frame_header.save_as_reference = TRY(stream.read_bits(2));
 
         auto const resets_canvas = full_frame && frame_header.blending_info.mode == BlendingInfo::BlendMode::kReplace;
         auto const can_reference = !frame_header.is_last && (frame_header.duration == 0 || frame_header.save_as_reference != 0) && frame_header.frame_type != FrameHeader::FrameType::kLFFrame;
-
-        if (frame_header.frame_type != FrameHeader::FrameType::kLFFrame) {
-            if (!frame_header.is_last)
-                TODO();
-        }
 
         frame_header.save_before_ct = !normal_frame;
         if (frame_header.frame_type == FrameHeader::FrameType::kReferenceOnly || (resets_canvas && can_reference))
@@ -804,7 +789,7 @@ static ErrorOr<FrameHeader> read_frame_header(LittleEndianInputBitStream& stream
 
         frame_header.name = TRY(read_string(stream));
 
-        frame_header.restoration_filter = TRY(read_restoration_filter(stream));
+        frame_header.restoration_filter = TRY(read_restoration_filter(stream, frame_header.encoding));
 
         frame_header.extensions = TRY(read_extensions(stream));
     }
@@ -881,558 +866,13 @@ static ErrorOr<LfChannelDequantization> read_lf_channel_dequantization(LittleEnd
     auto const all_default = TRY(stream.read_bit());
 
     if (!all_default) {
-        TODO();
+        lf_channel_dequantization.m_x_lf_unscaled = TRY(F16(stream));
+        lf_channel_dequantization.m_y_lf_unscaled = TRY(F16(stream));
+        lf_channel_dequantization.m_b_lf_unscaled = TRY(F16(stream));
     }
 
     return lf_channel_dequantization;
 }
-///
-
-/// C - Entropy decoding
-class ANSHistogram {
-public:
-    static ErrorOr<ANSHistogram> read_histogram(LittleEndianInputBitStream& stream, u8 log_alphabet_size)
-    {
-        ANSHistogram histogram;
-
-        auto const alphabet_size = TRY(histogram.read_ans_distribution(stream, log_alphabet_size));
-
-        // C.2.6 - Alias mapping
-
-        histogram.m_log_bucket_size = 12 - log_alphabet_size;
-        histogram.m_bucket_size = 1 << histogram.m_log_bucket_size;
-        auto const table_size = 1 << log_alphabet_size;
-
-        Optional<u64> index_of_unique_symbol {};
-        for (u64 i {}; i < histogram.m_distribution.size(); ++i) {
-            if (histogram.m_distribution[i] == 1 << 12)
-                index_of_unique_symbol = i;
-        }
-
-        TRY(histogram.m_symbols.try_resize(table_size));
-        TRY(histogram.m_offsets.try_resize(table_size));
-        TRY(histogram.m_cutoffs.try_resize(table_size));
-
-        if (index_of_unique_symbol.has_value()) {
-            auto const s = *index_of_unique_symbol;
-            for (i32 i = 0; i < table_size; i++) {
-                histogram.m_symbols[i] = s;
-                histogram.m_offsets[i] = histogram.m_bucket_size * i;
-                histogram.m_cutoffs[i] = 0;
-            }
-            return histogram;
-        }
-
-        Vector<u16> overfull;
-        Vector<u16> underfull;
-
-        for (u16 i {}; i < alphabet_size; i++) {
-            histogram.m_cutoffs[i] = histogram.m_distribution[i];
-            histogram.m_symbols[i] = i;
-            if (histogram.m_cutoffs[i] > histogram.m_bucket_size)
-                TRY(overfull.try_append(i));
-            else if (histogram.m_cutoffs[i] < histogram.m_bucket_size)
-                TRY(underfull.try_append(i));
-        }
-
-        for (u16 i = alphabet_size; i < table_size; i++) {
-            histogram.m_cutoffs[i] = 0;
-            TRY(underfull.try_append(i));
-        }
-
-        while (overfull.size() > 0) {
-            VERIFY(underfull.size() > 0);
-            auto const o = overfull.take_last();
-            auto const u = underfull.take_last();
-
-            auto const by = histogram.m_bucket_size - histogram.m_cutoffs[u];
-            histogram.m_cutoffs[o] -= by;
-            histogram.m_symbols[u] = o;
-            histogram.m_offsets[u] = histogram.m_cutoffs[o];
-            if (histogram.m_cutoffs[o] < histogram.m_bucket_size)
-                TRY(underfull.try_append(o));
-            else if (histogram.m_cutoffs[o] > histogram.m_bucket_size)
-                TRY(overfull.try_append(o));
-        }
-
-        for (u16 i {}; i < table_size; i++) {
-            if (histogram.m_cutoffs[i] == histogram.m_bucket_size) {
-                histogram.m_symbols[i] = i;
-                histogram.m_offsets[i] = 0;
-                histogram.m_cutoffs[i] = 0;
-            } else {
-                histogram.m_offsets[i] -= histogram.m_cutoffs[i];
-            }
-        }
-
-        return histogram;
-    }
-
-    ErrorOr<u16> read_symbol(LittleEndianInputBitStream& stream, Optional<u32>& state) const
-    {
-        if (!state.has_value())
-            state = TRY(stream.read_bits(32));
-
-        auto const index = *state & 0xFFF;
-        auto const symbol_and_offset = alias_mapping(index);
-        state = m_distribution[symbol_and_offset.symbol] * (*state >> 12) + symbol_and_offset.offset;
-        if (*state < (1 << 16))
-            state = (*state << 16) | TRY(stream.read_bits(16));
-        return symbol_and_offset.symbol;
-    }
-
-private:
-    static ErrorOr<u8> U8(LittleEndianInputBitStream& stream)
-    {
-        if (TRY(stream.read_bit()) == 0)
-            return 0;
-        auto const n = TRY(stream.read_bits(3));
-        return TRY(stream.read_bits(n)) + (1 << n);
-    }
-
-    struct SymbolAndOffset {
-        u16 symbol {};
-        u16 offset {};
-    };
-
-    SymbolAndOffset alias_mapping(u32 x) const
-    {
-        // C.2.6 - Alias mapping
-        auto const i = x >> m_log_bucket_size;
-        auto const pos = x & (m_bucket_size - 1);
-        u16 const symbol = pos >= m_cutoffs[i] ? m_symbols[i] : i;
-        u16 const offset = pos >= m_cutoffs[i] ? m_offsets[i] + pos : pos;
-
-        return { symbol, offset };
-    }
-
-    static ErrorOr<u16> read_with_prefix(LittleEndianInputBitStream& stream)
-    {
-        auto const prefix = TRY(stream.read_bits(3));
-
-        switch (prefix) {
-        case 0:
-            return 10;
-        case 1:
-            for (auto const possibility : { 4, 0, 11, 13 }) {
-                if (TRY(stream.read_bit()))
-                    return possibility;
-            }
-            return 12;
-        case 2:
-            return 7;
-        case 3:
-            return TRY(stream.read_bit()) ? 1 : 3;
-        case 4:
-            return 6;
-        case 5:
-            return 8;
-        case 6:
-            return 9;
-        case 7:
-            return TRY(stream.read_bit()) ? 2 : 5;
-        default:
-            VERIFY_NOT_REACHED();
-        }
-    }
-
-    ErrorOr<u16> read_ans_distribution(LittleEndianInputBitStream& stream, u8 log_alphabet_size)
-    {
-        // C.2.5  ANS distribution decoding
-        auto const table_size = 1 << log_alphabet_size;
-
-        m_distribution = TRY(FixedArray<i32>::create(table_size));
-
-        if (TRY(stream.read_bit())) {
-            u16 alphabet_size {};
-            if (TRY(stream.read_bit())) {
-                auto const v1 = TRY(U8(stream));
-                auto const v2 = TRY(U8(stream));
-                VERIFY(v1 != v2);
-                m_distribution[v1] = TRY(stream.read_bits(12));
-                m_distribution[v2] = (1 << 12) - m_distribution[v1];
-                alphabet_size = 1 + max(v1, v2);
-            } else {
-                auto const x = TRY(U8(stream));
-                m_distribution[x] = 1 << 12;
-                alphabet_size = 1 + x;
-            }
-            return alphabet_size;
-        }
-
-        if (TRY(stream.read_bit())) {
-            auto const alphabet_size = TRY(U8(stream)) + 1;
-            for (u16 i = 0; i < alphabet_size; i++)
-                m_distribution[i] = (1 << 12) / alphabet_size;
-            for (u16 i = 0; i < ((1 << 12) % alphabet_size); i++)
-                m_distribution[i]++;
-            return alphabet_size;
-        }
-
-        u8 len = 0;
-        while (len < 3) {
-            if (TRY(stream.read_bit()))
-                len++;
-            else
-                break;
-        }
-
-        u8 const shift = TRY(stream.read_bits(len)) + (1 << len) - 1;
-        VERIFY(shift <= 13);
-
-        auto const alphabet_size = TRY(U8(stream)) + 3;
-
-        i32 omit_log = -1;
-        i32 omit_pos = -1;
-
-        auto same = TRY(FixedArray<i32>::create(alphabet_size));
-        auto logcounts = TRY(FixedArray<i32>::create(alphabet_size));
-
-        u8 rle {};
-        for (u16 i = 0; i < alphabet_size; i++) {
-            logcounts[i] = TRY(read_with_prefix(stream));
-
-            if (logcounts[i] == 13) {
-                rle = TRY(U8(stream));
-                same[i] = rle + 5;
-                i += rle + 3;
-                continue;
-            }
-            if (logcounts[i] > omit_log) {
-                omit_log = logcounts[i];
-                omit_pos = i;
-            }
-        }
-
-        VERIFY(m_distribution[omit_pos] >= 0);
-        VERIFY(omit_pos + 1 >= alphabet_size || logcounts[omit_pos + 1] != 13);
-
-        i32 prev = 0;
-        i32 numsame = 0;
-        i64 total_count {};
-        for (u16 i = 0; i < alphabet_size; i++) {
-            if (same[i] != 0) {
-                numsame = same[i] - 1;
-                prev = i > 0 ? m_distribution[i - 1] : 0;
-            }
-            if (numsame > 0) {
-                m_distribution[i] = prev;
-                numsame--;
-            } else {
-                auto const code = logcounts[i];
-                if (i == omit_pos || code == 0)
-                    continue;
-
-                if (code == 1) {
-                    m_distribution[i] = 1;
-                } else {
-                    auto const bitcount = min(max(0, shift - ((12 - code + 1) >> 1)), code - 1);
-                    m_distribution[i] = (1 << (code - 1)) + (TRY(stream.read_bits(bitcount)) << (code - 1 - bitcount));
-                }
-            }
-            total_count += m_distribution[i];
-        }
-        m_distribution[omit_pos] = (1 << 12) - total_count;
-        VERIFY(m_distribution[omit_pos] >= 0);
-
-        return alphabet_size;
-    }
-
-    Vector<u16> m_symbols;
-    Vector<u16> m_offsets;
-    Vector<u16> m_cutoffs;
-
-    FixedArray<i32> m_distribution;
-
-    u16 m_log_bucket_size {};
-    u16 m_bucket_size {};
-};
-
-struct LZ77 {
-    bool lz77_enabled {};
-
-    u32 min_symbol {};
-    u32 min_length {};
-};
-
-static ErrorOr<LZ77> read_lz77(LittleEndianInputBitStream& stream)
-{
-    LZ77 lz77;
-
-    lz77.lz77_enabled = TRY(stream.read_bit());
-
-    if (lz77.lz77_enabled) {
-        lz77.min_symbol = U32(224, 512, 4096, 8 + TRY(stream.read_bits(15)));
-        lz77.min_length = U32(3, 4, 5 + TRY(stream.read_bits(2)), 9 + TRY(stream.read_bits(8)));
-    }
-
-    return lz77;
-}
-
-class EntropyDecoder {
-    AK_MAKE_NONCOPYABLE(EntropyDecoder);
-    AK_MAKE_DEFAULT_MOVABLE(EntropyDecoder);
-
-public:
-    EntropyDecoder() = default;
-    ~EntropyDecoder()
-    {
-        if (m_state.has_value() && *m_state != 0x130000)
-            dbgln("JPEGXLLoader: ANS decoder left in invalid state");
-    }
-
-    static ErrorOr<EntropyDecoder> create(LittleEndianInputBitStream& stream, u32 initial_num_distrib)
-    {
-        EntropyDecoder entropy_decoder;
-        // C.2 - Distribution decoding
-        entropy_decoder.m_lz77 = TRY(read_lz77(stream));
-
-        if (entropy_decoder.m_lz77.lz77_enabled) {
-            entropy_decoder.m_lz_dist_ctx = initial_num_distrib++;
-            entropy_decoder.m_lz_len_conf = TRY(read_config(stream, 8));
-
-            entropy_decoder.m_lz77_window = TRY(FixedArray<u32>::create(1 << 20));
-        }
-
-        TRY(entropy_decoder.read_pre_clustered_distributions(stream, initial_num_distrib));
-
-        bool const use_prefix_code = TRY(stream.read_bit());
-
-        if (!use_prefix_code)
-            entropy_decoder.m_log_alphabet_size = 5 + TRY(stream.read_bits(2));
-
-        for (auto& config : entropy_decoder.m_configs)
-            config = TRY(read_config(stream, entropy_decoder.m_log_alphabet_size));
-
-        if (use_prefix_code) {
-            entropy_decoder.m_distributions = Vector<BrotliCanonicalCode> {};
-            auto& distributions = entropy_decoder.m_distributions.get<Vector<BrotliCanonicalCode>>();
-            TRY(distributions.try_resize(entropy_decoder.m_configs.size()));
-
-            Vector<u16> counts;
-            TRY(counts.try_resize(entropy_decoder.m_configs.size()));
-
-            for (auto& count : counts) {
-                if (TRY(stream.read_bit())) {
-                    auto const n = TRY(stream.read_bits(4));
-                    count = 1 + (1 << n) + TRY(stream.read_bits(n));
-                } else {
-                    count = 1;
-                }
-            }
-
-            // After reading the counts, the decoder reads each D[i] (implicitly
-            // described by a prefix code) as specified in C.2.4, with alphabet_size = count[i].
-            for (u32 i {}; i < distributions.size(); ++i) {
-                // The alphabet size mentioned in the [Brotli] RFC is explicitly specified as parameter alphabet_size
-                // when the histogram is being decoded, except in the special case of alphabet_size == 1, where no
-                // histogram is read, and all decoded symbols are zero without reading any bits at all.
-                if (counts[i] != 1)
-                    distributions[i] = TRY(BrotliCanonicalCode::read_prefix_code(stream, counts[i]));
-                else
-                    distributions[i] = BrotliCanonicalCode { { 1 }, { 0 } };
-            }
-        } else {
-            entropy_decoder.m_distributions = Vector<ANSHistogram> {};
-            auto& distributions = entropy_decoder.m_distributions.get<Vector<ANSHistogram>>();
-            TRY(distributions.try_ensure_capacity(entropy_decoder.m_configs.size()));
-
-            for (u32 i = 0; i < entropy_decoder.m_configs.size(); ++i)
-                distributions.empend(TRY(ANSHistogram::read_histogram(stream, entropy_decoder.m_log_alphabet_size)));
-        }
-
-        return entropy_decoder;
-    }
-
-    ErrorOr<u32> decode_hybrid_uint(LittleEndianInputBitStream& stream, u32 context)
-    {
-        // C.3.3 - Hybrid integer decoding
-
-        static constexpr Array<Array<i8, 2>, 120> kSpecialDistances = {
-            Array<i8, 2> { 0, 1 }, { 1, 0 }, { 1, 1 }, { -1, 1 }, { 0, 2 }, { 2, 0 }, { 1, 2 }, { -1, 2 }, { 2, 1 }, { -2, 1 }, { 2, 2 },
-            { -2, 2 }, { 0, 3 }, { 3, 0 }, { 1, 3 }, { -1, 3 }, { 3, 1 }, { -3, 1 }, { 2, 3 }, { -2, 3 }, { 3, 2 },
-            { -3, 2 }, { 0, 4 }, { 4, 0 }, { 1, 4 }, { -1, 4 }, { 4, 1 }, { -4, 1 }, { 3, 3 }, { -3, 3 }, { 2, 4 },
-            { -2, 4 }, { 4, 2 }, { -4, 2 }, { 0, 5 }, { 3, 4 }, { -3, 4 }, { 4, 3 }, { -4, 3 }, { 5, 0 }, { 1, 5 },
-            { -1, 5 }, { 5, 1 }, { -5, 1 }, { 2, 5 }, { -2, 5 }, { 5, 2 }, { -5, 2 }, { 4, 4 }, { -4, 4 }, { 3, 5 },
-            { -3, 5 }, { 5, 3 }, { -5, 3 }, { 0, 6 }, { 6, 0 }, { 1, 6 }, { -1, 6 }, { 6, 1 }, { -6, 1 }, { 2, 6 },
-            { -2, 6 }, { 6, 2 }, { -6, 2 }, { 4, 5 }, { -4, 5 }, { 5, 4 }, { -5, 4 }, { 3, 6 }, { -3, 6 }, { 6, 3 },
-            { -6, 3 }, { 0, 7 }, { 7, 0 }, { 1, 7 }, { -1, 7 }, { 5, 5 }, { -5, 5 }, { 7, 1 }, { -7, 1 }, { 4, 6 },
-            { -4, 6 }, { 6, 4 }, { -6, 4 }, { 2, 7 }, { -2, 7 }, { 7, 2 }, { -7, 2 }, { 3, 7 }, { -3, 7 }, { 7, 3 },
-            { -7, 3 }, { 5, 6 }, { -5, 6 }, { 6, 5 }, { -6, 5 }, { 8, 0 }, { 4, 7 }, { -4, 7 }, { 7, 4 }, { -7, 4 },
-            { 8, 1 }, { 8, 2 }, { 6, 6 }, { -6, 6 }, { 8, 3 }, { 5, 7 }, { -5, 7 }, { 7, 5 }, { -7, 5 }, { 8, 4 }, { 6, 7 },
-            { -6, 7 }, { 7, 6 }, { -7, 6 }, { 8, 5 }, { 7, 7 }, { -7, 7 }, { 8, 6 }, { 8, 7 }
-        };
-
-        u32 r {};
-        if (m_lz77_num_to_copy > 0) {
-            r = m_lz77_window[(m_lz77_copy_pos++) & 0xFFFFF];
-            m_lz77_num_to_copy--;
-        } else {
-            // Read symbol from entropy coded stream using D[clusters[ctx]]
-            auto token = TRY(read_symbol(stream, context));
-
-            if (m_lz77.lz77_enabled && token >= m_lz77.min_symbol) {
-                m_lz77_num_to_copy = TRY(read_uint(stream, m_lz_len_conf, token - m_lz77.min_symbol)) + m_lz77.min_length;
-                // Read symbol using D[clusters[lz_dist_ctx]]
-                token = TRY(read_symbol(stream, m_lz_dist_ctx));
-                auto distance = TRY(read_uint(stream, m_configs[m_clusters[m_lz_dist_ctx]], token));
-                if (m_dist_multiplier == 0) {
-                    distance++;
-                } else if (distance < 120) {
-                    auto const offset = kSpecialDistances[distance][0];
-                    distance = offset + m_dist_multiplier * kSpecialDistances[distance][1];
-                    if (distance < 1)
-                        distance = 1;
-                } else {
-                    distance -= 119;
-                }
-                distance = min(distance, min(m_lz77_num_decoded, 1 << 20));
-                m_lz77_copy_pos = m_lz77_num_decoded - distance;
-                return decode_hybrid_uint(stream, m_clusters[context]);
-            }
-            r = TRY(read_uint(stream, m_configs[m_clusters[context]], token));
-        }
-
-        if (m_lz77.lz77_enabled)
-            m_lz77_window[(m_lz77_num_decoded++) & 0xFFFFF] = r;
-
-        return r;
-    }
-
-    void set_dist_multiplier(u32 dist_multiplier)
-    {
-        m_dist_multiplier = dist_multiplier;
-    }
-
-private:
-    using BrotliCanonicalCode = Compress::Brotli::CanonicalCode;
-
-    struct HybridUint {
-        u32 split_exponent {};
-        u32 split {};
-        u32 msb_in_token {};
-        u32 lsb_in_token {};
-    };
-
-    static ErrorOr<u32> read_uint(LittleEndianInputBitStream& stream, HybridUint const& config, u32 token)
-    {
-        if (token < config.split)
-            return token;
-
-        auto const n = config.split_exponent
-            - config.msb_in_token
-            - config.lsb_in_token
-            + ((token - config.split) >> (config.msb_in_token + config.lsb_in_token));
-
-        VERIFY(n < 32);
-
-        u32 const low_bits = token & ((1 << config.lsb_in_token) - 1);
-        token = token >> config.lsb_in_token;
-        token &= (1 << config.msb_in_token) - 1;
-        token |= (1 << config.msb_in_token);
-
-        auto const result = ((token << n | TRY(stream.read_bits(n))) << config.lsb_in_token) | low_bits;
-
-        VERIFY(result < (1ull << 32));
-
-        return result;
-    }
-
-    static ErrorOr<HybridUint> read_config(LittleEndianInputBitStream& stream, u8 log_alphabet_size)
-    {
-        // C.2.3 - Hybrid integer configuration
-        HybridUint config {};
-        config.split_exponent = TRY(stream.read_bits(ceil(log2(log_alphabet_size + 1))));
-        if (config.split_exponent != log_alphabet_size) {
-            auto nbits = ceil(log2(config.split_exponent + 1));
-            config.msb_in_token = TRY(stream.read_bits(nbits));
-            nbits = ceil(log2(config.split_exponent - config.msb_in_token + 1));
-            config.lsb_in_token = TRY(stream.read_bits(nbits));
-        } else {
-            config.msb_in_token = 0;
-            config.lsb_in_token = 0;
-        }
-
-        config.split = 1 << config.split_exponent;
-        return config;
-    }
-
-    ErrorOr<u32> read_symbol(LittleEndianInputBitStream& stream, u32 context)
-    {
-        u32 token {};
-        TRY(m_distributions.visit(
-            [&](Vector<BrotliCanonicalCode> const& distributions) -> ErrorOr<void> {
-                token = TRY(distributions[m_clusters[context]].read_symbol(stream));
-                return {};
-            },
-            [&](Vector<ANSHistogram> const& distributions) -> ErrorOr<void> {
-                token = TRY(distributions[m_clusters[context]].read_symbol(stream, m_state));
-                return {};
-            }));
-        return token;
-    }
-
-    ErrorOr<void> read_pre_clustered_distributions(LittleEndianInputBitStream& stream, u32 num_distrib)
-    {
-        // C.2.2  Distribution clustering
-        if (num_distrib == 1) {
-            // If num_dist == 1, then num_clusters = 1 and clusters[0] = 0, and the remainder of this subclause is skipped.
-            m_clusters = { 0 };
-            TRY(m_configs.try_resize(1));
-            return {};
-        };
-
-        TRY(m_clusters.try_resize(num_distrib));
-
-        bool const is_simple = TRY(stream.read_bit());
-
-        u16 num_clusters = 0;
-
-        auto const read_clusters = [&](auto&& reader) -> ErrorOr<void> {
-            for (u32 i {}; i < num_distrib; ++i) {
-                m_clusters[i] = TRY(reader());
-                if (m_clusters[i] >= num_clusters)
-                    num_clusters = m_clusters[i] + 1;
-            }
-            return {};
-        };
-
-        if (is_simple) {
-            u8 const nbits = TRY(stream.read_bits(2));
-            TRY(read_clusters([nbits, &stream]() { return stream.read_bits(nbits); }));
-        } else {
-            auto const use_mtf = TRY(stream.read_bit());
-            if (num_distrib == 2)
-                TODO();
-
-            auto decoder = TRY(EntropyDecoder::create(stream, 1));
-
-            TRY(read_clusters([&]() { return decoder.decode_hybrid_uint(stream, 0); }));
-
-            if (use_mtf)
-                TODO();
-        }
-        TRY(m_configs.try_resize(num_clusters));
-        return {};
-    }
-
-    LZ77 m_lz77 {};
-    u32 m_lz_dist_ctx {};
-    HybridUint m_lz_len_conf {};
-    FixedArray<u32> m_lz77_window {};
-    u32 m_lz77_num_to_copy {};
-    u32 m_lz77_copy_pos {};
-    u32 m_lz77_num_decoded {};
-    u32 m_dist_multiplier {};
-
-    Vector<u32> m_clusters;
-    Vector<HybridUint> m_configs;
-
-    u8 m_log_alphabet_size { 15 };
-
-    Variant<Vector<BrotliCanonicalCode>, Vector<ANSHistogram>> m_distributions { Vector<BrotliCanonicalCode> {} }; // D in the spec
-    Optional<u32> m_state {};
-};
 ///
 
 /// H.4.2 - MA tree decoding
@@ -1489,7 +929,7 @@ public:
         // Finally, the decoder reads (tree.size() + 1) / 2 pre-clustered distributions D as specified in C.1.
 
         auto const num_pre_clustered_distributions = (tree.m_tree.size() + 1) / 2;
-        decoder = TRY(decoder->create(stream, num_pre_clustered_distributions));
+        decoder = TRY(EntropyDecoder::create(stream, num_pre_clustered_distributions));
 
         return tree;
     }
@@ -1547,14 +987,45 @@ static ErrorOr<WPHeader> read_self_correcting_predictor(LittleEndianInputBitStre
     bool const default_wp = TRY(stream.read_bit());
 
     if (!default_wp) {
-        TODO();
+        self_correcting_predictor.wp_p1 = TRY(stream.read_bits(5));
+        self_correcting_predictor.wp_p2 = TRY(stream.read_bits(5));
+        self_correcting_predictor.wp_p3a = TRY(stream.read_bits(5));
+        self_correcting_predictor.wp_p3b = TRY(stream.read_bits(5));
+        self_correcting_predictor.wp_p3c = TRY(stream.read_bits(5));
+        self_correcting_predictor.wp_p3d = TRY(stream.read_bits(5));
+        self_correcting_predictor.wp_p3e = TRY(stream.read_bits(5));
+        self_correcting_predictor.wp_w = {
+            TRY(stream.read_bits<u8>(4)),
+            TRY(stream.read_bits<u8>(4)),
+            TRY(stream.read_bits<u8>(4)),
+            TRY(stream.read_bits<u8>(4)),
+        };
     }
 
     return self_correcting_predictor;
 }
 ///
 
-///
+/// H.6 - Transformations
+struct SqueezeParams {
+    bool horizontal {};
+    bool in_place {};
+    u32 begin_c {};
+    u32 num_c {};
+};
+
+static ErrorOr<SqueezeParams> read_squeeze_params(LittleEndianInputBitStream& stream)
+{
+    SqueezeParams squeeze_params;
+
+    squeeze_params.horizontal = TRY(stream.read_bit());
+    squeeze_params.in_place = TRY(stream.read_bit());
+    squeeze_params.begin_c = U32(TRY(stream.read_bits(3)), 8 + TRY(stream.read_bits(6)), 72 + TRY(stream.read_bits(10)), 1096 + TRY(stream.read_bits(13)));
+    squeeze_params.num_c = U32(1, 2, 3, 4 + TRY(stream.read_bits(4)));
+
+    return squeeze_params;
+}
+
 struct TransformInfo {
     enum class TransformId {
         kRCT = 0,
@@ -1565,6 +1036,13 @@ struct TransformInfo {
     TransformId tr {};
     u32 begin_c {};
     u32 rct_type {};
+
+    u32 num_c {};
+    u32 nb_colours {};
+    u32 nb_deltas {};
+    u8 d_pred {};
+
+    FixedArray<SqueezeParams> sp {};
 };
 
 static ErrorOr<TransformInfo> read_transform_info(LittleEndianInputBitStream& stream)
@@ -1589,8 +1067,19 @@ static ErrorOr<TransformInfo> read_transform_info(LittleEndianInputBitStream& st
             10 + TRY(stream.read_bits(6)));
     }
 
-    if (transform_info.tr != TransformInfo::TransformId::kRCT)
-        TODO();
+    if (transform_info.tr == TransformInfo::TransformId::kPalette) {
+        transform_info.num_c = U32(1, 3, 4, 1 + TRY(stream.read_bits(13)));
+        transform_info.nb_colours = U32(TRY(stream.read_bits(8)), 256 + TRY(stream.read_bits(10)), 1280 + TRY(stream.read_bits(12)), 5376 + TRY(stream.read_bits(16)));
+        transform_info.nb_deltas = U32(0, 1 + TRY(stream.read_bits(8)), 257 + TRY(stream.read_bits(10)), 1281 + TRY(stream.read_bits(16)));
+        transform_info.d_pred = TRY(stream.read_bits(4));
+    }
+
+    if (transform_info.tr == TransformInfo::TransformId::kSqueeze) {
+        auto const num_sq = U32(0, 1 + TRY(stream.read_bits(4)), 9 + TRY(stream.read_bits(6)), 41 + TRY(stream.read_bits(8)));
+        transform_info.sp = TRY(FixedArray<SqueezeParams>::create(num_sq));
+        for (u32 i = 0; i < num_sq; ++i)
+            transform_info.sp[i] = TRY(read_squeeze_params(stream));
+    }
 
     return transform_info;
 }
@@ -2160,7 +1649,7 @@ static ErrorOr<GlobalModular> read_global_modular(LittleEndianInputBitStream& st
     // the number of channels is computed as follows:
 
     auto num_channels = metadata.num_extra_channels;
-    if (frame_header.encoding == FrameHeader::Encoding::kModular) {
+    if (frame_header.encoding == Encoding::kModular) {
         if (!frame_header.do_YCbCr && !metadata.xyb_encoded
             && metadata.colour_encoding.colour_space == ColourEncoding::ColourSpace::kGrey) {
             num_channels += 1;
@@ -2179,8 +1668,77 @@ static ErrorOr<GlobalModular> read_global_modular(LittleEndianInputBitStream& st
 }
 ///
 
+/// K.3.1  Patches decoding
+struct Patch {
+    u32 width {};
+    u32 height {};
+
+    u32 ref {};
+
+    u32 x0 {};
+    u32 y0 {};
+
+    u32 count {};
+
+    // x[] and y[] in the spec
+    FixedArray<IntPoint> positions;
+};
+
+static ErrorOr<Patch> read_patch(LittleEndianInputBitStream& stream, EntropyDecoder& decoder, u32 num_extra_channels)
+{
+    Patch patch;
+    patch.ref = TRY(decoder.decode_hybrid_uint(stream, 1));
+    patch.x0 = TRY(decoder.decode_hybrid_uint(stream, 3));
+    patch.y0 = TRY(decoder.decode_hybrid_uint(stream, 3));
+    patch.width = TRY(decoder.decode_hybrid_uint(stream, 2)) + 1;
+    patch.height = TRY(decoder.decode_hybrid_uint(stream, 2)) + 1;
+    patch.count = TRY(decoder.decode_hybrid_uint(stream, 7)) + 1;
+
+    patch.positions = TRY(FixedArray<IntPoint>::create(patch.count));
+
+    for (u32 j = 0; j < patch.count; j++) {
+        if (j == 0) {
+            auto position = IntPoint {
+                TRY(decoder.decode_hybrid_uint(stream, 4)),
+                TRY(decoder.decode_hybrid_uint(stream, 4)),
+            };
+            patch.positions[j] = position;
+        } else {
+            auto position = IntPoint {
+                unpack_signed(TRY(decoder.decode_hybrid_uint(stream, 6))) + patch.positions[j - 1].x(),
+                unpack_signed(TRY(decoder.decode_hybrid_uint(stream, 6))) + patch.positions[j - 1].y(),
+            };
+            patch.positions[j] = position;
+        }
+
+        // FIXME: Bail out if this condition is not respected
+        /* the width x height rectangle with top-left coordinates (x, y)
+           is fully contained within the frame */
+
+        if (num_extra_channels > 0)
+            return Error::from_string_literal("JPEGXLLoader: Implement reading patches for extra channels");
+    }
+
+    return patch;
+}
+
+static ErrorOr<FixedArray<Patch>> read_patches(LittleEndianInputBitStream& stream, u32 num_extra_channels)
+{
+    auto decoder = TRY(EntropyDecoder::create(stream, 10));
+    u32 const num_patches = TRY(decoder.decode_hybrid_uint(stream, 0));
+
+    auto patches = TRY(FixedArray<Patch>::create(num_patches));
+    for (auto& patch : patches)
+        patch = TRY(read_patch(stream, decoder, num_extra_channels));
+
+    return patches;
+}
+
+///
+
 /// G.1 - LfGlobal
 struct LfGlobal {
+    FixedArray<Patch> patches;
     LfChannelDequantization lf_dequant;
     GlobalModular gmodular;
 };
@@ -2193,12 +1751,21 @@ static ErrorOr<LfGlobal> read_lf_global(LittleEndianInputBitStream& stream,
 {
     LfGlobal lf_global;
 
-    if (frame_header.flags != FrameHeader::Flags::None)
-        TODO();
+    if (frame_header.flags != FrameHeader::Flags::None) {
+        if (frame_header.flags & FrameHeader::Flags::kPatches) {
+            lf_global.patches = TRY(read_patches(stream, metadata.num_extra_channels));
+        }
+        if (frame_header.flags & FrameHeader::Flags::kSplines) {
+            return Error::from_string_literal("JPEGXLLoader: Implement Splines");
+        }
+        if (frame_header.flags & FrameHeader::Flags::kNoise) {
+            return Error::from_string_literal("JPEGXLLoader: Implement Noise");
+        }
+    }
 
     lf_global.lf_dequant = TRY(read_lf_channel_dequantization(stream));
 
-    if (frame_header.encoding == FrameHeader::Encoding::kVarDCT)
+    if (frame_header.encoding == Encoding::kVarDCT)
         TODO();
 
     lf_global.gmodular = TRY(read_global_modular(stream, image, frame_header, metadata, entropy_decoder));
@@ -2213,7 +1780,7 @@ static ErrorOr<void> read_lf_group(LittleEndianInputBitStream&,
     FrameHeader const& frame_header)
 {
     // LF coefficients
-    if (frame_header.encoding == FrameHeader::Encoding::kVarDCT) {
+    if (frame_header.encoding == Encoding::kVarDCT) {
         TODO();
     }
 
@@ -2232,7 +1799,7 @@ static ErrorOr<void> read_lf_group(LittleEndianInputBitStream&,
     }
 
     // HF metadata
-    if (frame_header.encoding == FrameHeader::Encoding::kVarDCT) {
+    if (frame_header.encoding == Encoding::kVarDCT) {
         TODO();
     }
 
@@ -2307,7 +1874,7 @@ static ErrorOr<void> read_pass_group(LittleEndianInputBitStream& stream,
     FrameHeader const& frame_header,
     u32 group_dim)
 {
-    if (frame_header.encoding == FrameHeader::Encoding::kVarDCT) {
+    if (frame_header.encoding == Encoding::kVarDCT) {
         (void)stream;
         TODO();
     }
@@ -2391,7 +1958,7 @@ static ErrorOr<Frame> read_frame(LittleEndianInputBitStream& stream,
     for (u32 i {}; i < frame.num_lf_groups; ++i)
         TRY(read_lf_group(stream, frame.image, frame.frame_header));
 
-    if (frame.frame_header.encoding == FrameHeader::Encoding::kVarDCT) {
+    if (frame.frame_header.encoding == Encoding::kVarDCT) {
         TODO();
     }
 
@@ -2578,23 +2145,31 @@ public:
         return {};
     }
 
+    ErrorOr<void> decode_icc()
+    {
+        if (m_metadata.colour_encoding.want_icc && m_icc_profile.size() == 0)
+            m_icc_profile = TRY(read_icc(m_stream));
+        m_state = State::ICCProfileDecoded;
+        return {};
+    }
+
     ErrorOr<void> decode_frame()
     {
         auto frame = TRY(read_frame(m_stream, m_header, m_metadata, m_entropy_decoder));
+        auto const& frame_header = frame.frame_header;
 
-        if (frame.frame_header.restoration_filter.gab || frame.frame_header.restoration_filter.epf_iters != 0)
+        if (frame_header.restoration_filter.gab || frame_header.restoration_filter.epf_iters != 0)
             TODO();
 
         TRY(apply_image_features(frame, m_metadata));
 
-        apply_colour_transformation(frame, m_metadata);
+        if (!frame_header.save_before_ct) {
+            apply_colour_transformation(frame, m_metadata);
+        }
 
         TRY(render_extra_channels(frame.image, m_metadata));
 
-        if (!m_image.has_value())
-            m_image = TRY(Image::create({ m_header.width, m_header.height }, m_metadata));
-
-        frame.image.blend_into(*m_image, frame.frame_header);
+        m_frames.append(move(frame));
 
         return {};
     }
@@ -2606,13 +2181,20 @@ public:
 
             // The header is already decoded in JPEGXLImageDecoderPlugin::create()
 
-            if (m_metadata.colour_encoding.want_icc)
-                TODO();
+            TRY(decode_icc());
 
             if (m_metadata.preview.has_value())
                 TODO();
 
             TRY(decode_frame());
+
+            while (!m_frames.last().frame_header.is_last)
+                TRY(decode_frame());
+
+            if (!m_image.has_value())
+                m_image = TRY(Image::create({ m_header.width, m_header.height }, m_metadata));
+
+            m_frames.last().image.blend_into(*m_image, m_frames.last().frame_header);
 
             m_bitmap = TRY(m_image->to_bitmap(m_metadata));
             m_image.clear();
@@ -2629,6 +2211,7 @@ public:
         NotDecoded = 0,
         Error,
         HeaderDecoded,
+        ICCProfileDecoded,
         FrameDecoded,
     };
 
@@ -2647,6 +2230,11 @@ public:
         return m_bitmap;
     }
 
+    ByteBuffer const& icc_profile() const
+    {
+        return m_icc_profile;
+    }
+
 private:
     State m_state { State::NotDecoded };
 
@@ -2657,10 +2245,14 @@ private:
     // representation of this blending before the final rendering (in m_bitmap)
     Optional<Image> m_image;
 
+    Vector<Frame> m_frames;
+
     Optional<EntropyDecoder> m_entropy_decoder {};
 
     SizeHeader m_header;
     ImageMetadata m_metadata;
+
+    ByteBuffer m_icc_profile;
 };
 
 JPEGXLImageDecoderPlugin::JPEGXLImageDecoderPlugin(NonnullOwnPtr<FixedMemoryStream> stream)
@@ -2726,6 +2318,10 @@ ErrorOr<ImageFrameDescriptor> JPEGXLImageDecoderPlugin::frame(size_t index, Opti
 
 ErrorOr<Optional<ReadonlyBytes>> JPEGXLImageDecoderPlugin::icc_data()
 {
-    return OptionalNone {};
+    if (m_context->state() < JPEGXLLoadingContext::State::ICCProfileDecoded)
+        TRY(m_context->decode_icc());
+    if (m_context->icc_profile().size() == 0)
+        return OptionalNone {};
+    return m_context->icc_profile();
 }
 }

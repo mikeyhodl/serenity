@@ -28,7 +28,7 @@ ErrorOr<bool> VMWareGraphicsAdapter::probe(PCI::DeviceIdentifier const& pci_devi
     return id.vendor_id == PCI::VendorID::VMWare && id.device_id == 0x0405;
 }
 
-ErrorOr<NonnullLockRefPtr<GenericGraphicsAdapter>> VMWareGraphicsAdapter::create(PCI::DeviceIdentifier const& pci_device_identifier)
+ErrorOr<NonnullLockRefPtr<GPUDevice>> VMWareGraphicsAdapter::create(PCI::DeviceIdentifier const& pci_device_identifier)
 {
     auto registers_io_window = TRY(IOWindow::create_for_pci_device_bar(pci_device_identifier, PCI::HeaderType0BaseRegister::BAR0));
     auto adapter = TRY(adopt_nonnull_lock_ref_or_enomem(new (nothrow) VMWareGraphicsAdapter(pci_device_identifier, move(registers_io_window))));
@@ -186,7 +186,7 @@ UNMAP_AFTER_INIT ErrorOr<void> VMWareGraphicsAdapter::initialize_adapter()
 
     auto bar1_space_size = PCI::get_BAR_space_size(device_identifier(), PCI::HeaderType0BaseRegister::BAR1);
 
-    m_display_connector = VMWareDisplayConnector::must_create(*this, TRY(PCI::get_bar_address(device_identifier(), PCI::HeaderType0BaseRegister::BAR1)), bar1_space_size);
+    m_display_connector = TRY(VMWareDisplayConnector::create(*this, TRY(PCI::get_bar_address(device_identifier(), PCI::HeaderType0BaseRegister::BAR1)), bar1_space_size));
     TRY(m_display_connector->set_safe_mode_setting());
     return {};
 }

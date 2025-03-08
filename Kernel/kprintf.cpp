@@ -11,12 +11,13 @@
 #if ARCH(X86_64)
 #    include <Kernel/Arch/x86_64/BochsDebugOutput.h>
 #endif
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/BaseDevices.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/GPU/Console/BootFramebufferConsole.h>
 #include <Kernel/Devices/GPU/Management.h>
 #include <Kernel/Devices/Generic/ConsoleDevice.h>
 #include <Kernel/Devices/PCISerialDevice.h>
-#include <Kernel/Devices/TTY/ConsoleManagement.h>
+#include <Kernel/Devices/TTY/VirtualConsole.h>
 #include <Kernel/Locking/Spinlock.h>
 #include <Kernel/kstdio.h>
 
@@ -69,8 +70,9 @@ static void critical_console_out(char ch)
 
 static void console_out(char ch)
 {
-    if (DeviceManagement::the().is_console_device_attached()) {
-        DeviceManagement::the().console_device().put_char(ch);
+    auto base_devices = Device::base_devices();
+    if (base_devices) {
+        base_devices->console_device->put_char(ch);
     } else {
         if (s_serial_debug_enabled)
             serial_putch(ch);
@@ -79,10 +81,9 @@ static void console_out(char ch)
         bochs_debug_output(ch);
 #endif
     }
-    if (ConsoleManagement::is_initialized()) {
-        ConsoleManagement::the().debug_tty()->emit_char(ch);
-    } else if (auto* boot_console = g_boot_console.load()) {
-        boot_console->write(ch, true);
+    if (!VirtualConsole::emit_char_on_debug_console(ch)) {
+        if (auto* boot_console = g_boot_console.load())
+            boot_console->write(ch, true);
     }
 }
 

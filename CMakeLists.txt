@@ -18,7 +18,7 @@ endif()
 
 # Check for toolchain mismatch, user might need to rebuild toolchain
 set(GCC_VERSION "13.2.0")
-set(LLVM_VERSION "16.0.6")
+set(LLVM_VERSION "20.1.0")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(EXPECTED_COMPILER_VERSION "${GCC_VERSION}")
 else()
@@ -49,13 +49,6 @@ if (NOT HACKSTUDIO_BUILD)
 
     # Host tools, required to generate files for the build
     find_package(Lagom CONFIG REQUIRED)
-
-    if (ENABLE_JAKT)
-        find_package(Jakt CONFIG REQUIRED
-            HINTS "${Lagom_DIR}/.."
-        )
-    endif()
-
 endif()
 
 # Meta target to run all code-gen steps in the build.
@@ -83,21 +76,30 @@ add_custom_target(qemu-image
     BYPRODUCTS "${CMAKE_BINARY_DIR}/_disk_image"
     USES_TERMINAL
 )
-add_custom_target(grub-image
-    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-grub.sh"
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/grub_disk_image
-    USES_TERMINAL
-)
-add_custom_target(limine-image
-    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-limine.sh"
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/limine_disk_image
-    USES_TERMINAL
-)
-add_custom_target(extlinux-image
-    COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-extlinux.sh"
-    BYPRODUCTS "${CMAKE_BINARY_DIR}/extlinux_disk_image"
-    USES_TERMINAL
-)
+
+if("${SERENITY_ARCH}" STREQUAL "x86_64")
+    add_custom_target(grub-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-grub.sh"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/grub_disk_image
+        USES_TERMINAL
+    )
+    add_custom_target(grub-uefi-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-grub-uefi.sh"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/grub_uefi_disk_image
+        USES_TERMINAL
+    )
+    add_custom_target(limine-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-limine.sh"
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/limine_disk_image
+        USES_TERMINAL
+    )
+    add_custom_target(extlinux-image
+        COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-image-extlinux.sh"
+        BYPRODUCTS "${CMAKE_BINARY_DIR}/extlinux_disk_image"
+        USES_TERMINAL
+    )
+endif()
+
 add_custom_target(install-native-partition
     COMMAND "${CMAKE_COMMAND}" -E env "SERENITY_SOURCE_DIR=${SerenityOS_SOURCE_DIR}" "SERENITY_ARCH=${SERENITY_ARCH}" "SERENITY_TOOLCHAIN=${CMAKE_CXX_COMPILER_ID}" "LLVM_VERSION=${CMAKE_CXX_COMPILER_VERSION}" "${SerenityOS_SOURCE_DIR}/Meta/build-native-partition.sh"
     USES_TERMINAL
@@ -190,11 +192,13 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/Userland/Services)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/Userland/Libraries)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/Userland)
 
-add_custom_target(components ALL)
+include(jakt)
+
 option(BUILD_EVERYTHING "Build all optional components" ON)
 
 include(utils)
 include(flac_spec_tests)
+include(download_raspberry_pi_dtb)
 
 serenity_component(
     Tests
@@ -205,6 +209,13 @@ if (HACKSTUDIO_BUILD)
     include_directories(/usr/include/Userland/Services)
     include(${HACKSTUDIO_BUILD_CMAKE_FILE})
     return()
+endif()
+
+add_library(GenericClangPlugin INTERFACE)
+add_library(JSClangPlugin INTERFACE)
+if (ENABLE_CLANG_PLUGINS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
+    target_link_libraries(GenericClangPlugin INTERFACE Lagom::GenericClangPlugin)
+    target_link_libraries(JSClangPlugin INTERFACE Lagom::JSClangPlugin)
 endif()
 
 add_subdirectory(AK)

@@ -79,30 +79,47 @@ config("compiler_defaults") {
     # Linetables always go in the .o file, even with -gsplit-dwarf, so there's
     # no point in passing -gsplit-dwarf here.
   }
-  if (is_optimized) {
-    cflags += [ "-O3" ]
-  }
-  cflags += [ "-fdiagnostics-color" ]
 
-  cflags += [ "-ffp-contract=off" ]
+  if (is_optimized) {
+    cflags += [ "-O2" ]
+  }
+
+  cflags += [
+    "-D_FILE_OFFSET_BITS=64",
+    "-DENABLE_COMPILETIME_FORMAT_CHECK",
+  ]
+
+  cflags += [
+    "-fdiagnostics-color",
+    "-ffp-contract=off",
+    "-fsigned-char",
+  ]
 
   if (use_lld) {
     ldflags += [ "-Wl,--color-diagnostics" ]
   }
-  cflags_cc += [
-    "-std=c++20",
-    "-fvisibility-inlines-hidden",
-  ]
+
+  if (current_os == "mac") {
+    # FIXME: Use -std=c++23 once Xcode's clang supports that.
+    cflags_cc += [ "-std=c++2b" ]
+  } else {
+    cflags_cc += [ "-std=c++23" ]
+  }
+
+  cflags_cc += [ "-fvisibility-inlines-hidden" ]
 
   # Warning setup.
   cflags += [
     "-Wall",
     "-Wextra",
+    "-Werror",
   ]
   cflags += [
-    "-Wno-unused-parameter",
     "-Wno-invalid-offsetof",
+    "-Wno-unknown-warning-option",
+    "-Wno-unused-parameter",
   ]
+
   if (is_clang) {
     cflags += [
       "-Wdelete-non-virtual-dtor",
@@ -111,6 +128,8 @@ config("compiler_defaults") {
       "-fconstexpr-steps=16777216",
       "-Wno-unused-private-field",
       "-Wno-implicit-const-int-float-conversion",
+      "-Wno-vla-cxx-extension",
+      "-Wno-coroutine-missing-unhandled-exception",
     ]
   } else {
     cflags += [
@@ -161,7 +180,10 @@ config("compiler_defaults") {
       "-isysroot",
       rebase_path(sdk_path, root_build_dir),
     ]
+  } else {
+    cflags += [ "-fno-semantic-interposition" ]
   }
+
   if (sysroot != "" && current_os != "win" && is_clang) {
     cflags += [ "-Wpoison-system-directories" ]
   }

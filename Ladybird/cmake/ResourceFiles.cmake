@@ -1,3 +1,6 @@
+file(STRINGS "${SERENITY_SOURCE_DIR}/Meta/emoji-file-list.txt" EMOJI)
+list(TRANSFORM EMOJI PREPEND "${SERENITY_SOURCE_DIR}/Base/res/emoji/")
+
 set(FONTS
     CsillaBold10.font
     CsillaBold12.font
@@ -15,9 +18,12 @@ list(TRANSFORM FONTS PREPEND "${SERENITY_SOURCE_DIR}/Base/res/fonts/")
 
 set(16x16_ICONS
     app-browser.png
+    app-system-monitor.png
+    box.png
     audio-volume-high.png
     audio-volume-muted.png
     close-tab.png
+    download.png
     edit-copy.png
     filetype-css.png
     filetype-folder-open.png
@@ -32,6 +38,7 @@ set(16x16_ICONS
     layout.png
     new-tab.png
     open-parent-directory.png
+    paste.png
     pause.png
     play.png
     select-all.png
@@ -44,6 +51,7 @@ set(16x16_ICONS
 )
 set(32x32_ICONS
     app-browser.png
+    app-system-monitor.png
     filetype-folder.png
     filetype-unknown.png
     msgbox-warning.png
@@ -105,6 +113,7 @@ function(copy_resource_set subdir)
 
         add_custom_command(
             OUTPUT ${outputs}
+            DEPENDS ${inputs}
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${COPY_DESTINATION}/${subdir}"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${inputs}" "${COPY_DESTINATION}/${subdir}"
             COMMAND_EXPAND_LISTS
@@ -122,8 +131,11 @@ function(copy_resource_set subdir)
 endfunction()
 
 function(copy_resources_to_build base_directory bundle_target)
-
     add_custom_target("${bundle_target}_build_resource_files")
+
+    copy_resource_set(emoji RESOURCES ${EMOJI}
+        DESTINATION ${base_directory} TARGET ${bundle_target}
+    )
 
     copy_resource_set(fonts RESOURCES ${FONTS}
         DESTINATION ${base_directory} TARGET ${bundle_target}
@@ -165,6 +177,7 @@ function(copy_resources_to_build base_directory bundle_target)
 endfunction()
 
 function(install_ladybird_resources destination component)
+    install(FILES ${EMOJI} DESTINATION "${destination}/emoji" COMPONENT ${component})
     install(FILES ${FONTS} DESTINATION "${destination}/fonts" COMPONENT ${component})
     install(FILES ${16x16_ICONS} DESTINATION "${destination}/icons/16x16" COMPONENT ${component})
     install(FILES ${32x32_ICONS} DESTINATION "${destination}/icons/32x32" COMPONENT ${component})

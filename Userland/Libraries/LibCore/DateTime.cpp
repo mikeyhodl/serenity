@@ -11,14 +11,36 @@
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <LibCore/DateTime.h>
-#include <LibTimeZone/DateTime.h>
+#include <LibTimeZone/TimeZone.h>
 #include <errno.h>
 #include <time.h>
 
 namespace Core {
 
-Optional<StringView> __attribute__((weak)) parse_time_zone_name(GenericLexer&) { return {}; }
-void __attribute__((weak)) apply_time_zone_offset(StringView, UnixDateTime&) { }
+static Optional<StringView> parse_time_zone_name(GenericLexer& lexer)
+{
+    auto start_position = lexer.tell();
+
+    Optional<StringView> canonicalized_time_zone;
+
+    lexer.ignore_until([&](auto) {
+        auto time_zone = lexer.input().substring_view(start_position, lexer.tell() - start_position + 1);
+
+        canonicalized_time_zone = TimeZone::canonicalize_time_zone(time_zone);
+        return canonicalized_time_zone.has_value();
+    });
+
+    if (canonicalized_time_zone.has_value())
+        lexer.ignore();
+
+    return canonicalized_time_zone;
+}
+
+static void apply_time_zone_offset(StringView time_zone, UnixDateTime& time)
+{
+    if (auto offset = TimeZone::get_time_zone_offset(time_zone, time); offset.has_value())
+        time -= Duration::from_seconds(offset->seconds);
+}
 
 DateTime DateTime::now()
 {
@@ -100,12 +122,17 @@ void DateTime::set_date(Core::DateTime const& other)
     set_time(other.year(), other.month(), other.day(), hour(), minute(), second());
 }
 
-ErrorOr<String> DateTime::to_string(StringView format) const
+ErrorOr<String> DateTime::to_string(StringView format, LocalTime local_time) const
 {
     struct tm tm;
-    localtime_r(&m_timestamp, &tm);
+
+    if (local_time == LocalTime::Yes)
+        localtime_r(&m_timestamp, &tm);
+    else
+        gmtime_r(&m_timestamp, &tm);
+
     StringBuilder builder;
-    int const format_len = format.length();
+    size_t const format_len = format.length();
 
     auto format_time_zone_offset = [&](bool with_separator) -> ErrorOr<void> {
         struct tm gmt_tm;
@@ -132,7 +159,7 @@ ErrorOr<String> DateTime::to_string(StringView format) const
         return {};
     };
 
-    for (int i = 0; i < format_len; ++i) {
+    for (size_t i = 0; i < format_len; ++i) {
         if (format[i] != '%') {
             TRY(builder.try_append(format[i]));
         } else {
@@ -293,9 +320,9 @@ ErrorOr<String> DateTime::to_string(StringView format) const
     return builder.to_string();
 }
 
-ByteString DateTime::to_byte_string(StringView format) const
+ByteString DateTime::to_byte_string(StringView format, LocalTime local_time) const
 {
-    return MUST(to_string(format)).to_byte_string();
+    return MUST(to_string(format, local_time)).to_byte_string();
 }
 
 Optional<DateTime> DateTime::parse(StringView format, StringView string)

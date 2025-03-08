@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/StyleSheetPrototype.h>
 #include <LibWeb/CSS/CSSStyleSheet.h>
 #include <LibWeb/CSS/StyleSheet.h>
 #include <LibWeb/DOM/Element.h>
@@ -33,6 +34,16 @@ void StyleSheet::set_owner_node(DOM::Element* element)
 void StyleSheet::set_parent_css_style_sheet(CSSStyleSheet* parent)
 {
     m_parent_style_sheet = parent;
+}
+
+// https://drafts.csswg.org/cssom/#dom-stylesheet-title
+Optional<String> StyleSheet::title_for_bindings() const
+{
+    // The title attribute must return the title or null if title is the empty string.
+    if (m_title.is_empty())
+        return {};
+
+    return m_title;
 }
 
 }

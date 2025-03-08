@@ -1,4 +1,5 @@
 #import <HTML/HTMLElement.idl>
+#import <HTML/Scripting/Fetching.idl>
 #import <DOM/Document.idl>
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#htmliframeelement
@@ -7,16 +8,16 @@ interface HTMLIFrameElement : HTMLElement {
 
     [HTMLConstructor] constructor();
 
-    [CEReactions, Reflect] attribute DOMString src;
+    [CEReactions, Reflect, URL] attribute USVString src;
     [CEReactions, Reflect] attribute DOMString srcdoc;
     [CEReactions, Reflect] attribute DOMString name;
-    // FIXME: [SameObject, PutForwards=value] readonly attribute DOMTokenList sandbox;
+    [FIXME, SameObject, PutForwards=value] readonly attribute DOMTokenList sandbox;
     [CEReactions, Reflect] attribute DOMString allow;
     [CEReactions, Reflect=allowfullscreen] attribute boolean allowFullscreen;
     [CEReactions, Reflect] attribute DOMString width;
     [CEReactions, Reflect] attribute DOMString height;
-    // FIXME: [CEReactions] attribute DOMString referrerPolicy;
-    // FIXME: [CEReactions] attribute DOMString loading;
+    [CEReactions, Reflect=referrerpolicy, Enumerated=ReferrerPolicy] attribute DOMString referrerPolicy;
+    [CEReactions, Enumerated=LazyLoadingAttribute, Reflect] attribute DOMString loading;
     readonly attribute Document? contentDocument;
     readonly attribute WindowProxy? contentWindow;
     Document? getSVGDocument();
@@ -25,7 +26,7 @@ interface HTMLIFrameElement : HTMLElement {
     [CEReactions, Reflect] attribute DOMString align;
     [CEReactions, Reflect] attribute DOMString scrolling;
     [CEReactions, Reflect=frameborder] attribute DOMString frameBorder;
-    // FIXME: [CEReactions] attribute USVString longDesc;
+    [CEReactions, Reflect=longdesc, URL] attribute USVString longDesc;
 
     [CEReactions, LegacyNullToEmptyString, Reflect=marginheight] attribute DOMString marginHeight;
     [CEReactions, LegacyNullToEmptyString, Reflect=marginwidth] attribute DOMString marginWidth;

@@ -42,7 +42,7 @@ JS::MarkedVector<Node*> LiveNodeList::collection() const
         m_root->for_each_in_subtree([&](auto& node) {
             if (m_filter(node))
                 nodes.append(const_cast<Node*>(&node));
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         });
     } else {
         m_root->for_each_child([&](auto& node) {
@@ -61,9 +61,9 @@ Node* LiveNodeList::first_matching(Function<bool(Node const&)> const& filter) co
         m_root->for_each_in_subtree([&](auto& node) {
             if (m_filter(node) && filter(node)) {
                 matched_node = const_cast<Node*>(&node);
-                return IterationDecision::Break;
+                return TraversalDecision::Break;
             }
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         });
     } else {
         m_root->for_each_child([&](auto& node) {
@@ -91,14 +91,6 @@ Node const* LiveNodeList::item(u32 index) const
     if (index >= nodes.size())
         return nullptr;
     return nodes[index];
-}
-
-// https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-indices
-bool LiveNodeList::is_supported_property_index(u32 index) const
-{
-    // The object’s supported property indices are the numbers in the range zero to one less than the number of nodes represented by the collection.
-    // If there are no such elements, then there are no supported property indices.
-    return index < length();
 }
 
 }

@@ -28,12 +28,13 @@ namespace Detail {
 struct Block {
     size_t start;
     size_t end;
+    StringView comment { "N/A"sv };
 };
 
 }
 
-static constexpr const size_t c_max_recursion = 5000;
-static constexpr const size_t c_match_preallocation_count = 0;
+static constexpr size_t const c_max_recursion = 5000;
+static constexpr size_t const c_match_preallocation_count = 0;
 
 struct RegexResult final {
     bool success { false };

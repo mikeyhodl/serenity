@@ -43,9 +43,9 @@ If this happens, run `Meta/serenity.sh rebuild x86_64` to start over from a fres
 
 ### GCC is missing or is outdated
 
-Ensure your gcc version is >= 12 with `gcc --version`. Otherwise, install it. If your gcc binary is not
+Ensure your gcc version is >= 13 with `gcc --version`. Otherwise, install it. If your gcc binary is not
 called `gcc` you have to specify the names of your C and C++ compiler when you run cmake, e.g.
-`cmake ../.. -GNinja -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12`.
+`cmake ../.. -GNinja -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13`.
 
 ### Legacy renegotiation is disabled
 
@@ -99,11 +99,12 @@ extensions, or you try to use VirtualBox without using a x64 virtualization mode
 
 ### Boot fails with "Your computer does not support PAE. Halting!"
 
-- If booting on bare metal, your CPU is too old to boot Serenity.
-- If you're using VirtualBox, you need to enable PAE/NX. Check the instructions [here.](VirtualBox.md)
-- If you're using QEMU, the [CPU model configuration](https://qemu-project.gitlab.io/qemu/system/qemu-cpu-models.html) is not exposing PAE.
+-   If booting on bare metal, your CPU is too old to boot Serenity.
+-   If you're using VirtualBox, you need to enable PAE/NX. Check the instructions [here.](VirtualBox.md)
+-   If you're using QEMU, the [CPU model configuration](https://qemu-project.gitlab.io/qemu/system/qemu-cpu-models.html) is not exposing PAE.
 
 ### Boot fails with "KVM doesn't support guest debugging"
-- Update your host kernel to at least version `5.10`. This is the oldest kernel which properly supports the required KVM capability `KVM_CAP_SET_GUEST_DEBUG` (see corresponding [kernel commit](https://github.com/torvalds/linux/commit/b9b2782cd5)).
-- Make sure that your distro has the qemu debug feature actually enabled (the corresponding check is [here](https://gitlab.com/qemu-project/qemu/-/blob/222059a0fccf4af3be776fe35a5ea2d6a68f9a0b/accel/kvm/kvm-all.c#L2540)).
-- Or, disable KVM debugging by setting this env var when running serenity: `SERENITY_DISABLE_GDB_SOCKET=1`
+
+-   Update your host kernel to at least version `5.10`. This is the oldest kernel which properly supports the required KVM capability `KVM_CAP_SET_GUEST_DEBUG` (see corresponding [kernel commit](https://github.com/torvalds/linux/commit/b9b2782cd5)).
+-   Make sure that your distro has the qemu debug feature actually enabled (the corresponding check is [here](https://gitlab.com/qemu-project/qemu/-/blob/222059a0fccf4af3be776fe35a5ea2d6a68f9a0b/accel/kvm/kvm-all.c#L2540)).
+-   Or, disable KVM debugging by setting this env var when running serenity: `SERENITY_DISABLE_GDB_SOCKET=1`

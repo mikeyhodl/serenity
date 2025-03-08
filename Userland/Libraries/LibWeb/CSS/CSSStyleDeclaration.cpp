@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023, Andreas Kling <kling@serenityos.org>
+ * Copyright (c) 2018-2024, Andreas Kling <andreas@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,6 +9,7 @@
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/CSSStyleDeclaration.h>
 #include <LibWeb/CSS/Parser/Parser.h>
+#include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleValues/ImageStyleValue.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
@@ -23,12 +24,20 @@ JS_DEFINE_ALLOCATOR(ElementInlineCSSStyleDeclaration);
 CSSStyleDeclaration::CSSStyleDeclaration(JS::Realm& realm)
     : PlatformObject(realm)
 {
+    m_legacy_platform_object_flags = LegacyPlatformObjectFlags {
+        .supports_indexed_properties = true,
+    };
 }
 
 void CSSStyleDeclaration::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     WEB_SET_PROTOTYPE_FOR_INTERFACE(CSSStyleDeclaration);
+}
+
+JS::GCPtr<CSSRule> CSSStyleDeclaration::parent_rule() const
+{
+    return nullptr;
 }
 
 JS::NonnullGCPtr<PropertyOwningCSSStyleDeclaration> PropertyOwningCSSStyleDeclaration::create(JS::Realm& realm, Vector<StyleProperty> properties, HashMap<FlyString, StyleProperty> custom_properties)
@@ -46,6 +55,7 @@ PropertyOwningCSSStyleDeclaration::PropertyOwningCSSStyleDeclaration(JS::Realm& 
 void PropertyOwningCSSStyleDeclaration::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
+    visitor.visit(m_parent_rule);
     for (auto& property : m_properties) {
         if (property.value->is_image())
             property.value->as_image().visit_edges(visitor);
@@ -124,15 +134,23 @@ WebIDL::ExceptionOr<void> PropertyOwningCSSStyleDeclaration::set_property(Proper
     // 7. Let updated be false.
     bool updated = false;
 
-    // FIXME: 8. If property is a shorthand property, then for each longhand property longhand that property maps to, in canonical order, follow these substeps:
-    // FIXME:    1. Let longhand result be the result of set the CSS declaration longhand with the appropriate value(s) from component value list,
-    //              with the important flag set if priority is not the empty string, and unset otherwise, and with the list of declarations being the declarations.
-    // FIXME:    2. If longhand result is true, let updated be true.
-
-    // 9. Otherwise, let updated be the result of set the CSS declaration property with value component value list,
-    //    with the important flag set if priority is not the empty string, and unset otherwise,
-    //    and with the list of declarations being the declarations.
-    updated = set_a_css_declaration(property_id, component_value_list.release_nonnull(), !priority.is_empty() ? Important::Yes : Important::No);
+    // 8. If property is a shorthand property,
+    if (property_is_shorthand(property_id)) {
+        // then for each longhand property longhand that property maps to, in canonical order, follow these substeps:
+        StyleComputer::for_each_property_expanding_shorthands(property_id, *component_value_list, StyleComputer::AllowUnresolved::Yes, [this, &updated, priority](PropertyID longhand_property_id, CSSStyleValue const& longhand_value) {
+            // 1. Let longhand result be the result of set the CSS declaration longhand with the appropriate value(s) from component value list,
+            //    with the important flag set if priority is not the empty string, and unset otherwise, and with the list of declarations being the declarations.
+            // 2. If longhand result is true, let updated be true.
+            updated |= set_a_css_declaration(longhand_property_id, longhand_value, !priority.is_empty() ? Important::Yes : Important::No);
+        });
+    }
+    // 9. Otherwise,
+    else {
+        // let updated be the result of set the CSS declaration property with value component value list,
+        // with the important flag set if priority is not the empty string, and unset otherwise,
+        // and with the list of declarations being the declarations.
+        updated = set_a_css_declaration(property_id, *component_value_list, !priority.is_empty() ? Important::Yes : Important::No);
+    }
 
     // 10. If updated is true, update style attribute for the CSS declaration block.
     if (updated)
@@ -194,7 +212,7 @@ void ElementInlineCSSStyleDeclaration::update_style_attribute()
 }
 
 // https://drafts.csswg.org/cssom/#set-a-css-declaration
-bool PropertyOwningCSSStyleDeclaration::set_a_css_declaration(PropertyID property_id, NonnullRefPtr<StyleValue const> value, Important important)
+bool PropertyOwningCSSStyleDeclaration::set_a_css_declaration(PropertyID property_id, NonnullRefPtr<CSSStyleValue const> value, Important important)
 {
     // FIXME: Handle logical property groups.
 
@@ -216,11 +234,45 @@ bool PropertyOwningCSSStyleDeclaration::set_a_css_declaration(PropertyID propert
     return true;
 }
 
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertyvalue
 String CSSStyleDeclaration::get_property_value(StringView property_name) const
 {
     auto property_id = property_id_from_string(property_name);
     if (!property_id.has_value())
         return {};
+
+    // 2. If property is a shorthand property, then follow these substeps:
+    if (property_is_shorthand(property_id.value())) {
+        // 1. Let list be a new empty array.
+        StringBuilder list;
+        Optional<Important> last_important_flag;
+
+        // 2. For each longhand property longhand that property maps to, in canonical order, follow these substeps:
+        for (auto longhand_property_id : longhands_for_shorthand(property_id.value())) {
+            // 1. If longhand is a case-sensitive match for a property name of a CSS declaration in the declarations, let declaration be that CSS declaration, or null otherwise.
+            auto declaration = property(longhand_property_id);
+
+            // 2. If declaration is null, then return the empty string.
+            if (!declaration.has_value())
+                return {};
+
+            // 3. Append the declaration to list.
+            if (!list.is_empty())
+                list.append(' ');
+            list.append(declaration->value->to_string());
+
+            if (last_important_flag.has_value() && declaration->important != *last_important_flag)
+                return {};
+            last_important_flag = declaration->important;
+        }
+
+        // 3. If important flags of all declarations in list are same, then return the serialization of list.
+        return list.to_string_without_validation();
+
+        // 4. Return the empty string.
+        // NOTE: This is handled by the loop.
+    }
+
     auto maybe_property = property(property_id.value());
     if (!maybe_property.has_value())
         return {};
@@ -263,6 +315,29 @@ String CSSStyleDeclaration::css_text() const
 
     // 2. Return the result of serializing the declarations.
     return serialized();
+}
+
+// https://drafts.csswg.org/cssom/#dom-cssstyleproperties-cssfloat
+String CSSStyleDeclaration::css_float() const
+{
+    // The cssFloat attribute, on getting, must return the result of invoking getPropertyValue() with float as argument.
+    return get_property_value("float"sv);
+}
+
+WebIDL::ExceptionOr<void> CSSStyleDeclaration::set_css_float(StringView value)
+{
+    // On setting, the attribute must invoke setProperty() with float as first argument, as second argument the given value,
+    // and no third argument. Any exceptions thrown must be re-thrown.
+    return set_property("float"sv, value, ""sv);
+}
+
+Optional<JS::Value> CSSStyleDeclaration::item_value(size_t index) const
+{
+    auto value = item(index);
+    if (value.is_empty())
+        return {};
+
+    return JS::PrimitiveString::create(vm(), value);
 }
 
 // https://www.w3.org/TR/cssom/#serialize-a-css-declaration
@@ -387,57 +462,6 @@ String PropertyOwningCSSStyleDeclaration::serialized() const
     return MUST(builder.to_string());
 }
 
-static CSS::PropertyID property_id_from_name(StringView name)
-{
-    // FIXME: Perhaps this should go in the code generator.
-    if (name == "cssFloat"sv)
-        return CSS::PropertyID::Float;
-
-    if (auto property_id = CSS::property_id_from_camel_case_string(name); property_id.has_value())
-        return property_id.value();
-
-    if (auto property_id = CSS::property_id_from_string(name); property_id.has_value())
-        return property_id.value();
-
-    return CSS::PropertyID::Invalid;
-}
-
-JS::ThrowCompletionOr<bool> CSSStyleDeclaration::internal_has_property(JS::PropertyKey const& name) const
-{
-    if (!name.is_string())
-        return Base::internal_has_property(name);
-    return property_id_from_name(name.to_string()) != CSS::PropertyID::Invalid;
-}
-
-JS::ThrowCompletionOr<JS::Value> CSSStyleDeclaration::internal_get(JS::PropertyKey const& name, JS::Value receiver, JS::CacheablePropertyMetadata* cacheable_metadata) const
-{
-    if (name.is_number())
-        return { JS::PrimitiveString::create(vm(), item(name.as_number())) };
-    if (!name.is_string())
-        return Base::internal_get(name, receiver, cacheable_metadata);
-    auto property_id = property_id_from_name(name.to_string());
-    if (property_id == CSS::PropertyID::Invalid)
-        return Base::internal_get(name, receiver, cacheable_metadata);
-    if (auto maybe_property = property(property_id); maybe_property.has_value())
-        return { JS::PrimitiveString::create(vm(), maybe_property->value->to_string()) };
-    return { JS::PrimitiveString::create(vm(), String {}) };
-}
-
-JS::ThrowCompletionOr<bool> CSSStyleDeclaration::internal_set(JS::PropertyKey const& name, JS::Value value, JS::Value receiver, JS::CacheablePropertyMetadata* cacheable_metadata)
-{
-    auto& vm = this->vm();
-    if (!name.is_string())
-        return Base::internal_set(name, value, receiver, cacheable_metadata);
-    auto property_id = property_id_from_name(name.to_string());
-    if (property_id == CSS::PropertyID::Invalid)
-        return Base::internal_set(name, value, receiver, cacheable_metadata);
-
-    auto css_text = value.is_null() ? String {} : TRY(value.to_string(vm));
-
-    TRY(Bindings::throw_dom_exception_if_needed(vm, [&] { return set_property(property_id, css_text); }));
-    return true;
-}
-
 WebIDL::ExceptionOr<void> PropertyOwningCSSStyleDeclaration::set_css_text(StringView css_text)
 {
     dbgln("(STUBBED) PropertyOwningCSSStyleDeclaration::set_css_text(css_text='{}')", css_text);
@@ -480,6 +504,16 @@ WebIDL::ExceptionOr<void> ElementInlineCSSStyleDeclaration::set_css_text(StringV
     update_style_attribute();
 
     return {};
+}
+
+JS::GCPtr<CSSRule> PropertyOwningCSSStyleDeclaration::parent_rule() const
+{
+    return m_parent_rule;
+}
+
+void PropertyOwningCSSStyleDeclaration::set_parent_rule(JS::NonnullGCPtr<CSSRule> rule)
+{
+    m_parent_rule = rule;
 }
 
 }

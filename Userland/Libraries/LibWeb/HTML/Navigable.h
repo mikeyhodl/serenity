@@ -21,6 +21,7 @@
 #include <LibWeb/HTML/SourceSnapshotParams.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TokenizedFeatures.h>
+#include <LibWeb/Page/EventHandler.h>
 #include <LibWeb/PixelUnits.h>
 #include <LibWeb/XHR/FormDataEntry.h>
 
@@ -51,7 +52,13 @@ class Navigable : public JS::Cell {
 public:
     virtual ~Navigable() override;
 
+    using NullWithError = StringView;
+    using NavigationParamsVariant = Variant<Empty, NullWithError, JS::NonnullGCPtr<NavigationParams>, JS::NonnullGCPtr<NonFetchSchemeNavigationParams>>;
+
     ErrorOr<void> initialize_navigable(JS::NonnullGCPtr<DocumentState> document_state, JS::GCPtr<Navigable> parent);
+
+    void register_navigation_observer(Badge<NavigationObserver>, NavigationObserver&);
+    void unregister_navigation_observer(Badge<NavigationObserver>, NavigationObserver&);
 
     Vector<JS::Handle<Navigable>> child_navigables() const;
 
@@ -59,6 +66,7 @@ public:
 
     String const& id() const { return m_id; }
     JS::GCPtr<Navigable> parent() const { return m_parent; }
+    bool is_ancestor_of(JS::NonnullGCPtr<Navigable>) const;
 
     bool is_closing() const { return m_closing; }
     void set_closing(bool value) { m_closing = value; }
@@ -92,6 +100,8 @@ public:
 
     virtual bool is_top_level_traversable() const { return false; }
 
+    [[nodiscard]] bool is_focused() const;
+
     enum class WindowType {
         ExistingOrNone,
         NewAndUnrestricted,
@@ -103,7 +113,7 @@ public:
         WindowType window_type;
     };
 
-    ChosenNavigable choose_a_navigable(StringView name, TokenizedFeature::NoOpener no_opener, ActivateTab = ActivateTab::Yes);
+    ChosenNavigable choose_a_navigable(StringView name, TokenizedFeature::NoOpener no_opener, ActivateTab = ActivateTab::Yes, Optional<TokenizedFeature::Map const&> window_features = {});
 
     static JS::GCPtr<Navigable> navigable_with_active_document(JS::NonnullGCPtr<DOM::Document>);
 
@@ -119,10 +129,10 @@ public:
         SourceSnapshotParams const& source_snapshot_params,
         TargetSnapshotParams const& target_snapshot_params,
         Optional<String> navigation_id = {},
-        Variant<Empty, NavigationParams, NonFetchSchemeNavigationParams> navigation_params = Empty {},
+        NavigationParamsVariant navigation_params = Empty {},
         CSPNavigationType csp_navigation_type = CSPNavigationType::Other,
         bool allow_POST = false,
-        Function<void()> completion_steps = [] {});
+        JS::GCPtr<JS::HeapFunction<void()>> completion_steps = {});
 
     struct NavigateParams {
         URL::URL const& url;
@@ -141,8 +151,8 @@ public:
 
     WebIDL::ExceptionOr<void> navigate_to_a_fragment(URL::URL const&, HistoryHandlingBehavior, UserNavigationInvolvement, Optional<SerializationRecord> navigation_api_state, String navigation_id);
 
-    WebIDL::ExceptionOr<JS::GCPtr<DOM::Document>> evaluate_javascript_url(URL::URL const&, Origin const& new_document_origin, String navigation_id);
-    WebIDL::ExceptionOr<void> navigate_to_a_javascript_url(URL::URL const&, HistoryHandlingBehavior, Origin const& initiator_origin, CSPNavigationType csp_navigation_type, String navigation_id);
+    WebIDL::ExceptionOr<JS::GCPtr<DOM::Document>> evaluate_javascript_url(URL::URL const&, URL::Origin const& new_document_origin, String navigation_id);
+    WebIDL::ExceptionOr<void> navigate_to_a_javascript_url(URL::URL const&, HistoryHandlingBehavior, URL::Origin const& initiator_origin, CSPNavigationType csp_navigation_type, String navigation_id);
 
     bool allowed_by_sandboxing_to_navigate(Navigable const& target, SourceSnapshotParams const&);
 
@@ -156,11 +166,10 @@ public:
     CSSPixelRect to_top_level_rect(CSSPixelRect const&);
 
     CSSPixelSize size() const { return m_size; }
-    void set_size(CSSPixelSize);
 
     CSSPixelPoint viewport_scroll_offset() const { return m_viewport_scroll_offset; }
     CSSPixelRect viewport_rect() const { return { m_viewport_scroll_offset, m_size }; }
-    void set_viewport_rect(CSSPixelRect const&);
+    void set_viewport_size(CSSPixelSize);
     void perform_scroll_of_viewport(CSSPixelPoint position);
 
     void set_needs_display();
@@ -180,10 +189,20 @@ public:
         bool should_show_line_box_borders { false };
         bool has_focus { false };
     };
-    void paint(Painting::RecordingPainter&, PaintConfig);
+    void record_display_list(Painting::DisplayListRecorder& display_list_recorder, PaintConfig);
+
+    Page& page() { return m_page; }
+    Page const& page() const { return m_page; }
+
+    String selected_text() const;
+    void select_all();
+    void paste(String const&);
+
+    Web::EventHandler& event_handler() { return m_event_handler; }
+    Web::EventHandler const& event_handler() const { return m_event_handler; }
 
 protected:
-    Navigable();
+    explicit Navigable(JS::NonnullGCPtr<Page>);
 
     virtual void visit_edges(Cell::Visitor&) override;
 
@@ -194,6 +213,8 @@ protected:
     TokenizedFeature::Popup m_is_popup { TokenizedFeature::Popup::No };
 
 private:
+    void reset_cursor_blink_cycle();
+
     void scroll_offset_did_change();
 
     void inform_the_navigation_api_about_aborting_navigation();
@@ -219,19 +240,25 @@ private:
     // Implied link between navigable and its container.
     JS::GCPtr<NavigableContainer> m_container;
 
+    JS::NonnullGCPtr<Page> m_page;
+
+    HashTable<JS::NonnullGCPtr<NavigationObserver>> m_navigation_observers;
+
     bool m_has_been_destroyed { false };
 
     CSSPixelSize m_size;
     CSSPixelPoint m_viewport_scroll_offset;
 
     bool m_needs_repaint { false };
+
+    Web::EventHandler m_event_handler;
 };
 
 HashTable<Navigable*>& all_navigables();
 
 bool navigation_must_be_a_replace(URL::URL const& url, DOM::Document const& document);
 void finalize_a_cross_document_navigation(JS::NonnullGCPtr<Navigable>, HistoryHandlingBehavior, JS::NonnullGCPtr<SessionHistoryEntry>);
-void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_url, Optional<SerializationRecord> = {}, HistoryHandlingBehavior history_handling = HistoryHandlingBehavior::Reload);
+void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_url, Optional<SerializationRecord> = {}, HistoryHandlingBehavior history_handling = HistoryHandlingBehavior::Replace);
 UserNavigationInvolvement user_navigation_involvement(DOM::Event const&);
 
 }

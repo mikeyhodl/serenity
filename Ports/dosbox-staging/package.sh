@@ -7,15 +7,14 @@ configopts=(
     '-Ddynamic_core=none'
     '-Dtry_static_libs=opusfile'
     '-Dunit_tests=disabled'
-    '-Duse_fluidsynth=false'
-    '-Duse_mt32emu=false'
     '-Duse_opengl=false'
-    '-Duse_png=false'
 )
 files=(
     "https://github.com/dosbox-staging/dosbox-staging/archive/refs/tags/v${version}.tar.gz#2ca69e65e6c181197b63388c60487a3bcea804232a28c44c37704e70d49a0392"
 )
 depends=(
+    'fluidsynth'
+    'libmt32emu'
     'libslirp'
     'libpng'
     'opusfile'

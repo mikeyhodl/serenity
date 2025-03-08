@@ -13,7 +13,7 @@ namespace Kernel {
 class AudioController;
 class AudioChannel final
     : public CharacterDevice {
-    friend class DeviceManagement;
+    friend class Device;
 
 public:
     static ErrorOr<NonnullRefPtr<AudioChannel>> create(AudioController const&, size_t channel_index);
@@ -34,6 +34,6 @@ private:
     virtual StringView class_name() const override { return "AudioChannel"sv; }
 
     LockWeakPtr<AudioController> m_controller;
-    const size_t m_channel_index;
+    size_t const m_channel_index;
 };
 }

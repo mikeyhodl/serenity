@@ -17,23 +17,14 @@ set(REQUESTSERVER_SOURCES
     ${REQUESTSERVER_SOURCE_DIR}/Protocol.cpp
 )
 
-if (ANDROID)
-    add_library(requestserver SHARED
-        ${REQUESTSERVER_SOURCES}
-        ../Android/src/main/cpp/RequestServerService.cpp
-        ../Android/src/main/cpp/LadybirdServiceBaseJNI.cpp
-        ../Utilities.cpp
-    )
-else()
-    add_library(requestserver STATIC ${REQUESTSERVER_SOURCES})
-endif()
+add_library(requestserver STATIC ${REQUESTSERVER_SOURCES})
 
 add_executable(RequestServer main.cpp)
 target_link_libraries(RequestServer PRIVATE requestserver)
 
 target_include_directories(requestserver PRIVATE ${SERENITY_SOURCE_DIR}/Userland/Services/)
 target_include_directories(requestserver PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
-target_link_libraries(requestserver PUBLIC LibCore LibMain LibCrypto LibFileSystem LibGemini LibHTTP LibIPC LibMain LibTLS LibWebView LibWebSocket LibURL)
+target_link_libraries(requestserver PUBLIC LibCore LibMain LibCrypto LibFileSystem LibGemini LibHTTP LibIPC LibMain LibTLS LibWebView LibWebSocket LibURL LibThreading)
 if (${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
     # Solaris has socket and networking related functions in two extra libraries
     target_link_libraries(requestserver PUBLIC nsl socket)

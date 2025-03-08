@@ -7,6 +7,8 @@
 #pragma once
 
 #include <AK/String.h>
+#include <AK/Utf16View.h>
+#include <LibLocale/Forward.h>
 #include <LibWeb/DOM/ChildNode.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/NonDocumentTypeChildNode.h>
@@ -22,16 +24,14 @@ class CharacterData
     JS_DECLARE_ALLOCATOR(CharacterData);
 
 public:
-    virtual ~CharacterData() override = default;
+    virtual ~CharacterData() override;
 
     String const& data() const { return m_data; }
     void set_data(String const&);
 
     unsigned length_in_utf16_code_units() const
     {
-        // FIXME: This is inefficient!
-        auto utf16_data = MUST(AK::utf8_to_utf16(m_data));
-        return Utf16View { utf16_data }.length_in_code_units();
+        return AK::utf16_code_unit_length_from_utf8(m_data);
     }
 
     WebIDL::ExceptionOr<String> substring_data(size_t offset_in_utf16_code_units, size_t count_in_utf16_code_units) const;
@@ -40,6 +40,9 @@ public:
     WebIDL::ExceptionOr<void> delete_data(size_t offset_in_utf16_code_units, size_t count_in_utf16_code_units);
     WebIDL::ExceptionOr<void> replace_data(size_t offset_in_utf16_code_units, size_t count_in_utf16_code_units, String const&);
 
+    Locale::Segmenter& grapheme_segmenter() const;
+    Locale::Segmenter& word_segmenter() const;
+
 protected:
     CharacterData(Document&, NodeType, String const&);
 
@@ -47,6 +50,9 @@ protected:
 
 private:
     String m_data;
+
+    mutable OwnPtr<Locale::Segmenter> m_grapheme_segmenter;
+    mutable OwnPtr<Locale::Segmenter> m_word_segmenter;
 };
 
 }

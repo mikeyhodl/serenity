@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2021-2024, Tim Flynn <trflynn89@serenityos.org>
  * Copyright (c) 2022, Alex Major
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -19,10 +19,15 @@
 #include <LibSQL/SQLClient.h>
 #include <unistd.h>
 
+#if !defined(AK_OS_SERENITY)
+#    include <LibCore/Process.h>
+#endif
+
 class SQLRepl {
 public:
     explicit SQLRepl(Core::EventLoop& loop, ByteString const& database_name, NonnullRefPtr<SQL::SQLClient> sql_client)
-        : m_sql_client(move(sql_client))
+        : m_history_path(ByteString::formatted("{}/.sql-history", Core::StandardPaths::home_directory()))
+        , m_sql_client(move(sql_client))
         , m_loop(loop)
     {
         m_editor = Line::Editor::construct();
@@ -143,7 +148,7 @@ public:
     }
 
 private:
-    ByteString m_history_path { ByteString::formatted("{}/.sql-history", Core::StandardPaths::home_directory()) };
+    ByteString m_history_path;
     RefPtr<Line::Editor> m_editor { nullptr };
     int m_repl_line_level { 0 };
     bool m_keep_running { true };
@@ -360,7 +365,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto sql_client = TRY(SQL::SQLClient::try_create());
 #else
     VERIFY(!sql_server_path.is_empty());
-    auto sql_client = TRY(SQL::SQLClient::launch_server_and_create_client({ sql_server_path }));
+
+    auto [_, sql_client] = TRY(Core::IPCProcess::spawn_singleton<SQL::SQLClient>({
+        .name = "SQLServer"sv,
+        .executable = sql_server_path,
+    }));
 #endif
 
     SQLRepl repl(loop, database_name, move(sql_client));

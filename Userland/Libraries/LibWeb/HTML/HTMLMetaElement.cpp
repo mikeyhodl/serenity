@@ -5,11 +5,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLMetaElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/Parser/ParsingContext.h>
 #include <LibWeb/CSS/PropertyID.h>
-#include <LibWeb/CSS/StyleValues/ColorStyleValue.h>
+#include <LibWeb/CSS/StyleValues/CSSColorValue.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLMetaElement.h>
 #include <LibWeb/Infra/CharacterTypes.h>
@@ -37,7 +38,7 @@ Optional<HTMLMetaElement::HttpEquivAttributeState> HTMLMetaElement::http_equiv_s
     auto value = get_attribute_value(HTML::AttributeNames::http_equiv);
 
 #define __ENUMERATE_HTML_META_HTTP_EQUIV_ATTRIBUTE(keyword, state) \
-    if (value.equals_ignoring_ascii_case(#keyword##sv))            \
+    if (value.equals_ignoring_ascii_case(keyword##sv))             \
         return HTMLMetaElement::HttpEquivAttributeState::state;
     ENUMERATE_HTML_META_HTTP_EQUIV_ATTRIBUTES
 #undef __ENUMERATE_HTML_META_HTTP_EQUIV_ATTRIBUTE
@@ -75,7 +76,7 @@ void HTMLMetaElement::inserted()
         auto css_value = parse_css_value(context, value, CSS::PropertyID::Color);
         if (css_value.is_null() || !css_value->is_color())
             return;
-        auto color = css_value->as_color().color();
+        auto color = css_value->to_color({}); // TODO: Pass a layout node?
 
         // 4. If color is not failure, then return color.
         document().page().client().page_did_change_theme_color(color);
@@ -89,6 +90,11 @@ void HTMLMetaElement::inserted()
     auto http_equiv = http_equiv_state();
     if (http_equiv.has_value()) {
         switch (http_equiv.value()) {
+        case HttpEquivAttributeState::EncodingDeclaration:
+            // https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-content-type
+            // The Encoding declaration state is just an alternative form of setting the charset attribute: it is a character encoding declaration.
+            // This state's user agent requirements are all handled by the parsing section of the specification.
+            break;
         case HttpEquivAttributeState::Refresh: {
             // https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
             // 1. If the meta element has no content attribute, or if that attribute's value is the empty string, then return.
@@ -104,6 +110,17 @@ void HTMLMetaElement::inserted()
             document().shared_declarative_refresh_steps(input, this);
             break;
         }
+        case HttpEquivAttributeState::SetCookie:
+            // https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-set-cookie
+            // This pragma is non-conforming and has no effect.
+            // User agents are required to ignore this pragma.
+            break;
+        case HttpEquivAttributeState::XUACompatible:
+            // https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-x-ua-compatible
+            // In practice, this pragma encourages Internet Explorer to more closely follow the specifications.
+            // For meta elements with an http-equiv attribute in the X-UA-Compatible state, the content attribute must have a value that is an ASCII case-insensitive match for the string "IE=edge".
+            // User agents are required to ignore this pragma.
+            break;
         default:
             dbgln("FIXME: Implement '{}' http-equiv state", get_attribute_value(AttributeNames::http_equiv));
             break;

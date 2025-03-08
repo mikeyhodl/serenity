@@ -144,7 +144,7 @@ private:
         return m_sign != Sign::Negative;
     }
 
-    const T m_base;
+    T const m_base;
     T m_num;
     T m_cutoff;
     int m_max_digit_after_cutoff;
@@ -313,7 +313,7 @@ static T c_str_to_floating_point(char const* str, char** endptr)
     // - One of INF or INFINITY, ignoring case
     // - One of NAN or NAN(n-char-sequenceopt), ignoring case in the NAN part
 
-    const Sign sign = strtosign(parse_ptr, &parse_ptr);
+    Sign const sign = strtosign(parse_ptr, &parse_ptr);
 
     if (is_infinity_string(parse_ptr, endptr)) {
         // Don't set errno to ERANGE here:
@@ -343,12 +343,16 @@ static T c_str_to_floating_point(char const* str, char** endptr)
     return 0;
 }
 
-extern "C" {
+[[gnu::weak]] extern void __call_fini_functions() asm("__call_fini_functions");
 
-[[gnu::weak]] void (*__call_fini_functions)();
+extern "C" {
 
 void exit(int status)
 {
+#ifndef _DYNAMIC_LOADER
+    __pthread_key_destroy_for_current_thread();
+#endif
+
     __cxa_finalize(nullptr);
 
     if (secure_getenv("LIBC_DUMP_MALLOC_STATS"))
@@ -356,10 +360,6 @@ void exit(int status)
 
     __call_fini_functions();
     fflush(nullptr);
-
-#ifndef _DYNAMIC_LOADER
-    __pthread_key_destroy_for_current_thread();
-#endif
 
     _exit(status);
 }
@@ -377,7 +377,7 @@ int atexit(void (*handler)())
 void _abort()
 {
     // According to the GCC manual __builtin_trap() can call abort() so using it here might not seem safe at first. However,
-    // on all the platforms we support GCC emits an undefined instruction instead of a call.
+    // on all the platforms we support GCC emits a trapping instruction instead of a call.
     __builtin_trap();
 }
 
@@ -466,20 +466,26 @@ int unsetenv(char const* name)
 
 int clearenv()
 {
-    size_t environ_size = 0;
-    for (; environ[environ_size]; ++environ_size) {
-        environ[environ_size] = NULL;
+    for (char** env = environ; *env; ++env) {
+        free_environment_variable_if_needed(*env);
+        *env = nullptr;
     }
-    *environ = NULL;
     return 0;
 }
 
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/setenv.html
 int setenv(char const* name, char const* value, int overwrite)
 {
+    auto new_var_len = strlen(name);
+    if (new_var_len == 0 || strchr(name, '=')) {
+        errno = EINVAL;
+        return -1;
+    }
+
     if (!overwrite && getenv(name))
         return 0;
-    auto const total_length = strlen(name) + strlen(value) + 2;
+
+    auto const total_length = new_var_len + strlen(value) + 2;
     auto* var = (char*)malloc(total_length);
     snprintf(var, total_length, "%s=%s", name, value);
     s_malloced_environment_variables.set((FlatPtr)var);
@@ -973,7 +979,7 @@ long long strtoll(char const* str, char** endptr, int base)
     // Parse spaces and sign
     char* parse_ptr = const_cast<char*>(str);
     strtons(parse_ptr, &parse_ptr);
-    const Sign sign = strtosign(parse_ptr, &parse_ptr);
+    Sign const sign = strtosign(parse_ptr, &parse_ptr);
 
     // Parse base
     if (base == 0) {

@@ -51,7 +51,7 @@ TEST_CASE(load_form)
     widgets->for_each([&](JsonValue const& widget_value) {
         auto& widget_object = widget_value.as_object();
         auto widget_class = widget_object.get_byte_string("class"sv).value();
-        widget_object.for_each_member([&]([[maybe_unused]] auto& property_name, [[maybe_unused]] const JsonValue& property_value) {
+        widget_object.for_each_member([&]([[maybe_unused]] auto& property_name, [[maybe_unused]] JsonValue const& property_value) {
         });
     });
 }
@@ -79,6 +79,28 @@ TEST_CASE(json_utf8_character)
     EXPECT_EQ(json.as_string() == "A", true);
 }
 
+TEST_CASE(json_encoded_surrogates)
+{
+    {
+        auto json = JsonValue::from_string("\"\\uD83E\\uDD13\""sv).value();
+        EXPECT_EQ(json.type(), JsonValue::Type::String);
+        EXPECT_EQ(json.as_string().length(), 4u);
+        EXPECT_EQ(json.as_string(), "🤓"sv);
+    }
+    {
+        auto json = JsonValue::from_string("\"\\uD83E\""sv).value();
+        EXPECT_EQ(json.type(), JsonValue::Type::String);
+        EXPECT_EQ(json.as_string().length(), 3u);
+        EXPECT_EQ(json.as_string(), "\xED\xA0\xBE"sv);
+    }
+    {
+        auto json = JsonValue::from_string("\"\\uDD13\""sv).value();
+        EXPECT_EQ(json.type(), JsonValue::Type::String);
+        EXPECT_EQ(json.as_string().length(), 3u);
+        EXPECT_EQ(json.as_string(), "\xED\xB4\x93"sv);
+    }
+}
+
 /*
 FIXME: Parse JSON from a Utf8View
 
@@ -104,6 +126,34 @@ TEST_CASE(json_64_bit_value)
 
     JsonValue big_json_value_copy = big_json_value;
     EXPECT(big_json_value.equals(big_json_value_copy));
+}
+
+TEST_CASE(json_64_bit_value_coerced_to_32_bit)
+{
+    {
+        auto min = NumericLimits<i64>::min();
+        auto max = NumericLimits<i64>::max();
+
+        auto json = TRY_OR_FAIL(JsonValue::from_string(String::number(min)));
+        EXPECT_EQ(json.get_integer<i64>(), min);
+        EXPECT(!json.is_integer<i32>());
+
+        json = TRY_OR_FAIL(JsonValue::from_string(String::number(max)));
+        EXPECT_EQ(json.get_integer<i64>(), max);
+        EXPECT(!json.is_integer<i32>());
+    }
+    {
+        auto min = NumericLimits<u64>::min();
+        auto max = NumericLimits<u64>::max();
+
+        auto json = TRY_OR_FAIL(JsonValue::from_string(String::number(min)));
+        EXPECT_EQ(json.get_integer<u64>(), min);
+        EXPECT_EQ(json.get_integer<u32>(), min);
+
+        json = TRY_OR_FAIL(JsonValue::from_string(String::number(max)));
+        EXPECT_EQ(json.get_integer<u64>(), max);
+        EXPECT(!json.is_integer<u32>());
+    }
 }
 
 TEST_CASE(json_duplicate_keys)
@@ -312,7 +362,7 @@ TEST_CASE(fallible_json_object_for_each)
     }));
 
     auto result1 = object.try_for_each_member([](auto const&, auto const&) -> ErrorOr<void> {
-        return Error::from_string_view("nanananana"sv);
+        return Error::from_string_literal("nanananana");
     });
     EXPECT(result1.is_error());
     EXPECT_EQ(result1.error().string_literal(), "nanananana"sv);
@@ -352,7 +402,7 @@ TEST_CASE(fallible_json_array_for_each)
     }));
 
     auto result1 = array.try_for_each([](auto const&) -> ErrorOr<void> {
-        return Error::from_string_view("nanananana"sv);
+        return Error::from_string_literal("nanananana");
     });
     EXPECT(result1.is_error());
     EXPECT_EQ(result1.error().string_literal(), "nanananana"sv);

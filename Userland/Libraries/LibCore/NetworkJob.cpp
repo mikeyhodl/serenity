@@ -11,10 +11,12 @@
 
 namespace Core {
 
-NetworkJob::NetworkJob(Stream& output_stream)
+NetworkJob::NetworkJob(Core::File& output_stream)
     : m_output_stream(output_stream)
 {
 }
+
+NetworkJob::~NetworkJob() = default;
 
 void NetworkJob::did_finish(NonnullRefPtr<NetworkResponse>&& response)
 {

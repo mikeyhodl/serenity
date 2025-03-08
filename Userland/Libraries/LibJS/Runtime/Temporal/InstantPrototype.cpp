@@ -254,13 +254,16 @@ JS_DEFINE_NATIVE_FUNCTION(InstantPrototype::round)
         maximum = ns_per_day;
     }
 
-    // 14. Let roundingIncrement be ? ToTemporalRoundingIncrement(roundTo, maximum, true).
-    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *round_to, maximum, true));
+    // 14. Let roundingIncrement be ? ToTemporalRoundingIncrement(options).
+    auto rounding_increment = TRY(to_temporal_rounding_increment(vm, *round_to));
 
-    // 15. Let roundedNs be ! RoundTemporalInstant(instant.[[Nanoseconds]], roundingIncrement, smallestUnit, roundingMode).
+    // 15. Perform ? ValidateTemporalRoundingIncrement(roundingIncrement, maximum, true).
+    TRY(validate_temporal_rounding_increment(vm, rounding_increment, maximum, true));
+
+    // 16. Let roundedNs be ! RoundTemporalInstant(instant.[[Nanoseconds]], roundingIncrement, smallestUnit, roundingMode).
     auto* rounded_ns = round_temporal_instant(vm, instant->nanoseconds(), rounding_increment, smallest_unit, rounding_mode);
 
-    // 16. Return ! CreateTemporalInstant(roundedNs).
+    // 17. Return ! CreateTemporalInstant(roundedNs).
     return MUST(create_temporal_instant(vm, *rounded_ns));
 }
 
@@ -301,8 +304,8 @@ JS_DEFINE_NATIVE_FUNCTION(InstantPrototype::to_string)
         time_zone = TRY(to_temporal_time_zone(vm, time_zone));
     }
 
-    // 6. Let precision be ? ToSecondsStringPrecision(options).
-    auto precision = TRY(to_seconds_string_precision(vm, *options));
+    // 6. Let precision be ? ToSecondsStringPrecisionRecord(options).
+    auto precision = TRY(to_seconds_string_precision_record(vm, *options));
 
     // 7. Let roundingMode be ? ToTemporalRoundingMode(options, "trunc").
     auto rounding_mode = TRY(to_temporal_rounding_mode(vm, *options, "trunc"sv));

@@ -432,6 +432,7 @@ static int ttyname_r_for_directory(char const* directory_name, dev_t device_mode
 
     struct dirent* entry = nullptr;
     char* name_path = nullptr;
+    auto const directory_name_length = strlen(directory_name);
 
     // FIXME: Use LibCore DirIterator here instead
     while ((entry = readdir(dirstream)) != nullptr) {
@@ -440,7 +441,7 @@ static int ttyname_r_for_directory(char const* directory_name, dev_t device_mode
             && strcmp(entry->d_name, "stdout")
             && strcmp(entry->d_name, "stderr")) {
 
-            size_t name_length = strlen(directory_name) + strlen(entry->d_name) + 1;
+            size_t name_length = directory_name_length + strlen(entry->d_name) + 1;
 
             if (name_length > size) {
                 errno = ERANGE;
@@ -448,9 +449,12 @@ static int ttyname_r_for_directory(char const* directory_name, dev_t device_mode
             }
 
             name_path = (char*)malloc(name_length);
+            // FIXME: ttyname_r() is not allowed to return ENOMEM, find better way to store name_path,
+            //        perhaps a static storage.
+            VERIFY(name_path);
             memset(name_path, 0, name_length);
-            memcpy(name_path, directory_name, strlen(directory_name));
-            memcpy(&name_path[strlen(directory_name)], entry->d_name, strlen(entry->d_name));
+            memcpy(name_path, directory_name, directory_name_length);
+            memcpy(&name_path[directory_name_length], entry->d_name, strlen(entry->d_name));
             struct stat st;
             if (lstat(name_path, &st) < 0) {
                 free(name_path);
@@ -825,11 +829,17 @@ int faccessat(int dirfd, char const* pathname, int mode, int flags)
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/mknod.html
 int mknod(char const* pathname, mode_t mode, dev_t dev)
 {
+    return mknodat(AT_FDCWD, pathname, mode, dev);
+}
+
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/mknodat.html
+int mknodat(int dirfd, char const* pathname, mode_t mode, dev_t dev)
+{
     if (!pathname) {
         errno = EFAULT;
         return -1;
     }
-    Syscall::SC_mknod_params params { { pathname, strlen(pathname) }, mode, dev };
+    Syscall::SC_mknod_params params { { pathname, strlen(pathname) }, mode, dev, dirfd };
     int rc = syscall(SC_mknod, &params);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
@@ -949,7 +959,7 @@ int fsopen(char const* fs_type, int flags)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-int fsmount(int mount_fd, int source_fd, char const* target)
+int fsmount(int vfs_context_id, int mount_fd, int source_fd, char const* target)
 {
     if (!target) {
         errno = EFAULT;
@@ -957,6 +967,7 @@ int fsmount(int mount_fd, int source_fd, char const* target)
     }
 
     Syscall::SC_fsmount_params params {
+        vfs_context_id,
         mount_fd,
         { target, strlen(target) },
         source_fd,
@@ -965,7 +976,7 @@ int fsmount(int mount_fd, int source_fd, char const* target)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-int bindmount(int source_fd, char const* target, int flags)
+int bindmount(int vfs_context_id, int source_fd, char const* target, int flags)
 {
     if (!target) {
         errno = EFAULT;
@@ -973,6 +984,7 @@ int bindmount(int source_fd, char const* target, int flags)
     }
 
     Syscall::SC_bindmount_params params {
+        vfs_context_id,
         { target, strlen(target) },
         source_fd,
         flags,
@@ -984,18 +996,22 @@ int bindmount(int source_fd, char const* target, int flags)
 int mount(int source_fd, char const* target, char const* fs_type, int flags)
 {
     if (flags & MS_BIND)
-        return bindmount(source_fd, target, flags);
+        return bindmount(-1, source_fd, target, flags);
 
     int mount_fd = fsopen(fs_type, flags);
     if (mount_fd < 0)
         return -1;
 
-    return fsmount(mount_fd, source_fd, target);
+    return fsmount(-1, mount_fd, source_fd, target);
 }
 
 int umount(char const* mountpoint)
 {
-    int rc = syscall(SC_umount, mountpoint, strlen(mountpoint));
+    Syscall::SC_umount_params params {
+        -1,
+        { mountpoint, strlen(mountpoint) },
+    };
+    int rc = syscall(SC_umount, &params);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 

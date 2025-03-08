@@ -42,13 +42,23 @@ public:
     VideoFrame const& current_frame() const { return m_current_frame; }
     RefPtr<Gfx::Bitmap> const& poster_frame() const { return m_poster_frame; }
 
+    // FIXME: This is a hack for images used as CanvasImageSource. Do something more elegant.
+    RefPtr<Gfx::Bitmap> bitmap() const
+    {
+        return current_frame().frame;
+    }
+
 private:
     HTMLVideoElement(DOM::Document&, DOM::QualifiedName);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void finalize() override;
     virtual void visit_edges(Cell::Visitor&) override;
 
-    virtual void attribute_changed(FlyString const& name, Optional<String> const& value) override;
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value) override;
+
+    // https://html.spec.whatwg.org/multipage/media.html#the-video-element:dimension-attributes
+    virtual bool supports_dimension_attributes() const override { return true; }
 
     virtual JS::GCPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
 

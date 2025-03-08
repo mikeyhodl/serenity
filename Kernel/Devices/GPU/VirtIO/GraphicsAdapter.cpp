@@ -9,7 +9,7 @@
 #include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/IDs.h>
 #include <Kernel/Bus/VirtIO/Transport/PCIe/TransportLink.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/GPU/Console/GenericFramebufferConsole.h>
 #include <Kernel/Devices/GPU/Management.h>
 #include <Kernel/Devices/GPU/VirtIO/Console.h>
@@ -23,12 +23,14 @@ namespace Kernel {
 #define DEVICE_EVENTS_CLEAR 0x4
 #define DEVICE_NUM_SCANOUTS 0x8
 
+static constexpr size_t COMMAND_TIMEOUT_US = 200'000;
+
 ErrorOr<bool> VirtIOGraphicsAdapter::probe(PCI::DeviceIdentifier const& device_identifier)
 {
     return device_identifier.hardware_id().vendor_id == PCI::VendorID::VirtIO;
 }
 
-ErrorOr<NonnullLockRefPtr<GenericGraphicsAdapter>> VirtIOGraphicsAdapter::create(PCI::DeviceIdentifier const& device_identifier)
+ErrorOr<NonnullLockRefPtr<GPUDevice>> VirtIOGraphicsAdapter::create(PCI::DeviceIdentifier const& device_identifier)
 {
     // Setup memory transfer region
     auto scratch_space_region = TRY(MM.allocate_contiguous_kernel_region(
@@ -49,7 +51,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::initialize_adapter()
     VERIFY(m_num_scanouts <= VIRTIO_GPU_MAX_SCANOUTS);
     TRY(initialize_3d_device());
     for (size_t index = 0; index < m_num_scanouts; index++) {
-        auto display_connector = VirtIODisplayConnector::must_create(*this, index);
+        auto display_connector = TRY(VirtIODisplayConnector::create(*this, index));
         m_scanouts[index].display_connector = display_connector;
         TRY(query_and_set_edid(index, *display_connector));
         display_connector->set_safe_mode_setting_after_initialization({});
@@ -223,7 +225,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::query_and_set_edid(u32 scanout_id, VirtIODi
     request.scanout_id = scanout_id;
     request.padding = 0;
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.header.type != to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_EDID)) {
         dmesgln("VirtIO::GraphicsAdapter: Failed to get EDID");
@@ -256,7 +258,7 @@ ErrorOr<Graphics::VirtIOGPU::ResourceID> VirtIOGraphicsAdapter::create_2d_resour
     request.height = rect.height;
     request.format = to_underlying(Graphics::VirtIOGPU::Protocol::TextureFormat::VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM);
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA)) {
         dbgln_if(VIRTIO_DEBUG, "VirtIO::GraphicsAdapter: Allocated 2d resource with id {}", resource_id.value());
@@ -285,7 +287,7 @@ ErrorOr<Graphics::VirtIOGPU::ResourceID> VirtIOGraphicsAdapter::create_3d_resour
     static_assert((sizeof(request) - offsetof(Graphics::VirtIOGPU::Protocol::ResourceCreate3D, target) == sizeof(resource_3d_specification)));
     memcpy(start_of_copied_fields, &resource_3d_specification, sizeof(resource_3d_specification));
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA)) {
         dbgln_if(VIRTIO_DEBUG, "VirtIO::GraphicsAdapter: Allocated 3d resource with id {}", resource_id.value());
@@ -305,7 +307,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::ensure_backing_storage(Graphics::VirtIOGPU:
 
     auto writer = create_scratchspace_writer();
     auto& request = writer.append_structure<Graphics::VirtIOGPU::Protocol::ResourceAttachBacking>();
-    const size_t header_block_size = sizeof(request) + num_mem_regions * sizeof(Graphics::VirtIOGPU::Protocol::MemoryEntry);
+    size_t const header_block_size = sizeof(request) + num_mem_regions * sizeof(Graphics::VirtIOGPU::Protocol::MemoryEntry);
 
     populate_virtio_gpu_request_header(request.header, Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, 0);
     request.resource_id = resource_id.value();
@@ -318,7 +320,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::ensure_backing_storage(Graphics::VirtIOGPU:
 
     auto& response = writer.append_structure<Graphics::VirtIOGPU::Protocol::ControlHeader>();
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), header_block_size, sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), header_block_size, sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA)) {
         dbgln_if(VIRTIO_DEBUG, "VirtIO::GraphicsAdapter: Allocated backing storage");
@@ -337,7 +339,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::detach_backing_storage(Graphics::VirtIOGPU:
     populate_virtio_gpu_request_header(request.header, Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING, 0);
     request.resource_id = resource_id.value();
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA)) {
         dbgln_if(VIRTIO_DEBUG, "VirtIO::GraphicsAdapter: Detached backing storage");
@@ -359,7 +361,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::set_scanout_resource(Graphics::VirtIOGPU::S
     request.scanout_id = scanout.value();
     request.rect = rect;
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA)) {
         dbgln_if(VIRTIO_DEBUG, "VirtIO::GraphicsAdapter: Set backing scanout");
@@ -380,7 +382,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::transfer_framebuffer_data_to_host(Graphics:
     request.resource_id = resource_id.value();
     request.rect = dirty_rect;
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA))
         return {};
@@ -398,7 +400,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::flush_displayed_image(Graphics::VirtIOGPU::
     request.resource_id = resource_id.value();
     request.rect = dirty_rect;
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA))
         return {};
@@ -408,8 +410,6 @@ ErrorOr<void> VirtIOGraphicsAdapter::flush_displayed_image(Graphics::VirtIOGPU::
 ErrorOr<void> VirtIOGraphicsAdapter::synchronous_virtio_gpu_command(size_t microseconds_timeout, PhysicalAddress buffer_start, size_t request_size, size_t response_size)
 {
     VERIFY(m_operation_lock.is_locked());
-    VERIFY(microseconds_timeout > 10);
-    VERIFY(microseconds_timeout < 100000);
     auto& queue = get_queue(CONTROLQ);
     queue.disable_interrupts();
     SpinlockLocker lock(queue.lock());
@@ -454,7 +454,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::delete_resource(Graphics::VirtIOGPU::Resour
     populate_virtio_gpu_request_header(request.header, Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_CMD_RESOURCE_UNREF, 0);
     request.resource_id = resource_id.value();
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA))
         return {};
@@ -465,7 +465,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::initialize_3d_device()
 {
     if (m_has_virgl_support) {
         SpinlockLocker locker(m_operation_lock);
-        m_3d_device = TRY(VirtIOGPU3DDevice::try_create(*this));
+        m_3d_device = TRY(VirtIOGPU3DDevice::create(*this));
     }
     return {};
 }
@@ -493,7 +493,7 @@ ErrorOr<Graphics::VirtIOGPU::ContextID> VirtIOGraphicsAdapter::create_context()
         VERIFY(request.name_length <= 64);
         memcpy(request.debug_name.data(), region_name, request.name_length);
 
-        TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+        TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
         if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA)) {
             active_context_ids.set(maybe_available_id.value(), true);
@@ -528,7 +528,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::submit_command_buffer(Graphics::VirtIOGPU::
     dbgln_if(VIRTIO_DEBUG, "VirtIO::GraphicsAdapter: Sending command buffer of length {}", request.size);
     auto& response = writer.append_structure<Graphics::VirtIOGPU::Protocol::ControlHeader>();
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request) + request.size, sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request) + request.size, sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA))
         return {};
@@ -545,7 +545,7 @@ ErrorOr<void> VirtIOGraphicsAdapter::attach_resource_to_context(Graphics::VirtIO
     request.header.context_id = context_id.value();
     request.resource_id = resource_id.value();
 
-    TRY(synchronous_virtio_gpu_command(10000, start_of_scratch_space(), sizeof(request), sizeof(response)));
+    TRY(synchronous_virtio_gpu_command(COMMAND_TIMEOUT_US, start_of_scratch_space(), sizeof(request), sizeof(response)));
 
     if (response.type == to_underlying(Graphics::VirtIOGPU::Protocol::CommandType::VIRTIO_GPU_RESP_OK_NODATA))
         return {};

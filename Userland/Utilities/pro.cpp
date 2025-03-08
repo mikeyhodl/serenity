@@ -156,7 +156,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     StringView proxy_spec;
     ByteString method = "GET";
     StringView method_override;
-    HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> request_headers;
+    HTTP::HeaderMap request_headers;
     String credentials;
 
     Core::ArgsParser args_parser;
@@ -298,15 +298,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         if (verbose_output && is_http_url) {
             warnln("* Setting up request");
             warnln("> Method={}, URL={}", method, url);
-            for (auto const& header : request_headers) {
-                warnln("> {}: {}", header.key, header.value);
+            for (auto const& header : request_headers.headers()) {
+                warnln("> {}: {}", header.name, header.value);
             }
         }
 
-        request->on_progress = [&](Optional<u64> maybe_total_size, u64 downloaded_size) {
-            update_progress(move(maybe_total_size), downloaded_size, false);
-        };
-        request->on_headers_received = [&](auto& response_headers, auto status_code) {
+        auto on_headers_received = [&](auto& response_headers, auto status_code) {
             if (received_actual_headers)
                 return;
             dbgln("Received headers! response code = {}", status_code.value_or(0));
@@ -320,8 +317,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                     ? HTTP::HttpResponse::reason_phrase_for_code(value)
                     : "UNKNOWN"sv;
                 warnln("< Code={}, Reason={}", value, reason_phrase);
-                for (auto const& header : response_headers) {
-                    warnln("< {}: {}", header.key, header.value);
+                for (auto const& header : response_headers.headers()) {
+                    warnln("< {}: {}", header.name, header.value);
                 }
             }
 
@@ -334,7 +331,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                 }
 
                 if (output_name.is_empty())
-                    output_name = url.serialize_path();
+                    output_name = URL::percent_decode(url.serialize_path());
 
                 LexicalPath path { output_name };
                 output_name = path.basename();
@@ -377,9 +374,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                     following_url = true;
                     received_actual_headers = false;
                     should_save_stream_data = false;
-                    request->on_finish = nullptr;
-                    request->on_headers_received = nullptr;
-                    request->on_progress = nullptr;
                     request->stop();
 
                     Core::deferred_invoke([&, was_following_url, url = location.value()] {
@@ -395,7 +389,12 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
                     warnln("Request returned error {}", status_code_value);
             }
         };
-        request->on_finish = [&](bool success, u64 total_size) {
+
+        auto on_data_received = [&](auto data) {
+            output_stream.write_until_depleted(data).release_value_but_fixme_should_propagate_errors();
+        };
+
+        auto on_finished = [&](bool success, u64 total_size) {
             if (following_url)
                 return;
 
@@ -409,7 +408,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             loop.quit(0);
         };
 
-        request->stream_into(output_stream);
+        request->set_unbuffered_request_callbacks(move(on_headers_received), move(on_data_received), move(on_finished));
+
+        request->on_progress = [&](Optional<u64> maybe_total_size, u64 downloaded_size) {
+            update_progress(move(maybe_total_size), downloaded_size, false);
+        };
     };
 
     request = protocol_client->start_request(method, url, request_headers, data.bytes(), proxy_data);

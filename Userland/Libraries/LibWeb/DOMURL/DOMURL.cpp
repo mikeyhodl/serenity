@@ -2,6 +2,7 @@
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
  * Copyright (c) 2021, the SerenityOS developers.
  * Copyright (c) 2023, networkException <networkexception@serenityos.org>
+ * Copyright (c) 2024, Shannon Booth <shannon@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -9,6 +10,7 @@
 #include <AK/IPv4Address.h>
 #include <AK/IPv6Address.h>
 #include <LibURL/Parser.h>
+#include <LibWeb/Bindings/DOMURLPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/FileAPI/Blob.h>
@@ -49,6 +51,43 @@ static Optional<URL::URL> parse_api_url(String const& url, Optional<String> cons
     return parsed.is_valid() ? parsed : Optional<URL::URL> {};
 }
 
+// https://url.spec.whatwg.org/#url-initialize
+JS::NonnullGCPtr<DOMURL> DOMURL::initialize_a_url(JS::Realm& realm, URL::URL const& url_record)
+{
+    // 1. Let query be urlRecord’s query, if that is non-null; otherwise the empty string.
+    auto query = url_record.query().value_or(String {});
+
+    // 2. Set url’s URL to urlRecord.
+    // 3. Set url’s query object to a new URLSearchParams object.
+    auto query_object = URLSearchParams::create(realm, query);
+
+    // 4. Initialize url’s query object with query.
+    auto result_url = DOMURL::create(realm, url_record, move(query_object));
+
+    // 5. Set url’s query object’s URL object to url.
+    result_url->m_query->m_url = result_url;
+
+    return result_url;
+}
+
+// https://url.spec.whatwg.org/#dom-url-parse
+JS::GCPtr<DOMURL> DOMURL::parse_for_bindings(JS::VM& vm, String const& url, Optional<String> const& base)
+{
+    auto& realm = *vm.current_realm();
+
+    // 1. Let parsedURL be the result of running the API URL parser on url with base, if given.
+    auto parsed_url = parse_api_url(url, base);
+
+    // 2. If parsedURL is failure, then return null.
+    if (!parsed_url.has_value())
+        return nullptr;
+
+    // 3. Let url be a new URL object.
+    // 4. Initialize url with parsedURL.
+    // 5. Return url.
+    return initialize_a_url(realm, parsed_url.value());
+}
+
 // https://url.spec.whatwg.org/#dom-url-url
 WebIDL::ExceptionOr<JS::NonnullGCPtr<DOMURL>> DOMURL::construct_impl(JS::Realm& realm, String const& url, Optional<String> const& base)
 {
@@ -59,20 +98,8 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<DOMURL>> DOMURL::construct_impl(JS::Realm& 
     if (!parsed_url.has_value())
         return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Invalid URL"sv };
 
-    // 3. Let query be parsedURL’s query, if that is non-null, and the empty string otherwise.
-    auto query = parsed_url->query().value_or(String {});
-
-    // 4. Set this’s URL to parsedURL.
-    // 5. Set this’s query object to a new URLSearchParams object.
-    auto query_object = MUST(URLSearchParams::construct_impl(realm, query));
-
-    // 6. Initialize this’s query object with query.
-    auto result_url = DOMURL::create(realm, parsed_url.release_value(), move(query_object));
-
-    // 7. Set this’s query object’s URL object to this.
-    result_url->m_query->m_url = result_url;
-
-    return result_url;
+    // 3. Initialize this with parsedURL.
+    return initialize_a_url(realm, parsed_url.value());
 }
 
 DOMURL::DOMURL(JS::Realm& realm, URL::URL url, JS::NonnullGCPtr<URLSearchParams> query)
@@ -114,7 +141,7 @@ WebIDL::ExceptionOr<void> DOMURL::revoke_object_url(JS::VM& vm, StringView url)
         return {};
 
     // 3. Let origin be the origin of url record.
-    auto origin = url_origin(url_record);
+    auto origin = url_record.origin();
 
     // 4. Let settings be the current settings object.
     auto& settings = HTML::current_settings_object();
@@ -163,8 +190,6 @@ WebIDL::ExceptionOr<String> DOMURL::to_json() const
 // https://url.spec.whatwg.org/#ref-for-dom-url-href②
 WebIDL::ExceptionOr<void> DOMURL::set_href(String const& href)
 {
-    auto& vm = realm().vm();
-
     // 1. Let parsedURL be the result of running the basic URL parser on the given value.
     URL::URL parsed_url = href;
 
@@ -183,7 +208,7 @@ WebIDL::ExceptionOr<void> DOMURL::set_href(String const& href)
 
     // 6. If query is non-null, then set this’s query object’s list to the result of parsing query.
     if (query.has_value())
-        m_query->m_list = TRY_OR_THROW_OOM(vm, url_decode(*query));
+        m_query->m_list = url_decode(*query);
     return {};
 }
 
@@ -193,7 +218,7 @@ WebIDL::ExceptionOr<String> DOMURL::origin() const
     auto& vm = realm().vm();
 
     // The origin getter steps are to return the serialization of this’s URL’s origin. [HTML]
-    return TRY_OR_THROW_OOM(vm, String::from_byte_string(m_url.serialize_origin()));
+    return TRY_OR_THROW_OOM(vm, String::from_byte_string(m_url.origin().serialize()));
 }
 
 // https://url.spec.whatwg.org/#dom-url-protocol
@@ -212,19 +237,15 @@ WebIDL::ExceptionOr<void> DOMURL::set_protocol(String const& protocol)
 
     // The protocol setter steps are to basic URL parse the given value, followed by U+003A (:), with this’s URL as
     // url and scheme start state as state override.
-    auto result_url = URL::Parser::basic_parse(TRY_OR_THROW_OOM(vm, String::formatted("{}:", protocol)), {}, m_url, URL::Parser::State::SchemeStart);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(TRY_OR_THROW_OOM(vm, String::formatted("{}:", protocol)), {}, &m_url, URL::Parser::State::SchemeStart);
     return {};
 }
 
 // https://url.spec.whatwg.org/#dom-url-username
-WebIDL::ExceptionOr<String> DOMURL::username() const
+String const& DOMURL::username() const
 {
-    auto& vm = realm().vm();
-
     // The username getter steps are to return this’s URL’s username.
-    return TRY_OR_THROW_OOM(vm, m_url.username());
+    return m_url.username();
 }
 
 // https://url.spec.whatwg.org/#ref-for-dom-url-username%E2%91%A0
@@ -235,16 +256,14 @@ void DOMURL::set_username(String const& username)
         return;
 
     // 2. Set the username given this’s URL and the given value.
-    MUST(m_url.set_username(username));
+    m_url.set_username(username);
 }
 
 // https://url.spec.whatwg.org/#dom-url-password
-WebIDL::ExceptionOr<String> DOMURL::password() const
+String const& DOMURL::password() const
 {
-    auto& vm = realm().vm();
-
     // The password getter steps are to return this’s URL’s password.
-    return TRY_OR_THROW_OOM(vm, m_url.password());
+    return m_url.password();
 }
 
 // https://url.spec.whatwg.org/#ref-for-dom-url-password%E2%91%A0
@@ -255,7 +274,7 @@ void DOMURL::set_password(String const& password)
         return;
 
     // 2. Set the password given this’s URL and the given value.
-    MUST(m_url.set_password(password));
+    m_url.set_password(password);
 }
 
 // https://url.spec.whatwg.org/#dom-url-host
@@ -286,9 +305,7 @@ void DOMURL::set_host(String const& host)
         return;
 
     // 2. Basic URL parse the given value with this’s URL as url and host state as state override.
-    auto result_url = URL::Parser::basic_parse(host, {}, m_url, URL::Parser::State::Host);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(host, {}, &m_url, URL::Parser::State::Host);
 }
 
 // https://url.spec.whatwg.org/#dom-url-hostname
@@ -312,9 +329,7 @@ void DOMURL::set_hostname(String const& hostname)
         return;
 
     // 2. Basic URL parse the given value with this’s URL as url and hostname state as state override.
-    auto result_url = URL::Parser::basic_parse(hostname, {}, m_url, URL::Parser::State::Hostname);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(hostname, {}, &m_url, URL::Parser::State::Hostname);
 }
 
 // https://url.spec.whatwg.org/#dom-url-port
@@ -343,19 +358,15 @@ void DOMURL::set_port(String const& port)
     }
     // 3. Otherwise, basic URL parse the given value with this’s URL as url and port state as state override.
     else {
-        auto result_url = URL::Parser::basic_parse(port, {}, m_url, URL::Parser::State::Port);
-        if (result_url.is_valid())
-            m_url = move(result_url);
+        (void)URL::Parser::basic_parse(port, {}, &m_url, URL::Parser::State::Port);
     }
 }
 
 // https://url.spec.whatwg.org/#dom-url-pathname
-WebIDL::ExceptionOr<String> DOMURL::pathname() const
+String DOMURL::pathname() const
 {
-    auto& vm = realm().vm();
-
     // The pathname getter steps are to return the result of URL path serializing this’s URL.
-    return TRY_OR_THROW_OOM(vm, String::from_byte_string(m_url.serialize_path(URL::ApplyPercentDecoding::No)));
+    return m_url.serialize_path();
 }
 
 // https://url.spec.whatwg.org/#ref-for-dom-url-pathname%E2%91%A0
@@ -367,13 +378,10 @@ void DOMURL::set_pathname(String const& pathname)
         return;
 
     // 2. Empty this’s URL’s path.
-    auto url = m_url; // We copy the URL here to follow other browser's behavior of reverting the path change if the parse failed.
-    url.set_paths({});
+    m_url.set_paths({});
 
     // 3. Basic URL parse the given value with this’s URL as url and path start state as state override.
-    auto result_url = URL::Parser::basic_parse(pathname, {}, move(url), URL::Parser::State::PathStart);
-    if (result_url.is_valid())
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(pathname, {}, &m_url, URL::Parser::State::PathStart);
 }
 
 // https://url.spec.whatwg.org/#dom-url-search
@@ -390,10 +398,8 @@ WebIDL::ExceptionOr<String> DOMURL::search() const
 }
 
 // https://url.spec.whatwg.org/#ref-for-dom-url-search%E2%91%A0
-WebIDL::ExceptionOr<void> DOMURL::set_search(String const& search)
+void DOMURL::set_search(String const& search)
 {
-    auto& vm = realm().vm();
-
     // 1. Let url be this’s URL.
     auto& url = m_url;
 
@@ -409,7 +415,7 @@ WebIDL::ExceptionOr<void> DOMURL::set_search(String const& search)
         strip_trailing_spaces_from_an_opaque_path(*this);
 
         // 4. Return.
-        return {};
+        return;
     }
 
     // 3. Let input be the given value with a single leading U+003F (?) removed, if any.
@@ -417,19 +423,13 @@ WebIDL::ExceptionOr<void> DOMURL::set_search(String const& search)
     auto input = search_as_string_view.substring_view(search_as_string_view.starts_with('?'));
 
     // 4. Set url’s query to the empty string.
-    auto url_copy = url; // We copy the URL here to follow other browser's behavior of reverting the search change if the parse failed.
-    url_copy.set_query(String {});
+    url.set_query(String {});
 
     // 5. Basic URL parse input with url as url and query state as state override.
-    auto result_url = URL::Parser::basic_parse(input, {}, move(url_copy), URL::Parser::State::Query);
-    if (result_url.is_valid()) {
-        m_url = move(result_url);
+    (void)URL::Parser::basic_parse(input, {}, &url, URL::Parser::State::Query);
 
-        // 6. Set this’s query object’s list to the result of parsing input.
-        m_query->m_list = TRY_OR_THROW_OOM(vm, url_decode(input));
-    }
-
-    return {};
+    // 6. Set this’s query object’s list to the result of parsing input.
+    m_query->m_list = url_decode(input);
 }
 
 // https://url.spec.whatwg.org/#dom-url-searchparams
@@ -472,64 +472,10 @@ void DOMURL::set_hash(String const& hash)
     auto input = hash_as_string_view.substring_view(hash_as_string_view.starts_with('#'));
 
     // 3. Set this’s URL’s fragment to the empty string.
-    auto url = m_url; // We copy the URL here to follow other browser's behavior of reverting the hash change if the parse failed.
-    url.set_fragment(String {});
+    m_url.set_fragment(String {});
 
     // 4. Basic URL parse input with this’s URL as url and fragment state as state override.
-    auto result_url = URL::Parser::basic_parse(input, {}, move(url), URL::Parser::State::Fragment);
-    if (result_url.is_valid())
-        m_url = move(result_url);
-}
-
-// https://url.spec.whatwg.org/#concept-url-origin
-HTML::Origin url_origin(URL::URL const& url)
-{
-    // FIXME: We should probably have an extended version of URL::URL for LibWeb instead of standalone functions like this.
-
-    // The origin of a URL url is the origin returned by running these steps, switching on url’s scheme:
-    // -> "blob"
-    if (url.scheme() == "blob"sv) {
-        auto url_string = url.to_string().release_value_but_fixme_should_propagate_errors();
-
-        // 1. If url’s blob URL entry is non-null, then return url’s blob URL entry’s environment’s origin.
-        if (auto blob_url_entry = FileAPI::blob_url_store().get(url_string); blob_url_entry.has_value())
-            return blob_url_entry->environment->origin();
-
-        // 2. Let pathURL be the result of parsing the result of URL path serializing url.
-        auto path_url = parse(url.serialize_path());
-
-        // 3. If pathURL is failure, then return a new opaque origin.
-        if (!path_url.is_valid())
-            return HTML::Origin {};
-
-        // 4. If pathURL’s scheme is "http", "https", or "file", then return pathURL’s origin.
-        if (path_url.scheme().is_one_of("http"sv, "https"sv, "file"sv))
-            return url_origin(path_url);
-
-        // 5. Return a new opaque origin.
-        return HTML::Origin {};
-    }
-
-    // -> "ftp"
-    // -> "http"
-    // -> "https"
-    // -> "ws"
-    // -> "wss"
-    if (url.scheme().is_one_of("ftp"sv, "http"sv, "https"sv, "ws"sv, "wss"sv)) {
-        // Return the tuple origin (url’s scheme, url’s host, url’s port, null).
-        return HTML::Origin(url.scheme().to_byte_string(), url.host(), url.port().value_or(0));
-    }
-
-    // -> "file"
-    if (url.scheme() == "file"sv) {
-        // Unfortunate as it is, this is left as an exercise to the reader. When in doubt, return a new opaque origin.
-        // Note: We must return an origin with the `file://' protocol for `file://' iframes to work from `file://' pages.
-        return HTML::Origin(url.scheme().to_byte_string(), String {}, 0);
-    }
-
-    // -> Otherwise
-    // Return a new opaque origin.
-    return HTML::Origin {};
+    (void)URL::Parser::basic_parse(input, {}, &m_url, URL::Parser::State::Fragment);
 }
 
 // https://url.spec.whatwg.org/#concept-domain
@@ -563,25 +509,32 @@ void strip_trailing_spaces_from_an_opaque_path(DOMURL& url)
 }
 
 // https://url.spec.whatwg.org/#concept-url-parser
-URL::URL parse(StringView input, Optional<URL::URL> const& base_url)
+URL::URL parse(StringView input, Optional<URL::URL> const& base_url, Optional<StringView> encoding)
 {
     // FIXME: We should probably have an extended version of URL::URL for LibWeb instead of standalone functions like this.
 
     // 1. Let url be the result of running the basic URL parser on input with base and encoding.
-    auto url = URL::Parser::basic_parse(input, base_url);
+    auto url = URL::Parser::basic_parse(input, base_url, {}, {}, encoding);
 
     // 2. If url is failure, return failure.
     if (!url.is_valid())
         return {};
 
-    // 3. If url’s scheme is not "blob",
+    // 3. If url’s scheme is not "blob", return url.
     if (url.scheme() != "blob")
         return url;
 
-    // FIXME: 4. Set url’s blob URL entry to the result of resolving the blob URL url,
-    // FIXME: 5. if that did not return failure, and null otherwise.
+    // 4. Set url’s blob URL entry to the result of resolving the blob URL url, if that did not return failure, and null otherwise.
+    auto blob_url_entry = FileAPI::resolve_a_blob_url(url);
+    if (blob_url_entry.has_value()) {
+        url.set_blob_url_entry(URL::BlobURLEntry {
+            .type = blob_url_entry->object->type(),
+            .byte_buffer = MUST(ByteBuffer::copy(blob_url_entry->object->raw_bytes())),
+            .environment_origin = blob_url_entry->environment->origin(),
+        });
+    }
 
-    // 6. Return url
+    // 5. Return url
     return url;
 }
 

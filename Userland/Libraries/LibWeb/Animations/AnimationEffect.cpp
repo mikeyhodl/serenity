@@ -8,9 +8,9 @@
 #include <LibWeb/Animations/Animation.h>
 #include <LibWeb/Animations/AnimationEffect.h>
 #include <LibWeb/Animations/AnimationTimeline.h>
+#include <LibWeb/Bindings/AnimationEffectPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/Parser/Parser.h>
-#include <LibWeb/DOM/Element.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::Animations {
@@ -75,7 +75,7 @@ EffectTiming AnimationEffect::get_timing() const
         .iterations = m_iteration_count,
         .duration = m_iteration_duration,
         .direction = m_playback_direction,
-        .easing = m_easing_function,
+        .easing = m_timing_function.to_string(),
     };
 }
 
@@ -110,7 +110,7 @@ ComputedEffectTiming AnimationEffect::get_computed_timing() const
             .iterations = m_iteration_count,
             .duration = duration,
             .direction = m_playback_direction,
-            .easing = m_easing_function,
+            .easing = m_timing_function.to_string(),
         },
 
         end_time(),
@@ -139,12 +139,27 @@ WebIDL::ExceptionOr<void> AnimationEffect::update_timing(OptionalEffectTiming ti
     //    abort this procedure.
     // Note: "auto", the only valid string value, is treated as 0.
     auto& duration = timing.duration;
-    if (duration.has_value() && duration->has<double>() && (duration->get<double>() < 0.0 || isnan(duration->get<double>())))
+    auto has_valid_duration_value = [&] {
+        if (!duration.has_value())
+            return true;
+        if (duration->has<double>() && (duration->get<double>() < 0.0 || isnan(duration->get<double>())))
+            return false;
+        if (duration->has<String>() && (duration->get<String>() != "auto"))
+            return false;
+        return true;
+    }();
+    if (!has_valid_duration_value)
         return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Invalid duration value"sv };
 
-    // FIXME:
     // 4. If the easing member of input exists but cannot be parsed using the <easing-function> production
     //    [CSS-EASING-1], throw a TypeError and abort this procedure.
+    RefPtr<CSS::CSSStyleValue const> easing_value;
+    if (timing.easing.has_value()) {
+        easing_value = parse_easing_string(realm(), timing.easing.value());
+        if (!easing_value)
+            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Invalid easing function"sv };
+        VERIFY(easing_value->is_easing());
+    }
 
     // 5. Assign each member that exists in input to the corresponding timing property of effect as follows:
 
@@ -177,14 +192,8 @@ WebIDL::ExceptionOr<void> AnimationEffect::update_timing(OptionalEffectTiming ti
         m_playback_direction = timing.direction.value();
 
     //    - easing → timing function
-    if (timing.easing.has_value()) {
-        m_easing_function = timing.easing.value();
-        if (auto timing_function = parse_easing_string(realm(), m_easing_function)) {
-            m_timing_function = TimingFunction::from_easing_style_value(timing_function->as_easing());
-        } else {
-            m_timing_function = Animations::linear_timing_function;
-        }
-    }
+    if (easing_value)
+        m_timing_function = easing_value->as_easing().function();
 
     if (auto animation = m_associated_animation)
         animation->effect_timing_changed({});
@@ -195,8 +204,6 @@ WebIDL::ExceptionOr<void> AnimationEffect::update_timing(OptionalEffectTiming ti
 void AnimationEffect::set_associated_animation(JS::GCPtr<Animation> value)
 {
     m_associated_animation = value;
-    if (auto* target = this->target())
-        target->invalidate_style();
 }
 
 // https://www.w3.org/TR/web-animations-1/#animation-direction
@@ -417,15 +424,25 @@ AnimationEffect::Phase AnimationEffect::phase() const
 {
     // This is a convenience method that returns the phase of the animation effect, to avoid having to call all of the
     // phase functions separately.
-    // FIXME: There is a lot of duplicated condition checking here which can probably be inlined into this function
+    auto local_time = this->local_time();
+    if (!local_time.has_value())
+        return Phase::Idle;
 
-    if (is_in_the_before_phase())
+    auto before_active_boundary_time = this->before_active_boundary_time();
+    // - the local time is less than the before-active boundary time, or
+    // - the animation direction is "backwards" and the local time is equal to the before-active boundary time.
+    if (local_time.value() < before_active_boundary_time || (animation_direction() == AnimationDirection::Backwards && local_time.value() == before_active_boundary_time))
         return Phase::Before;
-    if (is_in_the_active_phase())
-        return Phase::Active;
-    if (is_in_the_after_phase())
+
+    auto after_active_boundary_time = this->after_active_boundary_time();
+    // - the local time is greater than the active-after boundary time, or
+    // - the animation direction is "forwards" and the local time is equal to the active-after boundary time.
+    if (local_time.value() > after_active_boundary_time || (animation_direction() == AnimationDirection::Forwards && local_time.value() == after_active_boundary_time))
         return Phase::After;
-    return Phase::Idle;
+
+    // - An animation effect is in the active phase if the animation effect’s local time is not unresolved and it is not
+    // - in either the before phase nor the after phase.
+    return Phase::Active;
 }
 
 // https://www.w3.org/TR/web-animations-1/#overall-progress
@@ -579,16 +596,14 @@ Optional<double> AnimationEffect::transformed_progress() const
 
     // 3. Return the result of evaluating the animation effect’s timing function passing directed progress as the input progress value and
     //    before flag as the before flag.
-    return m_timing_function(directed_progress.value(), before_flag);
+    return m_timing_function.evaluate_at(directed_progress.value(), before_flag);
 }
 
-RefPtr<CSS::StyleValue const> AnimationEffect::parse_easing_string(JS::Realm& realm, StringView value)
+RefPtr<CSS::CSSStyleValue const> AnimationEffect::parse_easing_string(JS::Realm& realm, StringView value)
 {
-    auto maybe_parser = CSS::Parser::Parser::create(CSS::Parser::ParsingContext(realm), value);
-    if (maybe_parser.is_error())
-        return {};
+    auto parser = CSS::Parser::Parser::create(CSS::Parser::ParsingContext(realm), value);
 
-    if (auto style_value = maybe_parser.release_value().parse_as_css_value(CSS::PropertyID::AnimationTimingFunction)) {
+    if (auto style_value = parser.parse_as_css_value(CSS::PropertyID::AnimationTimingFunction)) {
         if (style_value->is_easing())
             return style_value;
     }
@@ -605,6 +620,12 @@ void AnimationEffect::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     WEB_SET_PROTOTYPE_FOR_INTERFACE(AnimationEffect);
+}
+
+void AnimationEffect::visit_edges(JS::Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_associated_animation);
 }
 
 }

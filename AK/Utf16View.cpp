@@ -63,6 +63,13 @@ ErrorOr<void> code_point_to_utf16(Utf16Data& string, u32 code_point)
     return {};
 }
 
+size_t utf16_code_unit_length_from_utf8(StringView string)
+{
+    // FIXME: This is inefficient!
+    auto utf16_data = MUST(AK::utf8_to_utf16(string));
+    return Utf16View { utf16_data }.length_in_code_units();
+}
+
 bool Utf16View::is_high_surrogate(u16 code_unit)
 {
     return (code_unit >= high_surrogate_min) && (code_unit <= high_surrogate_max);
@@ -105,10 +112,11 @@ ErrorOr<String> Utf16View::to_utf8(AllowInvalidCodeUnits allow_invalid_code_unit
 
             TRY(builder.try_append_code_point(static_cast<u32>(*ptr)));
         }
-    } else {
-        for (auto code_point : *this)
-            TRY(builder.try_append_code_point(code_point));
+        return builder.to_string_without_validation();
     }
+
+    for (auto code_point : *this)
+        TRY(builder.try_append_code_point(code_point));
 
     return builder.to_string();
 }

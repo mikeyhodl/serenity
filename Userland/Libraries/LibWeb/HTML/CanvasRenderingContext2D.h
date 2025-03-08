@@ -13,7 +13,6 @@
 #include <LibGfx/AntiAliasingPainter.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
-#include <LibGfx/Painter.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/PathClipper.h>
 #include <LibWeb/Bindings/PlatformObject.h>
@@ -36,10 +35,6 @@
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::HTML {
-
-// https://html.spec.whatwg.org/multipage/canvas.html#canvasimagesource
-// NOTE: This is the Variant created by the IDL wrapper generator, and needs to be updated accordingly.
-using CanvasImageSource = Variant<JS::Handle<HTMLImageElement>, JS::Handle<HTMLCanvasElement>>;
 
 class CanvasRenderingContext2D
     : public Bindings::PlatformObject
@@ -80,8 +75,9 @@ public:
     virtual void fill(StringView fill_rule) override;
     virtual void fill(Path2D& path, StringView fill_rule) override;
 
-    virtual JS::GCPtr<ImageData> create_image_data(int width, int height) const override;
-    virtual WebIDL::ExceptionOr<JS::GCPtr<ImageData>> get_image_data(int x, int y, int width, int height) const override;
+    virtual WebIDL::ExceptionOr<JS::NonnullGCPtr<ImageData>> create_image_data(int width, int height, Optional<ImageDataSettings> const& settings = {}) const override;
+    virtual WebIDL::ExceptionOr<JS::NonnullGCPtr<ImageData>> create_image_data(ImageData const& image_data) const override;
+    virtual WebIDL::ExceptionOr<JS::GCPtr<ImageData>> get_image_data(int x, int y, int width, int height, Optional<ImageDataSettings> const& settings = {}) const override;
     virtual void put_image_data(ImageData const&, float x, float y) override;
 
     virtual void reset_to_default_state() override;
@@ -149,8 +145,8 @@ private:
     void bitmap_font_fill_text(StringView text, float x, float y, Optional<double> max_width);
 
     void stroke_internal(Gfx::Path const&);
-    void fill_internal(Gfx::Path const&, Gfx::Painter::WindingRule);
-    void clip_internal(Gfx::Path&, Gfx::Painter::WindingRule);
+    void fill_internal(Gfx::Path const&, Gfx::WindingRule);
+    void clip_internal(Gfx::Path&, Gfx::WindingRule);
 
     JS::NonnullGCPtr<HTMLCanvasElement> m_element;
     OwnPtr<Gfx::Painter> m_painter;

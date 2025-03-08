@@ -92,6 +92,7 @@ namespace JS {
     P(byteLength)                            \
     P(byteOffset)                            \
     P(calendar)                              \
+    P(calendarId)                            \
     P(calendarName)                          \
     P(call)                                  \
     P(callee)                                \
@@ -307,6 +308,7 @@ namespace JS {
     P(is)                                    \
     P(isArray)                               \
     P(isDisjointFrom)                        \
+    P(isError)                               \
     P(isExtensible)                          \
     P(isFinite)                              \
     P(isFrozen)                              \
@@ -513,6 +515,7 @@ namespace JS {
     P(supportedLocalesOf)                    \
     P(supportedValuesOf)                     \
     P(symmetricDifference)                   \
+    P(table)                                 \
     P(take)                                  \
     P(tan)                                   \
     P(tanh)                                  \
@@ -614,6 +617,7 @@ struct CommonPropertyNames {
     PropertyKey register_ { "register", PropertyKey::StringMayBeNumber::No };
     PropertyKey return_ { "return", PropertyKey::StringMayBeNumber::No };
     PropertyKey throw_ { "throw", PropertyKey::StringMayBeNumber::No };
+    PropertyKey try_ { "try", PropertyKey::StringMayBeNumber::No };
     PropertyKey union_ { "union", PropertyKey::StringMayBeNumber::No };
     PropertyKey xor_ { "xor", PropertyKey::StringMayBeNumber::No };
     PropertyKey inputAlias { "$_", PropertyKey::StringMayBeNumber::No };

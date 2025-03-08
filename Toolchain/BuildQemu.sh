@@ -31,7 +31,7 @@ pushd "$DIR/Tarballs"
         echo "Skipped downloading ${QEMU_ARCHIVE}"
     fi
 
-    if ! sha256sum --status -c <(echo "${QEMU_ARCHIVE_SHA256SUM}" "${QEMU_ARCHIVE}"); then
+    if ! check_sha256 "${QEMU_ARCHIVE}" "${QEMU_ARCHIVE_SHA256SUM}"; then
         echo "qemu sha256 sum mismatching, please run script again."
         rm -f "${QEMU_ARCHIVE}"
         exit 1
@@ -60,6 +60,8 @@ then
     EXTRA_ARGS="--disable-sdl"
 else
     UI_LIB=gtk
+    # Allows copy pasting between Serenity and the host.
+    EXTRA_ARGS="--enable-gtk-clipboard"
 fi
 
 echo Using $UI_LIB based UI

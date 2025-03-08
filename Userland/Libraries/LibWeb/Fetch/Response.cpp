@@ -7,6 +7,7 @@
 #include <LibJS/Runtime/Completion.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
+#include <LibWeb/Bindings/ResponsePrototype.h>
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/Fetch/Enums.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
@@ -43,7 +44,7 @@ void Response::visit_edges(Cell::Visitor& visitor)
 
 // https://fetch.spec.whatwg.org/#concept-body-mime-type
 // https://fetch.spec.whatwg.org/#ref-for-concept-header-extract-mime-type%E2%91%A7
-ErrorOr<Optional<MimeSniff::MimeType>> Response::mime_type_impl() const
+Optional<MimeSniff::MimeType> Response::mime_type_impl() const
 {
     // Objects including the Body interface mixin need to define an associated MIME type algorithm which takes no arguments and returns failure or a MIME type.
     // A Response object’s MIME type is to return the result of extracting a MIME type from its response’s header list.
@@ -86,8 +87,6 @@ JS::NonnullGCPtr<Response> Response::create(JS::Realm& realm, JS::NonnullGCPtr<I
 // https://fetch.spec.whatwg.org/#initialize-a-response
 WebIDL::ExceptionOr<void> Response::initialize_response(ResponseInit const& init, Optional<Infrastructure::BodyWithType> const& body)
 {
-    auto& vm = this->vm();
-
     // 1. If init["status"] is not in the range 200 to 599, inclusive, then throw a RangeError.
     if (init.status < 200 || init.status > 599)
         return WebIDL::SimpleException { WebIDL::SimpleExceptionType::RangeError, "Status must be in range 200-599"sv };
@@ -98,7 +97,7 @@ WebIDL::ExceptionOr<void> Response::initialize_response(ResponseInit const& init
     m_response->set_status(init.status);
 
     // 4. Set response’s response’s status message to init["statusText"].
-    m_response->set_status_message(TRY_OR_THROW_OOM(vm, ByteBuffer::copy(init.status_text.bytes())));
+    m_response->set_status_message(MUST(ByteBuffer::copy(init.status_text.bytes())));
 
     // 5. If init["headers"] exists, then fill response’s headers with init["headers"].
     if (init.headers.has_value())
@@ -114,12 +113,12 @@ WebIDL::ExceptionOr<void> Response::initialize_response(ResponseInit const& init
         m_response->set_body(body->body);
 
         // 3. If body’s type is non-null and response’s header list does not contain `Content-Type`, then append (`Content-Type`, body’s type) to response’s header list.
-        if (body->type.has_value() && m_response->header_list()->contains("Content-Type"sv.bytes())) {
+        if (body->type.has_value() && !m_response->header_list()->contains("Content-Type"sv.bytes())) {
             auto header = Infrastructure::Header {
                 .name = MUST(ByteBuffer::copy("Content-Type"sv.bytes())),
-                .value = TRY_OR_THROW_OOM(vm, ByteBuffer::copy(body->type->span())),
+                .value = MUST(ByteBuffer::copy(body->type->span())),
             };
-            TRY_OR_THROW_OOM(vm, m_response->header_list()->append(move(header)));
+            m_response->header_list()->append(move(header));
         }
     }
 
@@ -191,8 +190,8 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Response>> Response::redirect(JS::VM& vm, S
     auto value = parsed_url.serialize();
 
     // 7. Append (`Location`, value) to responseObject’s response’s header list.
-    auto header = TRY_OR_THROW_OOM(vm, Infrastructure::Header::from_string_pair("Location"sv, value));
-    TRY_OR_THROW_OOM(vm, response_object->response()->header_list()->append(move(header)));
+    auto header = Infrastructure::Header::from_string_pair("Location"sv, value);
+    response_object->response()->header_list()->append(move(header));
 
     // 8. Return responseObject.
     return response_object;
@@ -215,8 +214,8 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Response>> Response::json(JS::VM& vm, JS::V
 
     // 4. Perform initialize a response given responseObject, init, and (body, "application/json").
     auto body_with_type = Infrastructure::BodyWithType {
-        .body = move(body),
-        .type = TRY_OR_THROW_OOM(vm, ByteBuffer::copy("application/json"sv.bytes()))
+        .body = body,
+        .type = MUST(ByteBuffer::copy("application/json"sv.bytes()))
     };
     TRY(response_object->initialize_response(init, move(body_with_type)));
 
@@ -232,14 +231,12 @@ Bindings::ResponseType Response::type() const
 }
 
 // https://fetch.spec.whatwg.org/#dom-response-url
-WebIDL::ExceptionOr<String> Response::url() const
+String Response::url() const
 {
-    auto& vm = this->vm();
-
     // The url getter steps are to return the empty string if this’s response’s URL is null; otherwise this’s response’s URL, serialized with exclude fragment set to true.
     return !m_response->url().has_value()
         ? String {}
-        : TRY_OR_THROW_OOM(vm, String::from_byte_string(m_response->url()->serialize(URL::ExcludeFragment::Yes)));
+        : MUST(String::from_byte_string(m_response->url()->serialize(URL::ExcludeFragment::Yes)));
 }
 
 // https://fetch.spec.whatwg.org/#dom-response-redirected
@@ -264,12 +261,10 @@ bool Response::ok() const
 }
 
 // https://fetch.spec.whatwg.org/#dom-response-statustext
-WebIDL::ExceptionOr<String> Response::status_text() const
+String Response::status_text() const
 {
-    auto& vm = this->vm();
-
     // The statusText getter steps are to return this’s response’s status message.
-    return TRY_OR_THROW_OOM(vm, String::from_utf8(m_response->status_message()));
+    return MUST(String::from_utf8(m_response->status_message()));
 }
 
 // https://fetch.spec.whatwg.org/#dom-response-headers
@@ -289,7 +284,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Response>> Response::clone() const
         return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Response is unusable"sv };
 
     // 2. Let clonedResponse be the result of cloning this’s response.
-    auto cloned_response = TRY(m_response->clone(realm));
+    auto cloned_response = m_response->clone(realm);
 
     // 3. Return the result of creating a Response object, given clonedResponse, this’s headers’s guard, and this’s relevant Realm.
     return Response::create(HTML::relevant_realm(*this), cloned_response, m_headers->guard());

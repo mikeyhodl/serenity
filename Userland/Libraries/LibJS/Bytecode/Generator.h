@@ -32,9 +32,23 @@ public:
         Function,
         Block,
     };
-    static CodeGenerationErrorOr<NonnullGCPtr<Executable>> generate(VM&, ASTNode const&, ReadonlySpan<FunctionParameter> parameters, FunctionKind = FunctionKind::Normal);
 
-    Register allocate_register();
+    enum class MustPropagateCompletion {
+        No,
+        Yes,
+    };
+
+    static CodeGenerationErrorOr<NonnullGCPtr<Executable>> generate_from_ast_node(VM&, ASTNode const&, FunctionKind = FunctionKind::Normal);
+    static CodeGenerationErrorOr<NonnullGCPtr<Executable>> generate_from_function(VM&, ECMAScriptFunctionObject const& function);
+
+    CodeGenerationErrorOr<void> emit_function_declaration_instantiation(ECMAScriptFunctionObject const& function);
+
+    [[nodiscard]] ScopedOperand allocate_register();
+    [[nodiscard]] ScopedOperand local(u32 local_index);
+    [[nodiscard]] ScopedOperand accumulator();
+    [[nodiscard]] ScopedOperand this_value();
+
+    void free_register(Register);
 
     void set_local_initialized(u32 local_index);
     [[nodiscard]] bool is_local_initialized(u32 local_index) const;
@@ -68,70 +82,76 @@ public:
     };
 
     template<typename OpType, typename... Args>
+    requires(requires { OpType(declval<Args>()...); })
     void emit(Args&&... args)
     {
         VERIFY(!is_current_block_terminated());
         size_t slot_offset = m_current_basic_block->size();
+        m_current_basic_block->set_last_instruction_start_offset(slot_offset);
         grow(sizeof(OpType));
         void* slot = m_current_basic_block->data() + slot_offset;
         new (slot) OpType(forward<Args>(args)...);
         if constexpr (OpType::IsTerminator)
             m_current_basic_block->terminate({});
-        auto* op = static_cast<OpType*>(slot);
-        op->set_source_record({ m_current_ast_node->start_offset(), m_current_ast_node->end_offset() });
+        m_current_basic_block->add_source_map_entry(slot_offset, { m_current_ast_node->start_offset(), m_current_ast_node->end_offset() });
     }
 
     template<typename OpType, typename ExtraSlotType, typename... Args>
+    requires(requires { OpType(declval<Args>()...); })
     void emit_with_extra_slots(size_t extra_slot_count, Args&&... args)
     {
         VERIFY(!is_current_block_terminated());
 
         size_t size_to_allocate = round_up_to_power_of_two(sizeof(OpType) + extra_slot_count * sizeof(ExtraSlotType), alignof(void*));
         size_t slot_offset = m_current_basic_block->size();
+        m_current_basic_block->set_last_instruction_start_offset(slot_offset);
         grow(size_to_allocate);
         void* slot = m_current_basic_block->data() + slot_offset;
         new (slot) OpType(forward<Args>(args)...);
         if constexpr (OpType::IsTerminator)
             m_current_basic_block->terminate({});
-        auto* op = static_cast<OpType*>(slot);
-        op->set_source_record({ m_current_ast_node->start_offset(), m_current_ast_node->end_offset() });
+        m_current_basic_block->add_source_map_entry(slot_offset, { m_current_ast_node->start_offset(), m_current_ast_node->end_offset() });
     }
 
     template<typename OpType, typename... Args>
+    requires(requires { OpType(declval<Args>()...); })
     void emit_with_extra_operand_slots(size_t extra_operand_slots, Args&&... args)
     {
         emit_with_extra_slots<OpType, Operand>(extra_operand_slots, forward<Args>(args)...);
     }
 
     template<typename OpType, typename... Args>
+    requires(requires { OpType(declval<Args>()...); })
     void emit_with_extra_value_slots(size_t extra_operand_slots, Args&&... args)
     {
         emit_with_extra_slots<OpType, Value>(extra_operand_slots, forward<Args>(args)...);
     }
 
+    void emit_jump_if(ScopedOperand const& condition, Label true_target, Label false_target);
+
     struct ReferenceOperands {
-        Optional<Operand> base {};                                       // [[Base]]
-        Optional<Operand> referenced_name {};                            // [[ReferencedName]] as an operand
+        Optional<ScopedOperand> base {};                                 // [[Base]]
+        Optional<ScopedOperand> referenced_name {};                      // [[ReferencedName]] as an operand
         Optional<IdentifierTableIndex> referenced_identifier {};         // [[ReferencedName]] as an identifier
         Optional<IdentifierTableIndex> referenced_private_identifier {}; // [[ReferencedName]] as a private identifier
-        Optional<Operand> this_value {};                                 // [[ThisValue]]
-        Optional<Operand> loaded_value {};                               // Loaded value, if we've performed a load.
+        Optional<ScopedOperand> this_value {};                           // [[ThisValue]]
+        Optional<ScopedOperand> loaded_value {};                         // Loaded value, if we've performed a load.
     };
 
-    CodeGenerationErrorOr<ReferenceOperands> emit_load_from_reference(JS::ASTNode const&, Optional<Operand> preferred_dst = {});
-    CodeGenerationErrorOr<void> emit_store_to_reference(JS::ASTNode const&, Operand value);
-    CodeGenerationErrorOr<void> emit_store_to_reference(ReferenceOperands const&, Operand value);
-    CodeGenerationErrorOr<Optional<Operand>> emit_delete_reference(JS::ASTNode const&);
+    CodeGenerationErrorOr<ReferenceOperands> emit_load_from_reference(JS::ASTNode const&, Optional<ScopedOperand> preferred_dst = {});
+    CodeGenerationErrorOr<void> emit_store_to_reference(JS::ASTNode const&, ScopedOperand value);
+    CodeGenerationErrorOr<void> emit_store_to_reference(ReferenceOperands const&, ScopedOperand value);
+    CodeGenerationErrorOr<Optional<ScopedOperand>> emit_delete_reference(JS::ASTNode const&);
 
     CodeGenerationErrorOr<ReferenceOperands> emit_super_reference(MemberExpression const&);
 
-    void emit_set_variable(JS::Identifier const& identifier, Operand value, Bytecode::Op::SetVariable::InitializationMode initialization_mode = Bytecode::Op::SetVariable::InitializationMode::Set, Bytecode::Op::EnvironmentMode mode = Bytecode::Op::EnvironmentMode::Lexical);
+    void emit_set_variable(JS::Identifier const& identifier, ScopedOperand value, Bytecode::Op::BindingInitializationMode initialization_mode = Bytecode::Op::BindingInitializationMode::Set, Bytecode::Op::EnvironmentMode mode = Bytecode::Op::EnvironmentMode::Lexical);
 
-    void push_home_object(Operand);
+    void push_home_object(ScopedOperand);
     void pop_home_object();
-    void emit_new_function(Operand dst, JS::FunctionExpression const&, Optional<IdentifierTableIndex> lhs_name);
+    void emit_new_function(ScopedOperand dst, JS::FunctionExpression const&, Optional<IdentifierTableIndex> lhs_name);
 
-    CodeGenerationErrorOr<Optional<Operand>> emit_named_evaluation_if_anonymous_function(Expression const&, Optional<IdentifierTableIndex> lhs_name, Optional<Operand> preferred_dst = {});
+    CodeGenerationErrorOr<Optional<ScopedOperand>> emit_named_evaluation_if_anonymous_function(Expression const&, Optional<IdentifierTableIndex> lhs_name, Optional<ScopedOperand> preferred_dst = {});
 
     void begin_continuable_scope(Label continue_target, Vector<DeprecatedFlyString> const& language_label_set);
     void end_continuable_scope();
@@ -151,13 +171,13 @@ public:
     BasicBlock& make_block(String name = {})
     {
         if (name.is_empty())
-            name = MUST(String::number(m_next_block++));
-        auto block = BasicBlock::create(name);
+            name = String::number(m_next_block++);
+        auto block = BasicBlock::create(m_root_basic_blocks.size(), name);
         if (auto const* context = m_current_unwind_context) {
             if (context->handler().has_value())
-                block->set_handler(context->handler().value().block());
+                block->set_handler(*m_root_basic_blocks[context->handler().value().basic_block_index()]);
             if (m_current_unwind_context->finalizer().has_value())
-                block->set_finalizer(context->finalizer().value().block());
+                block->set_finalizer(*m_root_basic_blocks[context->finalizer().value().basic_block_index()]);
         }
         m_root_basic_blocks.append(move(block));
         return *m_root_basic_blocks.last();
@@ -183,6 +203,8 @@ public:
         return m_identifier_table->insert(move(string));
     }
 
+    Optional<IdentifierTableIndex> intern_identifier_for_expression(Expression const& expression);
+
     bool is_in_generator_or_async_function() const { return m_enclosing_function_kind == FunctionKind::Async || m_enclosing_function_kind == FunctionKind::Generator || m_enclosing_function_kind == FunctionKind::AsyncGenerator; }
     bool is_in_generator_function() const { return m_enclosing_function_kind == FunctionKind::Generator || m_enclosing_function_kind == FunctionKind::AsyncGenerator; }
     bool is_in_async_function() const { return m_enclosing_function_kind == FunctionKind::Async || m_enclosing_function_kind == FunctionKind::AsyncGenerator; }
@@ -197,7 +219,8 @@ public:
         SurroundingScopeKind kind;
     };
 
-    void block_declaration_instantiation(ScopeNode const&);
+    // Returns true if a lexical environment was created.
+    bool emit_block_declaration_instantiation(ScopeNode const&);
 
     void begin_variable_scope();
     void end_variable_scope();
@@ -207,6 +230,7 @@ public:
         Continue,
         Unwind,
         ReturnToFinally,
+        LeaveFinally,
         LeaveLexicalEnvironment,
     };
     template<typename OpType>
@@ -230,15 +254,52 @@ public:
                 break;
             case ReturnToFinally:
                 return;
+            case LeaveFinally:
+                emit<Bytecode::Op::LeaveFinally>();
+                break;
             };
         }
     }
+
+    bool is_in_finalizer() const { return m_boundaries.contains_slow(BlockBoundaryType::LeaveFinally); }
+    bool must_enter_finalizer() const { return m_boundaries.contains_slow(BlockBoundaryType::ReturnToFinally); }
 
     void generate_break();
     void generate_break(DeprecatedFlyString const& break_label);
 
     void generate_continue();
     void generate_continue(DeprecatedFlyString const& continue_label);
+
+    template<typename OpType>
+    void emit_return(ScopedOperand value)
+    requires(IsOneOf<OpType, Op::Return, Op::Yield>)
+    {
+        // FIXME: Tell the call sites about the `saved_return_value` destination
+        //        And take that into account in the movs below.
+        perform_needed_unwinds<OpType>();
+        if (must_enter_finalizer()) {
+            VERIFY(m_current_basic_block->finalizer() != nullptr);
+            // Compare to:
+            // *  Interpreter::do_return
+            // *  Interpreter::run_bytecode::handle_ContinuePendingUnwind
+            // *  Return::execute_impl
+            // *  Yield::execute_impl
+            if constexpr (IsSame<OpType, Op::Yield>)
+                emit<Bytecode::Op::PrepareYield>(Operand(Register::saved_return_value()), value);
+            else
+                emit<Bytecode::Op::Mov>(Operand(Register::saved_return_value()), value);
+            emit<Bytecode::Op::Mov>(Operand(Register::exception()), add_constant(Value {}));
+            // FIXME: Do we really need to clear the return value register here?
+            emit<Bytecode::Op::Mov>(Operand(Register::return_value()), add_constant(Value {}));
+            emit<Bytecode::Op::Jump>(Label { *m_current_basic_block->finalizer() });
+            return;
+        }
+
+        if constexpr (IsSame<OpType, Op::Return>)
+            emit<Op::Return>(value);
+        else
+            emit<Op::Yield>(nullptr, value);
+    }
 
     void start_boundary(BlockBoundaryType type) { m_boundaries.append(type); }
     void end_boundary(BlockBoundaryType type)
@@ -247,35 +308,42 @@ public:
         m_boundaries.take_last();
     }
 
-    void emit_get_by_id(Operand dst, Operand base, IdentifierTableIndex);
+    [[nodiscard]] ScopedOperand copy_if_needed_to_preserve_evaluation_order(ScopedOperand const&);
 
-    void emit_get_by_id_with_this(Operand dst, Operand base, IdentifierTableIndex, Operand this_value);
+    [[nodiscard]] ScopedOperand get_this(Optional<ScopedOperand> preferred_dst = {});
 
-    void emit_iterator_value(Operand dst, Operand result);
-    void emit_iterator_complete(Operand dst, Operand result);
+    void emit_get_by_id(ScopedOperand dst, ScopedOperand base, IdentifierTableIndex property_identifier, Optional<IdentifierTableIndex> base_identifier = {});
+
+    void emit_get_by_id_with_this(ScopedOperand dst, ScopedOperand base, IdentifierTableIndex, ScopedOperand this_value);
+
+    void emit_iterator_value(ScopedOperand dst, ScopedOperand result);
+    void emit_iterator_complete(ScopedOperand dst, ScopedOperand result);
 
     [[nodiscard]] size_t next_global_variable_cache() { return m_next_global_variable_cache++; }
-    [[nodiscard]] size_t next_environment_variable_cache() { return m_next_environment_variable_cache++; }
     [[nodiscard]] size_t next_property_lookup_cache() { return m_next_property_lookup_cache++; }
 
     enum class DeduplicateConstant {
         Yes,
         No,
     };
-    [[nodiscard]] Operand add_constant(Value value, DeduplicateConstant deduplicate_constant = DeduplicateConstant::Yes)
+    [[nodiscard]] ScopedOperand add_constant(Value);
+
+    [[nodiscard]] Value get_constant(ScopedOperand const& operand) const
     {
-        if (deduplicate_constant == DeduplicateConstant::Yes) {
-            for (size_t i = 0; i < m_constants.size(); ++i) {
-                if (m_constants[i] == value)
-                    return Operand(Operand::Type::Constant, i);
-            }
-        }
-        m_constants.append(value);
-        return Operand(Operand::Type::Constant, m_constants.size() - 1);
+        VERIFY(operand.operand().is_constant());
+        return m_constants[operand.operand().index()];
     }
+
+    UnwindContext const* current_unwind_context() const { return m_current_unwind_context; }
+
+    [[nodiscard]] bool is_finished() const { return m_finished; }
+
+    [[nodiscard]] bool must_propagate_completion() const { return m_must_propagate_completion; }
 
 private:
     VM& m_vm;
+
+    static CodeGenerationErrorOr<NonnullGCPtr<Executable>> compile(VM&, ASTNode const&, FunctionKind, GCPtr<ECMAScriptFunctionObject const>, MustPropagateCompletion, Vector<DeprecatedFlyString> local_variable_names);
 
     enum class JumpType {
         Continue,
@@ -284,10 +352,13 @@ private:
     void generate_scoped_jump(JumpType);
     void generate_labelled_jump(JumpType, DeprecatedFlyString const& label);
 
-    explicit Generator(VM&);
+    Generator(VM&, GCPtr<ECMAScriptFunctionObject const>, MustPropagateCompletion);
     ~Generator() = default;
 
     void grow(size_t);
+
+    // Returns true if a fused instruction was emitted.
+    [[nodiscard]] bool fuse_compare_and_jump(ScopedOperand const& condition, Label true_target, Label false_target);
 
     struct LabelableScope {
         Label bytecode_target;
@@ -304,18 +375,35 @@ private:
     NonnullOwnPtr<RegexTable> m_regex_table;
     MarkedVector<Value> m_constants;
 
+    mutable Optional<ScopedOperand> m_true_constant;
+    mutable Optional<ScopedOperand> m_false_constant;
+    mutable Optional<ScopedOperand> m_null_constant;
+    mutable Optional<ScopedOperand> m_undefined_constant;
+    mutable Optional<ScopedOperand> m_empty_constant;
+    mutable HashMap<i32, ScopedOperand> m_int32_constants;
+
+    ScopedOperand m_accumulator;
+    ScopedOperand m_this_value;
+    Vector<Register> m_free_registers;
+
     u32 m_next_register { Register::reserved_register_count };
     u32 m_next_block { 1 };
     u32 m_next_property_lookup_cache { 0 };
     u32 m_next_global_variable_cache { 0 };
-    u32 m_next_environment_variable_cache { 0 };
     FunctionKind m_enclosing_function_kind { FunctionKind::Normal };
     Vector<LabelableScope> m_continuable_scopes;
     Vector<LabelableScope> m_breakable_scopes;
     Vector<BlockBoundaryType> m_boundaries;
-    Vector<Operand> m_home_objects;
+    Vector<ScopedOperand> m_home_objects;
 
     HashTable<u32> m_initialized_locals;
+
+    bool m_finished { false };
+    bool m_must_propagate_completion { true };
+
+    GCPtr<ECMAScriptFunctionObject const> m_function;
+
+    Optional<IdentifierTableIndex> m_length_identifier;
 };
 
 }

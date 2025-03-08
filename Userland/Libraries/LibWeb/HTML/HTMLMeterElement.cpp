@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLMeterElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/ShadowRoot.h>
@@ -53,7 +54,7 @@ double HTMLMeterElement::value() const
 
 WebIDL::ExceptionOr<void> HTMLMeterElement::set_value(double value)
 {
-    TRY(set_attribute(HTML::AttributeNames::value, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::value, String::number(value)));
     update_meter_value_element();
     return {};
 }
@@ -71,7 +72,7 @@ double HTMLMeterElement::min() const
 
 WebIDL::ExceptionOr<void> HTMLMeterElement::set_min(double value)
 {
-    TRY(set_attribute(HTML::AttributeNames::min, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::min, String::number(value)));
     update_meter_value_element();
     return {};
 }
@@ -92,7 +93,7 @@ double HTMLMeterElement::max() const
 
 WebIDL::ExceptionOr<void> HTMLMeterElement::set_max(double value)
 {
-    TRY(set_attribute(HTML::AttributeNames::max, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::max, String::number(value)));
     update_meter_value_element();
     return {};
 }
@@ -115,7 +116,7 @@ double HTMLMeterElement::low() const
 
 WebIDL::ExceptionOr<void> HTMLMeterElement::set_low(double value)
 {
-    TRY(set_attribute(HTML::AttributeNames::low, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::low, String::number(value)));
     update_meter_value_element();
     return {};
 }
@@ -138,7 +139,7 @@ double HTMLMeterElement::high() const
 
 WebIDL::ExceptionOr<void> HTMLMeterElement::set_high(double value)
 {
-    TRY(set_attribute(HTML::AttributeNames::high, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::high, String::number(value)));
     update_meter_value_element();
     return {};
 }
@@ -161,7 +162,7 @@ double HTMLMeterElement::optimum() const
 
 WebIDL::ExceptionOr<void> HTMLMeterElement::set_optimum(double value)
 {
-    TRY(set_attribute(HTML::AttributeNames::optimum, MUST(String::number(value))));
+    TRY(set_attribute(HTML::AttributeNames::optimum, String::number(value)));
     update_meter_value_element();
     return {};
 }
@@ -178,7 +179,7 @@ void HTMLMeterElement::removed_from(DOM::Node*)
 
 void HTMLMeterElement::create_shadow_tree_if_needed()
 {
-    if (shadow_root_internal())
+    if (shadow_root())
         return;
 
     auto shadow_root = heap().allocate<DOM::ShadowRoot>(realm(), document(), *this, Bindings::ShadowRootMode::Closed);
@@ -222,7 +223,9 @@ void HTMLMeterElement::update_meter_value_element()
     }
     // Finally, if the optimum point is higher than the high boundary, then the situation is reversed; the region between the high boundary and the maximum value must be treated as the optimum region, the region from the high boundary down to the low boundary must be treated as a suboptimal region, and the remaining region must be treated as an even less good region.
     else {
-        if (value >= low && value <= high)
+        if (value >= high && value <= max)
+            m_meter_value_element->set_use_pseudo_element(CSS::Selector::PseudoElement::Type::MeterOptimumValue);
+        else if (value >= low && value <= high)
             m_meter_value_element->set_use_pseudo_element(CSS::Selector::PseudoElement::Type::MeterSuboptimumValue);
         else
             m_meter_value_element->set_use_pseudo_element(CSS::Selector::PseudoElement::Type::MeterEvenLessGoodValue);

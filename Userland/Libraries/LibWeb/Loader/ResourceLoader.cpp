@@ -6,13 +6,14 @@
  */
 
 #include <AK/Debug.h>
-#include <AK/JsonObject.h>
+#include <LibCore/DateTime.h>
 #include <LibCore/Directory.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibCore/MimeData.h>
 #include <LibCore/Resource.h>
 #include <LibWeb/Cookie/Cookie.h>
 #include <LibWeb/Cookie/ParsedCookie.h>
+#include <LibWeb/Fetch/Infrastructure/URL.h>
 #include <LibWeb/Loader/ContentFilter.h>
 #include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/Loader/LoadRequest.h>
@@ -62,11 +63,16 @@ ResourceLoader::ResourceLoader(NonnullRefPtr<ResourceLoaderConnector> connector)
     : m_connector(move(connector))
     , m_user_agent(MUST(String::from_utf8(default_user_agent)))
     , m_platform(MUST(String::from_utf8(default_platform)))
+    , m_preferred_languages({ "en-US"_string })
+    , m_navigator_compatibility_mode(default_navigator_compatibility_mode)
 {
 }
 
 void ResourceLoader::prefetch_dns(URL::URL const& url)
 {
+    if (url.scheme().is_one_of("file"sv, "data"sv))
+        return;
+
     if (ContentFilter::the().is_filtered(url)) {
         dbgln("ResourceLoader: Refusing to prefetch DNS for '{}': \033[31;1mURL was filtered\033[0m", url);
         return;
@@ -144,59 +150,103 @@ static void emit_signpost(ByteString const& message, int id)
 #endif
 }
 
-static void store_response_cookies(Page& page, URL::URL const& url, ByteString const& cookies)
+static void store_response_cookies(Page& page, URL::URL const& url, ByteString const& set_cookie_entry)
 {
-    auto set_cookie_json_value = MUST(JsonValue::from_string(cookies));
-    VERIFY(set_cookie_json_value.type() == JsonValue::Type::Array);
-
-    for (auto const& set_cookie_entry : set_cookie_json_value.as_array().values()) {
-        VERIFY(set_cookie_entry.type() == JsonValue::Type::String);
-
-        auto cookie = Cookie::parse_cookie(set_cookie_entry.as_string());
-        if (!cookie.has_value())
-            continue;
-
-        page.client().page_did_set_cookie(url, cookie.value(), Cookie::Source::Http); // FIXME: Determine cookie source correctly
-    }
+    auto cookie = Cookie::parse_cookie(url, set_cookie_entry);
+    if (!cookie.has_value())
+        return;
+    page.client().page_did_set_cookie(url, cookie.value(), Cookie::Source::Http); // FIXME: Determine cookie source correctly
 }
 
-static size_t resource_id = 0;
-
-static HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> response_headers_for_file(StringView path)
+static HTTP::HeaderMap response_headers_for_file(StringView path, Optional<time_t> const& modified_time)
 {
     // For file:// and resource:// URLs, we have to guess the MIME type, since there's no HTTP header to tell us what
     // it is. We insert a fake Content-Type header here, so that clients can use it to learn the MIME type.
     auto mime_type = Core::guess_mime_type_based_on_filename(path);
 
-    HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> response_headers;
+    HTTP::HeaderMap response_headers;
     response_headers.set("Content-Type"sv, mime_type);
+
+    if (modified_time.has_value()) {
+        auto const datetime = Core::DateTime::from_timestamp(modified_time.value());
+        response_headers.set("Last-Modified"sv, datetime.to_byte_string("%a, %d %b %Y %H:%M:%S GMT"sv, Core::DateTime::LocalTime::No));
+    }
 
     return response_headers;
 }
 
+static void log_request_start(LoadRequest const& request)
+{
+    auto url_for_logging = sanitized_url_for_logging(request.url());
+
+    emit_signpost(ByteString::formatted("Starting load: {}", url_for_logging), request.id());
+    dbgln_if(SPAM_DEBUG, "ResourceLoader: Starting load of: \"{}\"", url_for_logging);
+}
+
+static void log_success(LoadRequest const& request)
+{
+    auto url_for_logging = sanitized_url_for_logging(request.url());
+    auto load_time_ms = request.load_time().to_milliseconds();
+
+    emit_signpost(ByteString::formatted("Finished load: {}", url_for_logging), request.id());
+    dbgln_if(SPAM_DEBUG, "ResourceLoader: Finished load of: \"{}\", Duration: {}ms", url_for_logging, load_time_ms);
+}
+
+template<typename ErrorType>
+static void log_failure(LoadRequest const& request, ErrorType const& error)
+{
+    auto url_for_logging = sanitized_url_for_logging(request.url());
+    auto load_time_ms = request.load_time().to_milliseconds();
+
+    emit_signpost(ByteString::formatted("Failed load: {}", url_for_logging), request.id());
+    dbgln("ResourceLoader: Failed load of: \"{}\", \033[31;1mError: {}\033[0m, Duration: {}ms", url_for_logging, error, load_time_ms);
+}
+
+static void log_filtered_request(LoadRequest const& request)
+{
+    auto url_for_logging = sanitized_url_for_logging(request.url());
+    dbgln("ResourceLoader: Filtered request to: \"{}\"", url_for_logging);
+}
+
+static bool should_block_request(LoadRequest const& request)
+{
+    auto const& url = request.url();
+
+    auto is_port_blocked = [](int port) {
+        static constexpr auto ports = to_array({ 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42,
+            43, 53, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 139,
+            143, 179, 389, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 556, 563, 587, 601, 636,
+            993, 995, 2049, 3659, 4045, 6000, 6379, 6665, 6666, 6667, 6668, 6669 });
+
+        return ports.first_index_of(port).has_value();
+    };
+
+    if (is_port_blocked(url.port_or_default())) {
+        log_failure(request, ByteString::formatted("Port #{} is blocked", url.port_or_default()));
+        return true;
+    }
+
+    if (ContentFilter::the().is_filtered(url)) {
+        log_filtered_request(request);
+        return true;
+    }
+
+    return false;
+}
+
 void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback, ErrorCallback error_callback, Optional<u32> timeout, TimeoutCallback timeout_callback)
 {
-    auto& url = request.url();
+    auto const& url = request.url();
+
+    log_request_start(request);
     request.start_timer();
 
-    auto id = resource_id++;
-    auto url_for_logging = sanitized_url_for_logging(url);
-    emit_signpost(ByteString::formatted("Starting load: {}", url_for_logging), id);
-    dbgln_if(SPAM_DEBUG, "ResourceLoader: Starting load of: \"{}\"", url_for_logging);
+    if (should_block_request(request)) {
+        error_callback("Request was blocked", {}, {}, {});
+        return;
+    }
 
-    auto const log_success = [url_for_logging, id](auto const& request) {
-        auto load_time_ms = request.load_time().to_milliseconds();
-        emit_signpost(ByteString::formatted("Finished load: {}", url_for_logging), id);
-        dbgln_if(SPAM_DEBUG, "ResourceLoader: Finished load of: \"{}\", Duration: {}ms", url_for_logging, load_time_ms);
-    };
-
-    auto const log_failure = [url_for_logging, id](auto const& request, auto const& error_message) {
-        auto load_time_ms = request.load_time().to_milliseconds();
-        emit_signpost(ByteString::formatted("Failed load: {}", url_for_logging), id);
-        dbgln("ResourceLoader: Failed load of: \"{}\", \033[31;1mError: {}\033[0m, Duration: {}ms", url_for_logging, error_message, load_time_ms);
-    };
-
-    auto respond_directory_page = [log_success, log_failure](LoadRequest const& request, URL::URL const& url, SuccessCallback const& success_callback, ErrorCallback const& error_callback) {
+    auto respond_directory_page = [](LoadRequest const& request, URL::URL const& url, SuccessCallback const& success_callback, ErrorCallback const& error_callback) {
         auto maybe_response = load_file_directory_page(url);
         if (maybe_response.is_error()) {
             log_failure(request, maybe_response.error());
@@ -206,28 +256,16 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
         }
 
         log_success(request);
-        HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> response_headers;
+        HTTP::HeaderMap response_headers;
         response_headers.set("Content-Type"sv, "text/html"sv);
         success_callback(maybe_response.release_value().bytes(), response_headers, {});
     };
-
-    if (is_port_blocked(url.port_or_default())) {
-        log_failure(request, ByteString::formatted("The port #{} is blocked", url.port_or_default()));
-        return;
-    }
-
-    if (ContentFilter::the().is_filtered(url)) {
-        auto filter_message = "URL was filtered"sv;
-        log_failure(request, filter_message);
-        error_callback(filter_message, {}, {}, {});
-        return;
-    }
 
     if (url.scheme() == "about") {
         dbgln_if(SPAM_DEBUG, "Loading about: URL {}", url);
         log_success(request);
 
-        HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> response_headers;
+        HTTP::HeaderMap response_headers;
         response_headers.set("Content-Type", "text/html; charset=UTF-8");
 
         // About version page
@@ -251,7 +289,7 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
     }
 
     if (url.scheme() == "data") {
-        auto data_url_or_error = url.process_data_url();
+        auto data_url_or_error = Fetch::Infrastructure::process_data_url(url);
         if (data_url_or_error.is_error()) {
             auto error_message = data_url_or_error.error().string_literal();
             log_failure(request, error_message);
@@ -261,11 +299,11 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
         auto data_url = data_url_or_error.release_value();
 
         dbgln_if(SPAM_DEBUG, "ResourceLoader loading a data URL with mime-type: '{}', payload='{}'",
-            data_url.mime_type,
+            data_url.mime_type.serialized(),
             StringView(data_url.body.bytes()));
 
-        HashMap<ByteString, ByteString, CaseInsensitiveStringTraits> response_headers;
-        response_headers.set("Content-Type", data_url.mime_type.to_byte_string());
+        HTTP::HeaderMap response_headers;
+        response_headers.set("Content-Type", data_url.mime_type.serialized().to_byte_string());
 
         log_success(request);
 
@@ -279,6 +317,8 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
         auto resource = Core::Resource::load_from_uri(url.serialize());
         if (resource.is_error()) {
             log_failure(request, resource.error());
+            if (error_callback)
+                error_callback(ByteString::formatted("{}", resource.error()), {}, {}, {});
             return;
         }
 
@@ -289,7 +329,7 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
         }
 
         auto data = resource.value()->data();
-        auto response_headers = response_headers_for_file(url.serialize_path());
+        auto response_headers = response_headers_for_file(URL::percent_decode(url.serialize_path()), resource.value()->modified_time());
 
         log_success(request);
         success_callback(data, response_headers, {});
@@ -306,17 +346,15 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
             return;
         }
 
-        FileRequest file_request(url.serialize_path(), [this, success_callback = move(success_callback), error_callback = move(error_callback), log_success, log_failure, request, respond_directory_page](ErrorOr<i32> file_or_error) {
+        FileRequest file_request(URL::percent_decode(url.serialize_path()), [this, success_callback = move(success_callback), error_callback = move(error_callback), request, respond_directory_page](ErrorOr<i32> file_or_error) {
             --m_pending_loads;
             if (on_load_counter_change)
                 on_load_counter_change();
 
             if (file_or_error.is_error()) {
                 log_failure(request, file_or_error.error());
-                if (error_callback) {
-                    auto status = file_or_error.error().code() == ENOENT ? 404u : 500u;
-                    error_callback(ByteString::formatted("{}", file_or_error.error()), status, {}, {});
-                }
+                if (error_callback)
+                    error_callback(ByteString::formatted("{}", file_or_error.error()), {}, {}, {});
                 return;
             }
 
@@ -329,12 +367,20 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
                 return;
             }
 
+            auto st_or_error = Core::System::fstat(fd);
+            if (st_or_error.is_error()) {
+                log_failure(request, st_or_error.error());
+                if (error_callback)
+                    error_callback(ByteString::formatted("{}", st_or_error.error()), {}, {}, {});
+                return;
+            }
+
             // Try to read file normally
             auto maybe_file = Core::File::adopt_fd(fd, Core::File::OpenMode::Read);
             if (maybe_file.is_error()) {
                 log_failure(request, maybe_file.error());
                 if (error_callback)
-                    error_callback(ByteString::formatted("{}", maybe_file.error()), 500u, {}, {});
+                    error_callback(ByteString::formatted("{}", maybe_file.error()), {}, {}, {});
                 return;
             }
 
@@ -343,12 +389,12 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
             if (maybe_data.is_error()) {
                 log_failure(request, maybe_data.error());
                 if (error_callback)
-                    error_callback(ByteString::formatted("{}", maybe_data.error()), 500u, {}, {});
+                    error_callback(ByteString::formatted("{}", maybe_data.error()), {}, {}, {});
                 return;
             }
 
             auto data = maybe_data.release_value();
-            auto response_headers = response_headers_for_file(request.url().serialize_path());
+            auto response_headers = response_headers_for_file(URL::percent_decode(request.url().serialize_path()), st_or_error.value().st_mtime);
 
             log_success(request);
             success_callback(data, response_headers, {});
@@ -364,22 +410,10 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
     }
 
     if (url.scheme() == "http" || url.scheme() == "https" || url.scheme() == "gemini") {
-        auto proxy = ProxyMappings::the().proxy_for_url(url);
-
-        HashMap<ByteString, ByteString> headers;
-        headers.set("User-Agent", m_user_agent.to_byte_string());
-        headers.set("Accept-Encoding", "gzip, deflate, br");
-
-        for (auto& it : request.headers()) {
-            headers.set(it.key, it.value);
-        }
-
-        auto protocol_request = m_connector->start_request(request.method(), url, headers, request.body(), proxy);
+        auto protocol_request = start_network_request(request);
         if (!protocol_request) {
-            auto start_request_failure_msg = "Failed to initiate load"sv;
-            log_failure(request, start_request_failure_msg);
             if (error_callback)
-                error_callback(start_request_failure_msg, {}, {}, {});
+                error_callback("Failed to start network request"sv, {}, {}, {});
             return;
         }
 
@@ -393,22 +427,9 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
             timer->start();
         }
 
-        m_active_requests.set(*protocol_request);
-
-        protocol_request->on_buffered_request_finish = [this, success_callback = move(success_callback), error_callback = move(error_callback), log_success, log_failure, request, &protocol_request = *protocol_request](bool success, auto, auto& response_headers, auto status_code, ReadonlyBytes payload) mutable {
-            --m_pending_loads;
-            if (on_load_counter_change)
-                on_load_counter_change();
-
-            if (request.page()) {
-                if (auto set_cookie = response_headers.get("Set-Cookie"); set_cookie.has_value())
-                    store_response_cookies(*request.page(), request.url(), *set_cookie);
-                if (auto cache_control = response_headers.get("cache-control"); cache_control.has_value()) {
-                    if (cache_control.value().contains("no-store"sv)) {
-                        s_resource_cache.remove(request);
-                    }
-                }
-            }
+        auto on_buffered_request_finished = [this, success_callback = move(success_callback), error_callback = move(error_callback), request, &protocol_request = *protocol_request](bool success, auto, auto& response_headers, auto status_code, ReadonlyBytes payload) mutable {
+            handle_network_response_headers(request, response_headers);
+            finish_network_request(protocol_request);
 
             if (!success || (status_code.has_value() && *status_code >= 400 && *status_code <= 599 && (payload.is_empty() || !request.is_main_resource()))) {
                 StringBuilder error_builder;
@@ -421,19 +442,12 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
                     error_callback(error_builder.to_byte_string(), status_code, payload, response_headers);
                 return;
             }
+
             log_success(request);
             success_callback(payload, response_headers, status_code);
-            Platform::EventLoopPlugin::the().deferred_invoke([this, &protocol_request] {
-                m_active_requests.remove(protocol_request);
-            });
         };
-        protocol_request->set_should_buffer_all_input(true);
-        protocol_request->on_certificate_requested = []() -> ResourceLoaderConnectorRequest::CertificateAndKey {
-            return {};
-        };
-        ++m_pending_loads;
-        if (on_load_counter_change)
-            on_load_counter_change();
+
+        protocol_request->set_buffered_request_finished_callback(move(on_buffered_request_finished));
         return;
     }
 
@@ -443,17 +457,111 @@ void ResourceLoader::load(LoadRequest& request, SuccessCallback success_callback
         error_callback(not_implemented_error, {}, {}, {});
 }
 
-bool ResourceLoader::is_port_blocked(int port)
+void ResourceLoader::load_unbuffered(LoadRequest& request, OnHeadersReceived on_headers_received, OnDataReceived on_data_received, OnComplete on_complete)
 {
-    int ports[] { 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42,
-        43, 53, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113,
-        115, 117, 119, 123, 135, 139, 143, 179, 389, 465, 512, 513, 514,
-        515, 526, 530, 531, 532, 540, 556, 563, 587, 601, 636, 993, 995,
-        2049, 3659, 4045, 6000, 6379, 6665, 6666, 6667, 6668, 6669 };
-    for (auto blocked_port : ports)
-        if (port == blocked_port)
-            return true;
-    return false;
+    auto const& url = request.url();
+
+    log_request_start(request);
+    request.start_timer();
+
+    if (should_block_request(request)) {
+        on_complete(false, "Request was blocked"sv);
+        return;
+    }
+
+    if (!url.scheme().is_one_of("http"sv, "https"sv, "gemini"sv)) {
+        // FIXME: Non-network requests from fetch should not go through this path.
+        on_complete(false, "Cannot establish connection non-network scheme"sv);
+        return;
+    }
+
+    auto protocol_request = start_network_request(request);
+    if (!protocol_request) {
+        on_complete(false, "Failed to start network request"sv);
+        return;
+    }
+
+    auto protocol_headers_received = [this, on_headers_received = move(on_headers_received), request](auto const& response_headers, auto status_code) {
+        handle_network_response_headers(request, response_headers);
+        on_headers_received(response_headers, move(status_code));
+    };
+
+    auto protocol_data_received = [on_data_received = move(on_data_received)](auto data) {
+        on_data_received(data);
+    };
+
+    auto protocol_complete = [this, on_complete = move(on_complete), request, &protocol_request = *protocol_request](bool success, u64) {
+        finish_network_request(protocol_request);
+
+        if (success) {
+            log_success(request);
+            on_complete(true, {});
+        } else {
+            log_failure(request, "Request finished with error"sv);
+            on_complete(false, "Request finished with error"sv);
+        }
+    };
+
+    protocol_request->set_unbuffered_request_callbacks(move(protocol_headers_received), move(protocol_data_received), move(protocol_complete));
+}
+
+RefPtr<ResourceLoaderConnectorRequest> ResourceLoader::start_network_request(LoadRequest const& request)
+{
+    auto proxy = ProxyMappings::the().proxy_for_url(request.url());
+
+    HTTP::HeaderMap headers;
+
+    for (auto const& it : request.headers()) {
+        headers.set(it.key, it.value);
+    }
+
+    if (!headers.contains("User-Agent"))
+        headers.set("User-Agent", m_user_agent.to_byte_string());
+
+    auto protocol_request = m_connector->start_request(request.method(), request.url(), headers, request.body(), proxy);
+    if (!protocol_request) {
+        log_failure(request, "Failed to initiate load"sv);
+        return nullptr;
+    }
+
+    protocol_request->on_certificate_requested = []() -> ResourceLoaderConnectorRequest::CertificateAndKey {
+        return {};
+    };
+
+    ++m_pending_loads;
+    if (on_load_counter_change)
+        on_load_counter_change();
+
+    m_active_requests.set(*protocol_request);
+    return protocol_request;
+}
+
+void ResourceLoader::handle_network_response_headers(LoadRequest const& request, HTTP::HeaderMap const& response_headers)
+{
+    if (!request.page())
+        return;
+
+    for (auto const& [header, value] : response_headers.headers()) {
+        if (header.equals_ignoring_ascii_case("Set-Cookie"sv)) {
+            store_response_cookies(*request.page(), request.url(), value);
+        }
+    }
+
+    if (auto cache_control = response_headers.get("Cache-Control"); cache_control.has_value()) {
+        if (cache_control.value().contains("no-store"sv))
+            s_resource_cache.remove(request);
+    }
+}
+
+void ResourceLoader::finish_network_request(NonnullRefPtr<ResourceLoaderConnectorRequest> const& protocol_request)
+{
+    --m_pending_loads;
+    if (on_load_counter_change)
+        on_load_counter_change();
+
+    Platform::EventLoopPlugin::the().deferred_invoke([this, protocol_request] {
+        m_active_requests.remove(protocol_request);
+    });
 }
 
 void ResourceLoader::clear_cache()

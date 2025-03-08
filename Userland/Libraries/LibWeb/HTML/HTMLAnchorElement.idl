@@ -1,3 +1,4 @@
+#import <Fetch/Request.idl>
 #import <HTML/HTMLElement.idl>
 #import <HTML/HTMLHyperlinkElementUtils.idl>
 
@@ -9,15 +10,15 @@ interface HTMLAnchorElement : HTMLElement {
 
     [CEReactions, Reflect] attribute DOMString target;
     [CEReactions, Reflect] attribute DOMString download;
-    [CEReactions, Reflect] attribute DOMString ping;
+    [CEReactions, Reflect] attribute USVString ping;
     [CEReactions, Reflect] attribute DOMString rel;
-    // FIXME: [SameObject, PutForwards=value] readonly attribute DOMTokenList relList;
+    [SameObject, PutForwards=value] readonly attribute DOMTokenList relList;
     [CEReactions, Reflect] attribute DOMString hreflang;
     [CEReactions, Reflect] attribute DOMString type;
 
     [CEReactions] attribute DOMString text;
 
-    [CEReactions] attribute DOMString referrerPolicy;
+    [CEReactions, Reflect=referrerpolicy, Enumerated=ReferrerPolicy] attribute DOMString referrerPolicy;
 
     // Obsolete
     [CEReactions, Reflect] attribute DOMString coords;

@@ -18,9 +18,12 @@ from pathlib import Path
 from shutil import which
 from subprocess import run
 from typing import Any, Callable, Literal
+import shlex
 
 QEMU_MINIMUM_REQUIRED_MAJOR_VERSION = 6
 QEMU_MINIMUM_REQUIRED_MINOR_VERSION = 2
+
+BUILD_DIRECTORY = Path(environ.get("SERENITY_BUILD_DIR") or Path.cwd())
 
 
 class RunError(Exception):
@@ -34,6 +37,16 @@ class Arch(Enum):
     Aarch64 = "aarch64"
     RISCV64 = "riscv64"
     x86_64 = "x86_64"
+
+
+def host_arch_matches(arch: Arch) -> bool:
+    machine = os.uname().machine
+    if arch == Arch.Aarch64:
+        return machine == Arch.Aarch64.value or machine == "arm64"
+    elif arch == Arch.RISCV64:
+        return machine == Arch.RISCV64.value
+    elif arch == Arch.x86_64:
+        return machine == Arch.x86_64.value or machine == "amd64" or machine == "x64"
 
 
 @unique
@@ -61,15 +74,17 @@ class MachineType(Enum):
     QEMUGrub = "qgrub"
     CI = "ci"
     Limine = "limine"
-    Bochs = "b"
-    MicroVM = "microvm"
-    ISAPC = "isapc"
+    RaspberryPi3B = "raspi3b"
+    RaspberryPi4B = "raspi4b"
 
     def uses_grub(self) -> bool:
         return self in [MachineType.QEMU35Grub, MachineType.QEMUGrub]
 
     def is_q35(self) -> bool:
         return self in [MachineType.QEMU35Grub, MachineType.QEMU35]
+
+    def is_raspberry_pi(self) -> bool:
+        return self in [MachineType.RaspberryPi3B, MachineType.RaspberryPi4B]
 
     def supports_pc_speaker(self) -> bool:
         """Whether the pcspk-audiodev option is allowed for this machine type."""
@@ -83,6 +98,17 @@ class MachineType(Enum):
             MachineType.QEMUGrub,
             MachineType.Limine,
         ]
+
+
+@unique
+class BootDriveType(Enum):
+    AHCI = "ahci"
+    NVMe = "nvme"
+    PCI_SD = "pci-sd"
+    USB_UHCI = "usb-uhci"
+    USB_xHCI = "usb-xhci"
+    USB_UAS = "usb-uas"
+    VirtIOBLK = "virtio"
 
 
 def arguments_generator(prefix: str) -> Any:
@@ -118,7 +144,6 @@ class Configuration:
 
     # ## Programs and environmental configuration
     virtualization_support: bool = False
-    bochs_binary: Path = Path("bochs")
     qemu_binary: Path | None = None
     qemu_kind: QEMUKind | None = None
     kvm_usable: bool | None = None
@@ -129,14 +154,11 @@ class Configuration:
     machine_type: MachineType = MachineType.Default
     enable_gdb: bool = False
     enable_gl: bool = False
-    # FIXME: Replace these three flags by a boot drive enum, see FIXME for boot_drive below.
-    nvme_enable: bool = True
-    sd_enable: bool = False
-    usb_boot_enable: bool = False
     screen_count: int = 1
     host_ip: str = "127.0.0.1"
     ethernet_device_type: str = "e1000"
     disk_image: Path = Path("_disk_image")
+    boot_drive_type: BootDriveType = BootDriveType.NVMe
 
     # ## Low-level QEMU configuration
     # QEMU -append
@@ -160,14 +182,13 @@ class Configuration:
     # QEMU -display; if None, will omit the option and let QEMU figure out which backend to use on its own.
     display_backend: str | None = None
     # A QEMU -device for the graphics card.
-    display_device: str | None = "VGA,vgamem_mb=64"
+    display_device: str | None = "virtio-gpu-pci"
     # QEMU -netdev
     network_backend: str | None = None
     # A QEMU -device for networking.
     # Note that often, there are other network devices in the generic device list, added by specific machine types.
     network_default_device: str | None = None
     # QEMU -drive
-    # FIXME: Make an enum for the various boot drive options to handle boot drive selection more cleanly.
     boot_drive: str | None = None
     # Each is a QEMU -chardev
     character_devices: list[str] = field(default_factory=list)
@@ -313,8 +334,15 @@ def determine_machine_type() -> MachineType:
     return MachineType.Default
 
 
-def detect_bochs() -> Path:
-    return Path(environ.get("SERENITY_BOCHS_BIN", "bochs"))
+def determine_boot_drive_type() -> BootDriveType:
+    provided_boot_drive_type = environ.get("SERENITY_BOOT_DRIVE")
+    if provided_boot_drive_type is not None:
+        try:
+            value = BootDriveType(provided_boot_drive_type)
+        except ValueError:
+            raise RunError(f"{provided_boot_drive_type} is not a valid SerenityOS boot drive type")
+        return value
+    return BootDriveType.NVMe
 
 
 def detect_ram_size() -> str | None:
@@ -407,19 +435,25 @@ def set_up_virtualization_support(config: Configuration):
     # even if we couldn't detect it otherwise; this is intended behavior.
     if provided_virtualization_enable is not None:
         config.virtualization_support = provided_virtualization_enable == "1"
-    else:
-        if (config.kvm_usable and config.architecture == Arch.x86_64 and os.uname().machine == Arch.x86_64.value) or (
-            config.qemu_kind == QEMUKind.NativeWindows and config.architecture == Arch.x86_64
-        ):
-            config.virtualization_support = True
+    elif host_arch_matches(config.architecture) and not config.machine_type.is_raspberry_pi():
+        config.virtualization_support = (config.qemu_kind in [QEMUKind.NativeWindows, QEMUKind.MacOS]
+                                         or kvm_usable())
 
-    if config.virtualization_support:
+    # FIXME: Booting with KVM on aarch64 is broken, so disable it for now.
+    # FIXME: QEMU on Windows on ARM does not support WHPX yet
+    if config.virtualization_support and config.qemu_kind != QEMUKind.MacOS and config.architecture == Arch.Aarch64:
+        config.virtualization_support = False
+
+    if config.virtualization_support and config.qemu_kind in [QEMUKind.NativeWindows, QEMUKind.MacOS]:
         available_accelerators = run(
             [str(config.qemu_binary), "-accel", "help"],
             capture_output=True,
         ).stdout
         # Check if HVF is actually available if we're on MacOS
         if config.qemu_kind == QEMUKind.MacOS and (b"hvf" not in available_accelerators):
+            config.virtualization_support = False
+        # Check if WHPX is actually available if we're on Windows
+        if config.qemu_kind == QEMUKind.NativeWindows and (b"whpx" not in available_accelerators):
             config.virtualization_support = False
 
 
@@ -428,10 +462,6 @@ def set_up_basic_kernel_cmdline(config: Configuration):
     if provided_cmdline is not None:
         # Split environment variable at spaces, since we don't pass arguments like shell scripts do.
         config.kernel_cmdline.extend(provided_cmdline.split(sep=None))
-
-    # Handle system-specific arguments now, boot type specific arguments are handled later.
-    if config.qemu_kind == QEMUKind.NativeWindows:
-        config.kernel_cmdline.append("disable_virtio")
 
 
 def set_up_disk_image_path(config: Configuration):
@@ -454,7 +484,8 @@ def set_up_disk_image_path(config: Configuration):
 
 def set_up_cpu(config: Configuration):
     if config.qemu_kind == QEMUKind.NativeWindows:
-        config.qemu_cpu = "max,vmx=off"
+        # Setting -cpu to "max" breaks on QEMU 9 with WHPX whereas the default cpu is more broadly compatible
+        config.qemu_cpu = None
     else:
         provided_cpu = environ.get("SERENITY_QEMU_CPU")
         if provided_cpu is not None:
@@ -478,26 +509,27 @@ def set_up_cpu_count(config: Configuration):
 
 
 def set_up_spice(config: Configuration):
-    if environ.get("SERENITY_SPICE") == "1":
-        chardev_info = run(
-            [str(config.qemu_binary), "-chardev", "help"],
-            capture_output=True,
-            encoding="utf-8",
-        ).stdout.lower()
-        if "qemu-vdagent" in chardev_info:
-            config.spice_arguments = [
-                "-chardev",
-                "qemu-vdagent,clipboard=on,mouse=off,id=vdagent,name=vdagent",
-            ]
-        elif "spicevmc" in chardev_info:
-            config.spice_arguments = ["-chardev", "spicevmc,id=vdagent,name=vdagent"]
-        else:
-            raise RunError("No compatible SPICE character device was found")
+    # Only the default machine has virtio-serial (required for the spice agent).
+    if config.machine_type != MachineType.Default:
+        return
+    use_non_qemu_spice = environ.get("SERENITY_SPICE") == "1"
+    chardev_info = run(
+        [str(config.qemu_binary), "-chardev", "help"],
+        capture_output=True,
+        encoding="utf-8",
+    ).stdout.lower()
+    if use_non_qemu_spice and "spicevmc" in chardev_info:
+        config.spice_arguments = ["-chardev", "spicevmc,id=vdagent,name=vdagent"]
+    elif "qemu-vdagent" in chardev_info:
+        config.extra_arguments.extend([
+            "-chardev",
+            "qemu-vdagent,clipboard=on,mouse=off,id=vdagent,name=vdagent",
+        ])
 
-        if "spice" in chardev_info:
-            config.spice_arguments.extend(["-spice", "port=5930,agent-mouse=off,disable-ticketing=on"])
-        if "spice" in chardev_info or "vdagent" in chardev_info:
-            config.spice_arguments.extend(["-device", "virtserialport,chardev=vdagent,nr=1"])
+    if use_non_qemu_spice and "spice" in chardev_info:
+        config.spice_arguments.extend(["-spice", "port=5930,agent-mouse=off,disable-ticketing=on"])
+    if "spice" in chardev_info or "vdagent" in chardev_info:
+        config.extra_arguments.extend(["-device", "virtserialport,chardev=vdagent,nr=1"])
 
 
 def set_up_audio_backend(config: Configuration):
@@ -561,6 +593,10 @@ def set_up_screens(config: Configuration):
     if provided_display_backend is not None:
         config.display_backend = provided_display_backend
     else:
+        # The `gtk,gl=on` display backend appears to be broken on systems with NVIDIA graphics.
+        # Check if `nvidia-smi` is installed; if it is, assume that NVIDIA drivers would be used.
+        is_linux_with_nvidia_graphics = sys.platform == "linux" and which("nvidia-smi") is not None
+
         qemu_display_info = run(
             [str(config.qemu_binary), "-display", "help"],
             capture_output=True,
@@ -575,6 +611,8 @@ def set_up_screens(config: Configuration):
             config.display_backend = "sdl,gl=off"
         elif config.screen_count > 1 and "sdl" in qemu_display_info:
             config.display_backend = "sdl,gl=off"
+        elif "gtk" in qemu_display_info and has_virgl() and not is_linux_with_nvidia_graphics:
+            config.display_backend = "gtk,gl=on"
         elif "sdl" in qemu_display_info and has_virgl():
             config.display_backend = "sdl,gl=on"
         elif "cocoa" in qemu_display_info:
@@ -583,6 +621,10 @@ def set_up_screens(config: Configuration):
             config.display_backend = "sdl,gl=off"
         else:
             config.display_backend = "gtk,gl=off"
+
+    # Disable "Zoom To Fit" because it breaks absolute mouse input and looks ugly.
+    if config.display_backend.startswith("gtk"):
+        config.display_backend += ",zoom-to-fit=off"
 
 
 def set_up_display_device(config: Configuration):
@@ -614,43 +656,47 @@ def set_up_display_device(config: Configuration):
 
 
 def set_up_boot_drive(config: Configuration):
-    provided_nvme_enable = environ.get("SERENITY_NVME_ENABLE")
-    if provided_nvme_enable is not None:
-        config.nvme_enable = provided_nvme_enable == "1"
-    provided_usb_boot_enable = environ.get("SERENITY_USE_SDCARD")
-    if provided_usb_boot_enable is not None:
-        config.sd_enable = provided_usb_boot_enable == "1"
-    provided_usb_boot_enable = environ.get("SERENITY_USE_USBDRIVE")
-    if provided_usb_boot_enable is not None:
-        config.usb_boot_enable = provided_usb_boot_enable == "1"
+    if config.machine_type.is_raspberry_pi():
+        config.boot_drive = f"file={config.disk_image},if=sd,format=raw,id=boot-drive"
+        return
 
-    if config.machine_type in [MachineType.MicroVM, MachineType.ISAPC]:
-        if config.nvme_enable:
-            print("Warning: NVMe does not work under MicroVM/ISA PC, automatically disabling it.")
-        config.nvme_enable = False
+    config.boot_drive = f"file={config.disk_image},if=none,format=raw,id=boot-drive"
 
-    if config.architecture == Arch.Aarch64:
-        config.boot_drive = f"file={config.disk_image},if=sd,format=raw,id=disk"
-    elif config.nvme_enable:
-        config.boot_drive = f"file={config.disk_image},format=raw,index=0,media=disk,if=none,id=disk"
-        config.add_devices(
-            [
+    if config.boot_drive_type == BootDriveType.AHCI:
+        config.add_devices(["ahci,id=boot-drive-ahci", "ide-hd,drive=boot-drive,bus=boot-drive-ahci.0"])
+        config.kernel_cmdline.append("root=ahci0:0:0")
+    if config.boot_drive_type == BootDriveType.NVMe:
+        if config.architecture == Arch.x86_64:
+            config.add_devices([
                 "i82801b11-bridge,id=bridge4",
-                "nvme,serial=deadbeef,drive=disk,bus=bridge4,logical_block_size=4096,physical_block_size=4096",
-            ]
-        )
-        config.kernel_cmdline.append("root=nvme0:1:0")
-    elif config.sd_enable:
-        config.boot_drive = f"id=sd-boot-drive,if=none,format=raw,file={config.disk_image}"
-        config.add_devices(["sdhci-pci", "sd-card,drive=sd-boot-drive"])
-        config.kernel_cmdline.append("root=sd2:0:0")
-    elif config.usb_boot_enable:
-        config.boot_drive = f"if=none,id=usbstick,format=raw,file={config.disk_image}"
-        config.add_device("usb-storage,drive=usbstick")
+                "nvme,serial=deadbeef,drive=boot-drive,bus=bridge4,logical_block_size=4096,physical_block_size=4096",
+            ])
+            config.kernel_cmdline.append("root=nvme0:1:0")
+        else:
+            config.add_devices(["nvme,serial=deadbeef,drive=boot-drive"])
+            config.kernel_cmdline.append("root=block3:0")
+    elif config.boot_drive_type == BootDriveType.PCI_SD:
+        config.add_devices(["sdhci-pci", "sd-card,drive=boot-drive"])
+        config.kernel_cmdline.append("root=sd0:0:0")
+    elif config.boot_drive_type == BootDriveType.USB_UHCI:
+        config.add_device("piix4-usb-uhci,id=boot-drive-uhci")
+        config.add_device("usb-storage,bus=boot-drive-uhci.0,drive=boot-drive")
         # FIXME: Find a better way to address the usb drive
         config.kernel_cmdline.append("root=block3:0")
-    else:
-        config.boot_drive = f"file={config.disk_image},format=raw,index=0,media=disk,id=disk"
+    elif config.boot_drive_type == BootDriveType.USB_xHCI:
+        config.add_device("qemu-xhci,id=boot-drive-xhci")
+        config.add_device("usb-storage,bus=boot-drive-xhci.0,drive=boot-drive")
+        # FIXME: Find a better way to address the usb drive
+        config.kernel_cmdline.append("root=block3:0")
+    elif config.boot_drive_type == BootDriveType.USB_UAS:
+        config.add_device("qemu-xhci,id=boot-drive-xhci,p3=0")
+        config.add_device("usb-uas,bus=boot-drive-xhci.0,id=boot-drive-uas,pcap=log.pcap")
+        config.add_device("scsi-hd,bus=boot-drive-uas.0,scsi-id=0,lun=0,drive=boot-drive")
+        # FIXME: Find a better way to address the usb drive
+        config.kernel_cmdline.append("root=block3:0")
+    elif config.boot_drive_type == BootDriveType.VirtIOBLK:
+        config.add_device("virtio-blk-pci,drive=boot-drive")
+        config.kernel_cmdline.append("root=lun2:0:0")
 
 
 def determine_host_address() -> str:
@@ -674,8 +720,10 @@ def set_up_network_hardware(config: Configuration):
     provided_ethernet_device_type = environ.get("SERENITY_ETHERNET_DEVICE_TYPE")
     if provided_ethernet_device_type is not None:
         config.ethernet_device_type = provided_ethernet_device_type
+    elif config.architecture in [Arch.Aarch64, Arch.RISCV64] and not config.machine_type.is_raspberry_pi():
+        config.ethernet_device_type = "virtio-net-pci"
 
-    if config.architecture in [Arch.Aarch64, Arch.RISCV64]:
+    if config.machine_type.is_raspberry_pi():
         config.network_backend = None
         config.network_default_device = None
     else:
@@ -688,46 +736,62 @@ hostfwd=tcp:{config.host_ip}:2222-10.0.2.15:22"
 
 def set_up_kernel(config: Configuration):
     if config.architecture == Arch.Aarch64:
-        config.kernel_and_initrd_arguments = ["-kernel", "Kernel/Kernel"]
+        config.kernel_and_initrd_arguments = ["-kernel", "Kernel/kernel8.img"]
     elif config.architecture == Arch.RISCV64:
         config.kernel_and_initrd_arguments = ["-kernel", "Kernel/Kernel.bin"]
     elif config.architecture == Arch.x86_64:
-        config.kernel_and_initrd_arguments = ["-kernel", "Kernel/Prekernel/Prekernel", "-initrd", "Kernel/Kernel"]
+        config.kernel_and_initrd_arguments = ["-kernel", "Kernel/Kernel"]
 
 
 def set_up_machine_devices(config: Configuration):
-    # TODO: Maybe disable SPICE everwhere except the default machine?
+    # TODO: Maybe disable SPICE everywhere except the default machine?
 
     if config.qemu_kind != QEMUKind.NativeWindows:
         config.extra_arguments.extend(["-qmp", "unix:qmp-sock,server,nowait"])
 
     config.extra_arguments.extend(["-name", "SerenityOS", "-d", "guest_errors"])
 
-    # Architecture specifics.
-    if config.architecture == Arch.Aarch64:
-        config.qemu_machine = "raspi3b"
+    # Machine/Architecture specifics.
+    if config.machine_type.is_raspberry_pi():
+        config.qemu_machine = config.machine_type.value
         config.cpu_count = None
-        config.ram_size = "1G"  # The raspi3b machine only accepts 1G as a valid RAM size.
+        config.ram_size = None
         config.vga_type = None
         config.display_device = None
+        config.kernel_cmdline.append("serial_debug")
         if config.machine_type != MachineType.CI:
             # FIXME: Windows QEMU crashes when we set the same display as usual here.
             config.display_backend = None
             config.audio_devices = []
-            config.extra_arguments.extend(["-serial", "stdio"])
+
+            caches_path = BUILD_DIRECTORY.parent / "caches"
+            dtb_path = str(caches_path / "bcm2710-rpi-3-b.dtb")
+            if config.machine_type == MachineType.RaspberryPi4B:
+                dtb_path = str(caches_path / "bcm2711-rpi-4-b.dtb")
+
+            config.extra_arguments.extend(
+                [
+                    "-serial", "stdio",
+                    "-dtb", dtb_path
+                ]
+            )
             config.qemu_cpu = None
             return
 
-    elif config.architecture == Arch.RISCV64:
+    elif config.architecture == Arch.Aarch64 or config.architecture == Arch.RISCV64:
         config.qemu_machine = "virt"
         config.cpu_count = None
-        config.vga_type = None
-        config.display_device = None
-        config.display_backend = None
         config.audio_devices = []
         config.extra_arguments.extend(["-serial", "stdio"])
-        config.kernel_cmdline.append("serial_debug")
-        config.qemu_cpu = None
+        config.kernel_cmdline.extend(["serial_debug"])
+        config.qemu_cpu = "max" if config.architecture == Arch.Aarch64 else None
+        config.add_devices(
+            [
+                "virtio-keyboard",
+                "virtio-tablet",
+                "virtio-serial,max_ports=2",
+            ]
+        )
         return
 
     # Machine specific base setups
@@ -760,25 +824,10 @@ def set_up_machine_devices(config: Configuration):
                 "bochs-display",
                 "nec-usb-xhci,bus=pcie.2,addr=0x11.0x0",
                 "pci-bridge,chassis_nr=1,id=bridge1,bus=pcie.4,addr=0x3.0x0",
-                "sdhci-pci,bus=bridge1,addr=0x1.0x0",
             ]
         )
         config.character_devices.append("stdio,id=stdout,mux=on")
         config.enable_usb = True
-    elif config.machine_type in [MachineType.MicroVM, MachineType.ISAPC]:
-        config.character_devices.append("stdio,id=stdout,mux=on")
-        config.qemu_cpu = "qemu64"
-        config.cpu_count = None
-        config.display_device = None
-        config.network_default_device = None
-        config.audio_devices = []
-        config.add_devices(["isa-debugcon,chardev=stdout", "isa-vga", "ne2k_isa,netdev=breh"])
-
-        if config.machine_type == MachineType.MicroVM:
-            config.qemu_machine = "microvm,pit=on,rtc=on,pic=on"
-            config.add_devices(["isa-ide", "ide-hd,drive=disk", "i8042"])
-        else:  # ISAPC
-            config.qemu_machine = "isapc"
 
     elif config.machine_type == MachineType.CI:
         config.display_backend = "none"
@@ -803,9 +852,7 @@ def set_up_machine_devices(config: Configuration):
                 "virtio-rng-pci",
                 "pci-bridge,chassis_nr=1,id=bridge1",
                 "i82801b11-bridge,bus=bridge1,id=bridge2",
-                "sdhci-pci,bus=bridge2",
                 "i82801b11-bridge,id=bridge3",
-                "sdhci-pci,bus=bridge3",
                 "ich9-ahci,bus=bridge3",
             ]
         )
@@ -826,9 +873,7 @@ def set_up_machine_devices(config: Configuration):
 
 
 def assemble_arguments(config: Configuration) -> list[str | Path]:
-    if config.machine_type == MachineType.Bochs:
-        boch_src = Path(config.serenity_src or ".", "Meta/bochsrc")
-        return [config.bochs_binary, "-q", "-f", boch_src]
+    passed_qemu_args = shlex.split(environ.get("SERENITY_EXTRA_QEMU_ARGS", ""))
 
     return [
         config.qemu_binary or "",
@@ -855,6 +900,7 @@ def assemble_arguments(config: Configuration) -> list[str | Path]:
         *config.network_default_arguments,
         *config.boot_drive_arguments,
         *config.character_device_arguments,
+        *passed_qemu_args,
     ]
 
 
@@ -883,9 +929,9 @@ def configure_and_run():
     config.qemu_kind = determine_qemu_kind()
     config.architecture = determine_serenity_arch()
     config.machine_type = determine_machine_type()
-    config.bochs_binary = detect_bochs()
     config.ram_size = detect_ram_size()
     config.host_ip = determine_host_address()
+    config.boot_drive_type = determine_boot_drive_type()
 
     serenity_src = environ.get("SERENITY_SOURCE_DIR")
     if serenity_src is None:
@@ -912,8 +958,7 @@ def configure_and_run():
 
     arguments = assemble_arguments(config)
 
-    build_directory = environ.get("SERENITY_BUILD", ".")
-    os.chdir(build_directory)
+    os.chdir(BUILD_DIRECTORY)
 
     with TapController(config.machine_type):
         run(arguments)

@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Coroutine.h>
 #include <AK/Debug.h>
 #include <LibCore/DateTime.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/Promise.h>
 #include <LibCore/Timer.h>
 #include <LibTLS/TLSv12.h>
 
@@ -49,47 +51,88 @@ ErrorOr<size_t> TLSv12::write_some(ReadonlyBytes bytes)
     return bytes.size();
 }
 
-ErrorOr<NonnullOwnPtr<TLSv12>> TLSv12::connect(ByteString const& host, u16 port, Options options)
+template<typename T>
+struct PromiseAwaiter {
+    bool await_ready() const { return promise->is_resolved(); }
+    void await_suspend(std::coroutine_handle<> awaiter)
+    {
+        promise->when_resolved([awaiter](auto&) {
+            Core::deferred_invoke([awaiter] { awaiter.resume(); });
+        });
+        promise->when_rejected([awaiter](auto&) {
+            Core::deferred_invoke([awaiter] { awaiter.resume(); });
+        });
+    }
+    ErrorOr<T> await_resume()
+    {
+        if constexpr (IsVoid<T>)
+            return {};
+        else
+            return promise->await(); // Already resolved, so this should never yield to the event loop.
+    }
+
+    NonnullRefPtr<Core::Promise<T>> promise;
+};
+
+Coroutine<ErrorOr<NonnullOwnPtr<TLSv12>>> TLSv12::async_connect(ByteString const& host, u16 port, Options options)
 {
-    Core::EventLoop loop;
-    OwnPtr<Core::Socket> tcp_socket = TRY(Core::TCPSocket::connect(host, port));
-    TRY(tcp_socket->set_blocking(false));
+    auto promise = Core::Promise<Empty>::construct();
+    OwnPtr<Core::Socket> tcp_socket = CO_TRY(co_await Core::TCPSocket::async_connect(host, port));
+    CO_TRY(tcp_socket->set_blocking(false));
     auto tls_socket = make<TLSv12>(move(tcp_socket), move(options));
     tls_socket->set_sni(host);
-    tls_socket->on_connected = [&] {
-        loop.quit(0);
+    tls_socket->on_connected = [=] {
+        promise->resolve({});
     };
-    tls_socket->on_tls_error = [&](auto alert) {
-        loop.quit(256 - to_underlying(alert));
+    tls_socket->on_tls_error = [&tls_socket = *tls_socket, promise](auto alert) {
+        tls_socket.try_disambiguate_error();
+        promise->reject(AK::Error::from_string_view(enum_to_string(alert)));
     };
-    auto result = loop.exec();
-    if (result == 0)
-        return tls_socket;
 
-    tls_socket->try_disambiguate_error();
-    // FIXME: Should return richer information here.
-    return AK::Error::from_string_view(enum_to_string(static_cast<AlertDescription>(256 - result)));
+    ScopeGuard clear_callbacks = [&tls_socket = *tls_socket] {
+        tls_socket.on_tls_error = nullptr;
+        tls_socket.on_connected = nullptr;
+    };
+
+    CO_TRY(co_await PromiseAwaiter<Empty> { promise });
+
+    tls_socket->m_context.should_expect_successful_read = true;
+    co_return tls_socket;
 }
 
-ErrorOr<NonnullOwnPtr<TLSv12>> TLSv12::connect(ByteString const& host, Core::Socket& underlying_stream, Options options)
+Coroutine<ErrorOr<NonnullOwnPtr<TLSv12>>> TLSv12::async_connect(ByteString const& host, Core::Socket& underlying_stream, Options options)
 {
-    TRY(underlying_stream.set_blocking(false));
+    auto promise = Core::Promise<Empty>::construct();
+    CO_TRY(underlying_stream.set_blocking(false));
     auto tls_socket = make<TLSv12>(&underlying_stream, move(options));
     tls_socket->set_sni(host);
-    Core::EventLoop loop;
-    tls_socket->on_connected = [&] {
-        loop.quit(0);
+    tls_socket->on_connected = [=] {
+        promise->resolve({});
     };
-    tls_socket->on_tls_error = [&](auto alert) {
-        loop.quit(256 - to_underlying(alert));
+    tls_socket->on_tls_error = [&, promise](auto alert) {
+        tls_socket->try_disambiguate_error();
+        promise->reject(AK::Error::from_string_view(enum_to_string(alert)));
     };
-    auto result = loop.exec();
-    if (result == 0)
-        return tls_socket;
 
-    tls_socket->try_disambiguate_error();
-    // FIXME: Should return richer information here.
-    return AK::Error::from_string_view(enum_to_string(static_cast<AlertDescription>(256 - result)));
+    ScopeGuard clear_callbacks = [&tls_socket = *tls_socket] {
+        tls_socket.on_tls_error = nullptr;
+        tls_socket.on_connected = nullptr;
+    };
+
+    CO_TRY(co_await PromiseAwaiter<Empty> { promise });
+
+    tls_socket->m_context.should_expect_successful_read = true;
+    co_return tls_socket;
+}
+
+ErrorOr<NonnullOwnPtr<TLSv12>> TLSv12::connect(const AK::ByteString& host, u16 port, TLS::Options options)
+{
+    return Core::run_async_in_current_event_loop([&] { return async_connect(host, port, move(options)); });
+}
+
+ErrorOr<NonnullOwnPtr<TLSv12>> TLSv12::connect(const AK::ByteString& host, Core::Socket& underlying_stream, TLS::Options options)
+{
+    return Core::run_async_in_current_event_loop([&] { return async_connect(host, underlying_stream, move(options)); });
 }
 
 void TLSv12::setup_connection()
@@ -121,7 +164,7 @@ void TLSv12::setup_connection()
                     // Extend the timer, we are too slow.
                     m_handshake_timeout_timer->restart(m_max_wait_time_for_handshake_in_seconds * 1000);
                 }
-            }).release_value_but_fixme_should_propagate_errors();
+            });
         auto packet = build_hello();
         write_packet(packet);
         write_into_socket();
@@ -180,6 +223,16 @@ ErrorOr<void> TLSv12::read_from_socket()
         consume(read_bytes);
     } while (!read_bytes.is_empty() && !m_context.critical_error);
 
+    if (m_context.should_expect_successful_read && read_bytes.is_empty()) {
+        // read_some() returned an empty span, this is either an EOF (from improper closure)
+        // or some sort of weird even that is showing itself as an EOF.
+        // To guard against servers closing the connection weirdly or just improperly, make sure
+        // to check the connection state here and send the appropriate notifications.
+        stream.close();
+
+        check_connection_state(true);
+    }
+
     return {};
 }
 
@@ -210,6 +263,11 @@ bool TLSv12::check_connection_state(bool read)
         m_context.connection_finished = true;
         m_context.connection_status = ConnectionStatus::Disconnected;
         close();
+        m_context.has_invoked_finish_or_error_callback = true;
+        if (on_ready_to_read)
+            on_ready_to_read(); // Notify the client about the weird event.
+        if (on_tls_finished)
+            on_tls_finished();
         return false;
     }
 
@@ -240,6 +298,7 @@ bool TLSv12::check_connection_state(bool read)
             if (on_tls_finished)
                 on_tls_finished();
         }
+        m_context.connection_status = ConnectionStatus::Disconnected;
         if (m_context.tls_buffer.size()) {
             dbgln_if(TLS_DEBUG, "connection closed without finishing data transfer, {} bytes still in buffer and {} bytes in application buffer",
                 m_context.tls_buffer.size(),
@@ -297,7 +356,8 @@ ErrorOr<bool> TLSv12::flush()
 
 void TLSv12::close()
 {
-    alert(AlertLevel::FATAL, AlertDescription::CLOSE_NOTIFY);
+    if (underlying_stream().is_open())
+        alert(AlertLevel::FATAL, AlertDescription::CLOSE_NOTIFY);
     // bye bye.
     m_context.connection_status = ConnectionStatus::Disconnected;
 }

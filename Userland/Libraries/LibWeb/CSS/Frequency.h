@@ -28,6 +28,7 @@ public:
 
     Type type() const { return m_type; }
     double raw_value() const { return m_value; }
+    StringView unit_name() const;
 
     bool operator==(Frequency const& other) const
     {
@@ -46,9 +47,9 @@ public:
         return 0;
     }
 
-private:
-    StringView unit_name() const;
+    static Frequency resolve_calculated(NonnullRefPtr<CSSMathValue> const&, Layout::Node const&, Frequency const& reference_value);
 
+private:
     Type m_type;
     double m_value { 0 };
 };

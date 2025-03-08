@@ -7,6 +7,7 @@
 #include <AK/CharacterTypes.h>
 #include <LibUnicode/CharacterTypes.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/KeyboardEventPrototype.h>
 #include <LibWeb/UIEvents/KeyboardEvent.h>
 
 namespace Web::UIEvents {
@@ -58,11 +59,14 @@ static unsigned long determine_key_code(KeyCode platform_key, u32 code_point)
         return 9;
     case KeyCode::Key_Return:
         return 13;
-    case KeyCode::Key_Shift:
+    case KeyCode::Key_LeftShift:
+    case KeyCode::Key_RightShift:
         return 16;
-    case KeyCode::Key_Control:
+    case KeyCode::Key_LeftControl:
+    case KeyCode::Key_RightControl:
         return 17;
-    case KeyCode::Key_Alt:
+    case KeyCode::Key_LeftAlt:
+    case KeyCode::Key_RightAlt:
         return 18;
     case KeyCode::Key_CapsLock:
         return 20;
@@ -142,15 +146,20 @@ static ErrorOr<Optional<String>> get_event_named_key(KeyCode platform_key)
         return "Unidentified"_string;
 
     // 3.2. Modifier Keys, https://www.w3.org/TR/uievents-key/#keys-modifier
-    case KeyCode::Key_Alt:
-        return "AltLeft"_string;
+    case KeyCode::Key_LeftAlt:
     case KeyCode::Key_RightAlt:
-        return "AltRight"_string;
+        return "Alt"_string;
+    case KeyCode::Key_AltGr:
+        return "AltGraph"_string;
     case KeyCode::Key_CapsLock:
         return "CapsLock"_string;
-    case KeyCode::Key_Control:
+    case KeyCode::Key_LeftControl:
+    case KeyCode::Key_RightControl:
         return "Control"_string;
-    case KeyCode::Key_Super:
+    // FIXME: Fn
+    // FIXME: FnLock
+    case KeyCode::Key_LeftSuper:
+    case KeyCode::Key_RightSuper:
         return "Meta"_string;
     case KeyCode::Key_NumLock:
         return "NumLock"_string;
@@ -245,11 +254,7 @@ static ErrorOr<Optional<String>> get_event_key_string(u32 code_point)
     auto is_non_control_character = [&]() {
         // A non-control character is any valid Unicode character except those that are part of the "Other, Control"
         // ("Cc") General Category.
-        static auto control_general_category = Unicode::general_category_from_string("Cc"sv);
-        if (!control_general_category.has_value())
-            return true;
-
-        return !Unicode::code_point_has_general_category(code_point, *control_general_category);
+        return !Unicode::code_point_has_control_general_category(code_point);
     };
 
     // A key string is a string containing a 0 or 1 non-control characters ("base" characters) followed by 0 or more
@@ -267,18 +272,22 @@ static ErrorOr<String> get_event_key(KeyCode platform_key, u32 code_point)
 {
     // 1. Let key be a DOMString initially set to "Unidentified".
     // NOTE: We return "Unidentified" at the end to avoid needlessly allocating it here.
-    Optional<String> key;
 
     // 2. If there exists an appropriate named key attribute value for this key event, then
-    if (auto named_key = TRY(get_event_named_key(platform_key)); named_key.has_value()) {
-        // 1. Set key to that named key attribute value.
-        key = named_key.release_value();
+    // AD-HOC: Key_Invalid would be interpreted as "Unidentified" here. But we also use Key_Invalid for key presses that
+    //         are not on a standard US keyboard. If such a key would generate a valid key string below, let's allow that
+    //         to happen; otherwise, we will still return "Unidentified" at the end.
+    if (platform_key != KeyCode::Key_Invalid) {
+        if (auto named_key = TRY(get_event_named_key(platform_key)); named_key.has_value()) {
+            // 1. Set key to that named key attribute value.
+            return named_key.release_value();
+        }
     }
 
     // 3. Else, if the key event generates a valid key string, then
-    else if (auto key_string = TRY(get_event_key_string(code_point)); key_string.has_value()) {
+    if (auto key_string = TRY(get_event_key_string(code_point)); key_string.has_value()) {
         // 1. Set key to that key string value.
-        key = key_string.release_value();
+        return key_string.release_value();
     }
 
     // FIXME: 4. Else, if the key event has any modifier keys other than glyph modifier keys, then
@@ -286,8 +295,6 @@ static ErrorOr<String> get_event_key(KeyCode platform_key, u32 code_point)
     //               modifer keys removed except for glyph modifier keys.
 
     // 5. Return key as the key attribute value for this key event.
-    if (key.has_value())
-        return key.release_value();
     return "Unidentified"_string;
 }
 
@@ -319,6 +326,8 @@ static ErrorOr<String> get_event_code(KeyCode platform_key, unsigned modifiers)
             return "Numpad9"_string;
         case KeyCode::Key_Plus:
             return "NumpadAdd"_string;
+        case KeyCode::Key_Comma:
+            return "NumpadComma"_string;
         case KeyCode::Key_Period:
         case KeyCode::Key_Delete:
             return "NumpadDecimal"_string;
@@ -327,9 +336,17 @@ static ErrorOr<String> get_event_code(KeyCode platform_key, unsigned modifiers)
         case KeyCode::Key_Return:
             return "NumpadEnter"_string;
         case KeyCode::Key_Asterisk:
-            return "NumpadAsterisk"_string;
+            return "NumpadMultiply"_string;
         case KeyCode::Key_Minus:
             return "NumpadSubtract"_string;
+        case KeyCode::Key_Equal:
+            return "NumpadEqual"_string;
+        case KeyCode::Key_Hashtag:
+            return "NumpadHash"_string;
+        case KeyCode::Key_LeftParen:
+            return "NumpadParenLeft"_string;
+        case KeyCode::Key_RightParen:
+            return "NumpadParenRight"_string;
         default:
             break;
         }
@@ -457,24 +474,28 @@ static ErrorOr<String> get_event_code(KeyCode platform_key, unsigned modifiers)
         return "Slash"_string;
 
     // 3.1.2. Functional Keys, https://www.w3.org/TR/uievents-code/#key-alphanumeric-functional
-    case KeyCode::Key_Alt:
+    case KeyCode::Key_LeftAlt:
         return "AltLeft"_string;
     case KeyCode::Key_RightAlt:
         return "AltRight"_string;
+    case KeyCode::Key_AltGr:
+        return "AltGraph"_string;
     case KeyCode::Key_Backspace:
         return "Backspace"_string;
     case KeyCode::Key_CapsLock:
         return "CapsLock"_string;
     case KeyCode::Key_Menu:
         return "ContextMenu"_string;
-    case KeyCode::Key_Control:
+    case KeyCode::Key_LeftControl:
         return "ControlLeft"_string;
     case KeyCode::Key_RightControl:
         return "ControlRight"_string;
     case KeyCode::Key_Return:
         return "Enter"_string;
-    case KeyCode::Key_Super:
-        return "Meta"_string; // FIXME: Detect left vs. right key.
+    case KeyCode::Key_LeftSuper:
+        return "MetaLeft"_string;
+    case KeyCode::Key_RightSuper:
+        return "MetaRight"_string;
     case KeyCode::Key_LeftShift:
         return "ShiftLeft"_string;
     case KeyCode::Key_RightShift:
@@ -614,11 +635,16 @@ static DOMKeyLocation get_event_location(KeyCode platform_key, unsigned modifier
     if ((modifiers & Mod_Keypad) != 0)
         return DOMKeyLocation::Numpad;
 
-    // FIXME: Detect left vs. right for Control and Alt keys.
     switch (platform_key) {
+    case KeyCode::Key_LeftAlt:
+    case KeyCode::Key_LeftControl:
     case KeyCode::Key_LeftShift:
+    case KeyCode::Key_LeftSuper:
         return DOMKeyLocation::Left;
+    case KeyCode::Key_RightAlt:
+    case KeyCode::Key_RightControl:
     case KeyCode::Key_RightShift:
+    case KeyCode::Key_RightSuper:
         return DOMKeyLocation::Right;
     default:
         break;
@@ -684,6 +710,29 @@ bool KeyboardEvent::get_modifier_state(String const& key_arg) const
     if (key_arg == "SymbolLock")
         return m_modifier_symbol_lock;
     return false;
+}
+
+// https://w3c.github.io/uievents/#dom-keyboardevent-initkeyboardevent
+void KeyboardEvent::init_keyboard_event(String const& type, bool bubbles, bool cancelable, HTML::Window* view, String const& key, WebIDL::UnsignedLong location, bool ctrl_key, bool alt_key, bool shift_key, bool meta_key)
+{
+    // Initializes attributes of a KeyboardEvent object. This method has the same behavior as UIEvent.initUIEvent().
+    // The value of detail remains undefined.
+
+    // 1. If this’s dispatch flag is set, then return.
+    if (dispatched())
+        return;
+
+    // 2. Initialize this with type, bubbles, and cancelable.
+    initialize_event(type, bubbles, cancelable);
+
+    // Implementation Defined: Initialise other values.
+    m_view = view;
+    m_key = key;
+    m_location = location;
+    m_ctrl_key = ctrl_key;
+    m_alt_key = alt_key;
+    m_shift_key = shift_key;
+    m_meta_key = meta_key;
 }
 
 JS::NonnullGCPtr<KeyboardEvent> KeyboardEvent::create(JS::Realm& realm, FlyString const& event_name, KeyboardEventInit const& event_init)

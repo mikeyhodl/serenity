@@ -10,6 +10,7 @@
 #include <AK/DistinctNumeric.h>
 #include <AK/Function.h>
 #include <AK/RefCounted.h>
+#include <AK/Traits.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <Kernel/Debug.h>
@@ -39,32 +40,39 @@ enum class BARSpaceType {
     Memory64BitSpace,
 };
 
-enum class RegisterOffset {
-    VENDOR_ID = 0x00,             // word
-    DEVICE_ID = 0x02,             // word
-    COMMAND = 0x04,               // word
-    STATUS = 0x06,                // word
-    REVISION_ID = 0x08,           // byte
-    PROG_IF = 0x09,               // byte
-    SUBCLASS = 0x0a,              // byte
-    CLASS = 0x0b,                 // byte
-    CACHE_LINE_SIZE = 0x0c,       // byte
-    LATENCY_TIMER = 0x0d,         // byte
-    HEADER_TYPE = 0x0e,           // byte
-    BIST = 0x0f,                  // byte
-    BAR0 = 0x10,                  // u32
-    BAR1 = 0x14,                  // u32
-    BAR2 = 0x18,                  // u32
-    SECONDARY_BUS = 0x19,         // byte
-    BAR3 = 0x1C,                  // u32
-    BAR4 = 0x20,                  // u32
-    BAR5 = 0x24,                  // u32
-    SUBSYSTEM_VENDOR_ID = 0x2C,   // u16
-    SUBSYSTEM_ID = 0x2E,          // u16
-    EXPANSION_ROM_POINTER = 0x30, // u32
-    CAPABILITIES_POINTER = 0x34,  // u8
-    INTERRUPT_LINE = 0x3C,        // byte
-    INTERRUPT_PIN = 0x3D,         // byte
+enum class RegisterOffset : u32 {
+    VENDOR_ID = 0x00,                               // word
+    DEVICE_ID = 0x02,                               // word
+    COMMAND = 0x04,                                 // word
+    STATUS = 0x06,                                  // word
+    REVISION_ID = 0x08,                             // byte
+    PROG_IF = 0x09,                                 // byte
+    SUBCLASS = 0x0a,                                // byte
+    CLASS = 0x0b,                                   // byte
+    CACHE_LINE_SIZE = 0x0c,                         // byte
+    LATENCY_TIMER = 0x0d,                           // byte
+    HEADER_TYPE = 0x0e,                             // byte
+    BIST = 0x0f,                                    // byte
+    BAR0 = 0x10,                                    // u32
+    BAR1 = 0x14,                                    // u32
+    BAR2 = 0x18,                                    // u32
+    SECONDARY_BUS = 0x19,                           // byte
+    SUBORDINATE_BUS = 0x1A,                         // byte
+    BAR3 = 0x1C,                                    // u32
+    BAR4 = 0x20,                                    // u32
+    MEMORY_BASE = 0x20,                             // u16
+    MEMORY_LIMIT = 0x22,                            // u16
+    BAR5 = 0x24,                                    // u32
+    PREFETCHABLE_MEMORY_BASE = 0x24,                // u16
+    PREFETCHABLE_MEMORY_LIMIT = 0x26,               // u16
+    PREFETCHABLE_MEMORY_BASE_UPPER_32_BITS = 0x28,  // u32
+    PREFETCHABLE_MEMORY_LIMIT_UPPER_32_BITS = 0x2C, // u32
+    SUBSYSTEM_VENDOR_ID = 0x2C,                     // u16
+    SUBSYSTEM_ID = 0x2E,                            // u16
+    EXPANSION_ROM_POINTER = 0x30,                   // u32
+    CAPABILITIES_POINTER = 0x34,                    // u8
+    INTERRUPT_LINE = 0x3C,                          // byte
+    INTERRUPT_PIN = 0x3D,                           // byte
 };
 
 enum class Limits {
@@ -91,6 +99,31 @@ static constexpr u16 msix_control_table_mask = 0x07ff;
 static constexpr u8 msix_table_bir_mask = 0x7;
 static constexpr u16 msix_table_offset_mask = 0xfff8;
 static constexpr u16 msix_control_enable = 0x8000;
+
+union OpenFirmwareAddress {
+    enum class SpaceType : u32 {
+        ConfigurationSpace = 0,
+        IOSpace = 1,
+        Memory32BitSpace = 2,
+        Memory64BitSpace = 3,
+    };
+    struct {
+        // https://www.devicetree.org/open-firmware/bindings/pci/pci2_1.pdf
+        // Chapter: 2.2.1.1
+        // phys.hi cell
+        u32 register_ : 8;        // r
+        u32 function : 3;         // f
+        u32 device : 5;           // d
+        u32 bus : 8;              // b
+        SpaceType space_type : 2; // s
+        u32 : 3;                  // 0
+        u32 aliased : 1;          // t
+        u32 prefetchable : 1;     // p
+        u32 relocatable : 1;      // n
+    };
+    u32 raw;
+};
+static_assert(AssertSize<OpenFirmwareAddress, 4>());
 
 // Taken from https://pcisig.com/sites/default/files/files/PCI_Code-ID_r_1_11__v24_Jan_2019.pdf
 enum class ClassID {
@@ -337,9 +370,9 @@ public:
     void write32(size_t offset, u32 value) const;
 
 private:
-    const Address m_address;
-    const CapabilityID m_id;
-    const u8 m_ptr;
+    Address const m_address;
+    CapabilityID const m_id;
+    u8 const m_ptr;
 };
 
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u8, ClassCode);
@@ -481,16 +514,16 @@ public:
 private:
     DeviceIdentifier(EnumerableDeviceIdentifier const& other_identifier)
         : EnumerableDeviceIdentifier(other_identifier.address(),
-            other_identifier.hardware_id(),
-            other_identifier.revision_id(),
-            other_identifier.class_code(),
-            other_identifier.subclass_code(),
-            other_identifier.prog_if(),
-            other_identifier.subsystem_id(),
-            other_identifier.subsystem_vendor_id(),
-            other_identifier.interrupt_line(),
-            other_identifier.interrupt_pin(),
-            other_identifier.capabilities())
+              other_identifier.hardware_id(),
+              other_identifier.revision_id(),
+              other_identifier.class_code(),
+              other_identifier.subclass_code(),
+              other_identifier.prog_if(),
+              other_identifier.subsystem_id(),
+              other_identifier.subsystem_vendor_id(),
+              other_identifier.interrupt_line(),
+              other_identifier.interrupt_pin(),
+              other_identifier.capabilities())
     {
     }
 
@@ -501,7 +534,6 @@ private:
 
 class Domain;
 class Device;
-
 }
 
 template<>

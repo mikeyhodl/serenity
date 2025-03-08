@@ -13,6 +13,7 @@ namespace Web::Layout {
 
 class Label final : public BlockContainer {
     JS_CELL(Label, BlockContainer);
+    JS_DECLARE_ALLOCATOR(Label);
 
 public:
     Label(DOM::Document&, HTML::HTMLLabelElement*, NonnullRefPtr<CSS::StyleProperties>);
@@ -27,8 +28,6 @@ public:
     void handle_mousedown_on_label(Badge<Painting::TextPaintable>, CSSPixelPoint, unsigned button);
     void handle_mouseup_on_label(Badge<Painting::TextPaintable>, CSSPixelPoint, unsigned button);
     void handle_mousemove_on_label(Badge<Painting::TextPaintable>, CSSPixelPoint, unsigned button);
-
-    LabelableNode* labeled_control();
 
 private:
     virtual bool is_label() const override { return true; }

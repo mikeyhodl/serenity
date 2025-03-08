@@ -6,13 +6,14 @@
 
 #pragma once
 
-#include <LibWeb/HTML/HTMLInputElement.h>
+#include <LibWeb/Forward.h>
 #include <LibWeb/Layout/FormAssociatedLabelableNode.h>
 
 namespace Web::Layout {
 
 class CheckBox final : public FormAssociatedLabelableNode {
     JS_CELL(CheckBox, FormAssociatedLabelableNode);
+    JS_DECLARE_ALLOCATOR(CheckBox);
 
 public:
     CheckBox(DOM::Document&, HTML::HTMLInputElement&, NonnullRefPtr<CSS::StyleProperties>);

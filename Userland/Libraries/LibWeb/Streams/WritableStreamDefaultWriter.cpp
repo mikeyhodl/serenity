@@ -52,7 +52,7 @@ JS::GCPtr<JS::Object> WritableStreamDefaultWriter::ready()
 }
 
 // https://streams.spec.whatwg.org/#default-writer-abort
-WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> WritableStreamDefaultWriter::abort(JS::Value reason)
+JS::GCPtr<JS::Object> WritableStreamDefaultWriter::abort(JS::Value reason)
 {
     auto& realm = this->realm();
 
@@ -63,11 +63,11 @@ WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> WritableStreamDefaultWriter::abort(JS
     }
 
     // 2. Return ! WritableStreamDefaultWriterAbort(this, reason).
-    return TRY(writable_stream_default_writer_abort(*this, reason))->promise();
+    return writable_stream_default_writer_abort(*this, reason)->promise();
 }
 
 // https://streams.spec.whatwg.org/#default-writer-close
-WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> WritableStreamDefaultWriter::close()
+JS::GCPtr<JS::Object> WritableStreamDefaultWriter::close()
 {
     auto& realm = this->realm();
 
@@ -86,27 +86,27 @@ WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> WritableStreamDefaultWriter::close()
     }
 
     // 4. Return ! WritableStreamDefaultWriterClose(this).
-    return TRY(writable_stream_default_writer_close(*this))->promise();
+    return writable_stream_default_writer_close(*this)->promise();
 }
 
 // https://streams.spec.whatwg.org/#default-writer-release-lock
-WebIDL::ExceptionOr<void> WritableStreamDefaultWriter::release_lock()
+void WritableStreamDefaultWriter::release_lock()
 {
     // 1. Let stream be this.[[stream]].
 
     // 2. If stream is undefined, return.
     if (!m_stream)
-        return {};
+        return;
 
     // 3. Assert: stream.[[writer]] is not undefined.
     VERIFY(m_stream->writer());
 
     // 4. Perform ! WritableStreamDefaultWriterRelease(this).
-    return writable_stream_default_writer_release(*this);
+    writable_stream_default_writer_release(*this);
 }
 
 // https://streams.spec.whatwg.org/#default-writer-write
-WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> WritableStreamDefaultWriter::write(JS::Value chunk)
+JS::GCPtr<JS::Object> WritableStreamDefaultWriter::write(JS::Value chunk)
 {
     auto& realm = this->realm();
 
@@ -117,7 +117,7 @@ WebIDL::ExceptionOr<JS::GCPtr<JS::Object>> WritableStreamDefaultWriter::write(JS
     }
 
     // 2. Return ! WritableStreamDefaultWriterWrite(this, chunk).
-    return TRY(writable_stream_default_writer_write(*this, chunk))->promise();
+    return writable_stream_default_writer_write(*this, chunk)->promise();
 }
 
 WritableStreamDefaultWriter::WritableStreamDefaultWriter(JS::Realm& realm)

@@ -68,7 +68,7 @@ void SysFSBIOSDirectory::create_components()
 UNMAP_AFTER_INIT void SysFSBIOSDirectory::initialize_dmi_exposer()
 {
     VERIFY(!(m_dmi_entry_point.is_null()));
-    if (m_using_64bit_dmi_entry_point) {
+    if (m_using_64bit_dmi_entry_point.was_set()) {
         set_dmi_64_bit_entry_initialization_values();
     } else {
         set_dmi_32_bit_entry_initialization_values();
@@ -87,7 +87,7 @@ UNMAP_AFTER_INIT SysFSBIOSDirectory::SysFSBIOSDirectory(SysFSFirmwareDirectory& 
     auto entry_64bit = find_dmi_entry64bit_point();
     if (entry_64bit.has_value()) {
         m_dmi_entry_point = entry_64bit.value();
-        m_using_64bit_dmi_entry_point = true;
+        m_using_64bit_dmi_entry_point.set();
     }
     if (m_dmi_entry_point.is_null())
         return;
@@ -96,6 +96,12 @@ UNMAP_AFTER_INIT SysFSBIOSDirectory::SysFSBIOSDirectory(SysFSFirmwareDirectory& 
 
 UNMAP_AFTER_INIT Optional<PhysicalAddress> SysFSBIOSDirectory::find_dmi_entry64bit_point()
 {
+    if (!g_boot_info.smbios.entry_point_paddr.is_null() && g_boot_info.smbios.entry_point_is_64_bit)
+        return g_boot_info.smbios.entry_point_paddr;
+
+    if (g_boot_info.boot_method != BootMethod::Multiboot1)
+        return {};
+
     auto bios_or_error = map_bios();
     if (bios_or_error.is_error())
         return {};
@@ -104,6 +110,12 @@ UNMAP_AFTER_INIT Optional<PhysicalAddress> SysFSBIOSDirectory::find_dmi_entry64b
 
 UNMAP_AFTER_INIT Optional<PhysicalAddress> SysFSBIOSDirectory::find_dmi_entry32bit_point()
 {
+    if (!g_boot_info.smbios.entry_point_paddr.is_null() && !g_boot_info.smbios.entry_point_is_64_bit)
+        return g_boot_info.smbios.entry_point_paddr;
+
+    if (g_boot_info.boot_method != BootMethod::Multiboot1)
+        return {};
+
     auto bios_or_error = map_bios();
     if (bios_or_error.is_error())
         return {};

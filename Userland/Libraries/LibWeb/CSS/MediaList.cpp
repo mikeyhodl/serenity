@@ -48,15 +48,10 @@ void MediaList::set_media_text(StringView text)
     m_media = parse_media_query_list(Parser::ParsingContext { realm() }, text);
 }
 
-bool MediaList::is_supported_property_index(u32 index) const
-{
-    return index < length();
-}
-
 // https://www.w3.org/TR/cssom-1/#dom-medialist-item
 Optional<String> MediaList::item(u32 index) const
 {
-    if (!is_supported_property_index(index))
+    if (index >= m_media.size())
         return {};
 
     return m_media[index]->to_string();
@@ -105,9 +100,8 @@ bool MediaList::evaluate(HTML::Window const& window)
 
 bool MediaList::matches() const
 {
-    if (m_media.is_empty()) {
+    if (m_media.is_empty())
         return true;
-    }
 
     for (auto& media : m_media) {
         if (media->matches())
@@ -116,10 +110,10 @@ bool MediaList::matches() const
     return false;
 }
 
-WebIDL::ExceptionOr<JS::Value> MediaList::item_value(size_t index) const
+Optional<JS::Value> MediaList::item_value(size_t index) const
 {
     if (index >= m_media.size())
-        return JS::js_undefined();
+        return {};
     return JS::PrimitiveString::create(vm(), m_media[index]->to_string());
 }
 

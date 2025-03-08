@@ -36,6 +36,7 @@ public:
     virtual ~HTMLObjectElement() override;
 
     virtual void form_associated_element_attribute_changed(FlyString const& name, Optional<String> const& value) override;
+    virtual void form_associated_element_was_removed(DOM::Node*) override;
 
     String data() const;
     void set_data(String const& data) { MUST(set_attribute(HTML::AttributeNames::data, data)); }
@@ -54,6 +55,8 @@ private:
     virtual bool is_html_object_element() const override { return true; }
 
     virtual void initialize(JS::Realm&) override;
+
+    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
 
     virtual JS::GCPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::StyleProperties>) override;
 
@@ -87,7 +90,7 @@ private:
 
     JS::GCPtr<DecodedImageData> image_data() const;
 
-    JS::GCPtr<SharedImageRequest> m_image_request;
+    JS::GCPtr<SharedResourceRequest> m_resource_request;
 };
 
 }

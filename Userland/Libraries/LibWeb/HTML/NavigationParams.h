@@ -6,25 +6,30 @@
 
 #pragma once
 
+#include <AK/Optional.h>
+#include <LibJS/Heap/CellAllocator.h>
+#include <LibJS/Heap/GCPtr.h>
+#include <LibURL/Origin.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
-#include <LibWeb/HTML/CrossOrigin/CrossOriginOpenerPolicy.h>
-#include <LibWeb/HTML/CrossOrigin/CrossOriginOpenerPolicyEnforcementResult.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
-#include <LibWeb/HTML/Navigable.h>
-#include <LibWeb/HTML/Origin.h>
+#include <LibWeb/Forward.h>
+#include <LibWeb/HTML/CrossOrigin/OpenerPolicy.h>
+#include <LibWeb/HTML/CrossOrigin/OpenerPolicyEnforcementResult.h>
 #include <LibWeb/HTML/PolicyContainers.h>
 #include <LibWeb/HTML/SandboxingFlagSet.h>
 
 namespace Web::HTML {
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigation-params
-struct NavigationParams {
+struct NavigationParams : JS::Cell {
+    JS_CELL(NavigationParams, JS::Cell);
+    JS_DECLARE_ALLOCATOR(NavigationParams);
+
     // null or a navigation ID
     Optional<String> id;
 
     // the navigable to be navigated
-    JS::Handle<Navigable> navigable;
+    JS::GCPtr<Navigable> navigable;
 
     // null or a request that started the navigation
     JS::GCPtr<Fetch::Infrastructure::Request> request;
@@ -38,14 +43,14 @@ struct NavigationParams {
     // null or an algorithm accepting a Document, once it has been created
     Function<void(DOM::Document&)> commit_early_hints { nullptr };
 
-    // a cross-origin opener policy enforcement result, used for reporting and potentially for causing a browsing context group switch
-    CrossOriginOpenerPolicyEnforcementResult coop_enforcement_result;
+    // an opener policy enforcement result, used for reporting and potentially for causing a browsing context group switch
+    OpenerPolicyEnforcementResult coop_enforcement_result;
 
     // null or an environment reserved for the new Document
     Fetch::Infrastructure::Request::ReservedClientType reserved_environment;
 
     // an origin to use for the new Document
-    Origin origin;
+    URL::Origin origin;
 
     // a policy container to use for the new Document
     PolicyContainer policy_container;
@@ -53,22 +58,27 @@ struct NavigationParams {
     // a sandboxing flag set to impose on the new Document
     SandboxingFlagSet final_sandboxing_flag_set = {};
 
-    // a cross-origin opener policy to use for the new Document
-    CrossOriginOpenerPolicy cross_origin_opener_policy;
+    // an opener policy to use for the new Document
+    OpenerPolicy opener_policy;
 
     // FIXME: a NavigationTimingType used for creating the navigation timing entry for the new Document
 
     // a URL or null used to populate the new Document's about base URL
     Optional<URL::URL> about_base_url;
+
+    void visit_edges(Visitor& visitor) override;
 };
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#non-fetch-scheme-navigation-params
-struct NonFetchSchemeNavigationParams {
+struct NonFetchSchemeNavigationParams : JS::Cell {
+    JS_CELL(NonFetchSchemeNavigationParams, JS::Cell);
+    JS_DECLARE_ALLOCATOR(NonFetchSchemeNavigationParams);
+
     // null or a navigation ID
     Optional<String> id;
 
     // the navigable to be navigated
-    JS::Handle<Navigable> navigable;
+    JS::GCPtr<Navigable> navigable;
 
     // a URL
     URL::URL url;
@@ -80,9 +90,11 @@ struct NonFetchSchemeNavigationParams {
     bool source_snapshot_has_transient_activation = { false };
 
     // an origin possibly for use in a user-facing prompt to confirm the invocation of an external software package
-    Origin initiator_origin;
+    URL::Origin initiator_origin;
 
     // FIXME: a NavigationTimingType used for creating the navigation timing entry for the new Document
+
+    void visit_edges(Visitor& visitor) override;
 };
 
 }

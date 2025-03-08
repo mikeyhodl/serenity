@@ -7,6 +7,7 @@
 #include <AK/Debug.h>
 #include <AK/Optional.h>
 #include <LibGfx/Path.h>
+#include <LibWeb/Bindings/SVGPathElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/Layout/SVGGeometryBox.h>
@@ -95,9 +96,9 @@ void SVGPathElement::initialize(JS::Realm& realm)
     WEB_SET_PROTOTYPE_FOR_INTERFACE(SVGPathElement);
 }
 
-void SVGPathElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void SVGPathElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    SVGGeometryElement::attribute_changed(name, value);
+    SVGGeometryElement::attribute_changed(name, old_value, value);
 
     if (name == "d")
         m_instructions = AttributeParser::parse_path_data(value.value_or(String {}));

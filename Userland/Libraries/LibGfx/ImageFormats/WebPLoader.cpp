@@ -13,6 +13,7 @@
 #include <LibGfx/ImageFormats/WebPLoader.h>
 #include <LibGfx/ImageFormats/WebPLoaderLossless.h>
 #include <LibGfx/ImageFormats/WebPLoaderLossy.h>
+#include <LibGfx/ImageFormats/WebPShared.h>
 #include <LibGfx/Painter.h>
 #include <LibRIFF/ChunkID.h>
 #include <LibRIFF/RIFF.h>
@@ -23,43 +24,6 @@
 namespace Gfx {
 
 namespace {
-
-struct VP8XHeader {
-    bool has_icc;
-    bool has_alpha;
-    bool has_exif;
-    bool has_xmp;
-    bool has_animation;
-    u32 width;
-    u32 height;
-};
-
-struct ANIMChunk {
-    u32 background_color;
-    u16 loop_count;
-};
-
-struct ANMFChunk {
-    u32 frame_x;
-    u32 frame_y;
-    u32 frame_width;
-    u32 frame_height;
-    u32 frame_duration_in_milliseconds;
-
-    enum class BlendingMethod {
-        UseAlphaBlending = 0,
-        DoNotBlend = 1,
-    };
-    BlendingMethod blending_method;
-
-    enum class DisposalMethod {
-        DoNotDispose = 0,
-        DisposeToBackgroundColor = 1,
-    };
-    DisposalMethod disposal_method;
-
-    ReadonlyBytes frame_data;
-};
 
 // "For a still image, the image data consists of a single frame, which is made up of:
 //     An optional alpha subchunk.
@@ -160,7 +124,7 @@ static ErrorOr<void> decode_webp_chunk_ALPH(RIFF::Chunk const& alph_chunk, Bitma
     u8 filtering_method = (flags >> 2) & 3;
     u8 compression_method = flags & 3;
 
-    dbgln_if(WEBP_DEBUG, "preprocessing {} filtering_method {} compression_method {}", preprocessing, filtering_method, compression_method);
+    dbgln_if(WEBP_DEBUG, "ALPH: preprocessing {} filtering_method {} compression_method {}", preprocessing, filtering_method, compression_method);
 
     ReadonlyBytes alpha_data = alph_chunk.data().slice(1);
 
@@ -294,7 +258,7 @@ static ErrorOr<VP8XHeader> decode_webp_chunk_VP8X(RIFF::Chunk const& vp8x_chunk)
     // 3 bytes height minus one
     u32 height = (vp8x_chunk[7] | (vp8x_chunk[8] << 8) | (vp8x_chunk[9] << 16)) + 1;
 
-    dbgln_if(WEBP_DEBUG, "flags {:#x} --{}{}{}{}{}{}, width {}, height {}",
+    dbgln_if(WEBP_DEBUG, "VP8X: flags {:#x} --{}{}{}{}{}{}, width {}, height {}",
         flags,
         has_icc ? " icc" : "",
         has_alpha ? " alpha" : "",
@@ -317,7 +281,7 @@ static ErrorOr<ANIMChunk> decode_webp_chunk_ANIM(RIFF::Chunk const& anim_chunk)
     u32 background_color = (u32)anim_chunk[0] | ((u32)anim_chunk[1] << 8) | ((u32)anim_chunk[2] << 16) | ((u32)anim_chunk[3] << 24);
     u16 loop_count = anim_chunk[4] | (anim_chunk[5] << 8);
 
-    dbgln_if(WEBP_DEBUG, "background_color {:x} loop_count {}", background_color, loop_count);
+    dbgln_if(WEBP_DEBUG, "ANIM: background_color {:x} loop_count {}", background_color, loop_count);
 
     return ANIMChunk { background_color, loop_count };
 }
@@ -347,12 +311,10 @@ static ErrorOr<ANMFChunk> decode_webp_chunk_ANMF(WebPLoadingContext& context, RI
     u32 frame_duration = (u32)anmf_chunk[12] | ((u32)anmf_chunk[13] << 8) | ((u32)anmf_chunk[14] << 16);
 
     u8 flags = anmf_chunk[15];
-    auto blending_method = static_cast<ANMFChunk::BlendingMethod>((flags >> 1) & 1);
-    auto disposal_method = static_cast<ANMFChunk::DisposalMethod>(flags & 1);
+    auto blending_method = static_cast<ANMFChunkHeader::BlendingMethod>((flags >> 1) & 1);
+    auto disposal_method = static_cast<ANMFChunkHeader::DisposalMethod>(flags & 1);
 
-    ReadonlyBytes frame_data = anmf_chunk.data().slice(16);
-
-    dbgln_if(WEBP_DEBUG, "frame_x {} frame_y {} frame_width {} frame_height {} frame_duration {} blending_method {} disposal_method {}",
+    dbgln_if(WEBP_DEBUG, "ANMF: frame_x {} frame_y {} frame_width {} frame_height {} frame_duration {} blending_method {} disposal_method {}",
         frame_x, frame_y, frame_width, frame_height, frame_duration, (int)blending_method, (int)disposal_method);
 
     // https://developers.google.com/speed/webp/docs/riff_container#assembling_the_canvas_from_frames
@@ -362,7 +324,9 @@ static ErrorOr<ANMFChunk> decode_webp_chunk_ANMF(WebPLoadingContext& context, RI
     if (frame_x + frame_width > context.vp8x_header.width || frame_y + frame_height > context.vp8x_header.height)
         return Error::from_string_literal("WebPImageDecoderPlugin: ANMF dimensions out of bounds");
 
-    return ANMFChunk { frame_x, frame_y, frame_width, frame_height, frame_duration, blending_method, disposal_method, frame_data };
+    auto header = ANMFChunkHeader { frame_x, frame_y, frame_width, frame_height, frame_duration, blending_method, disposal_method };
+    ReadonlyBytes frame_data = anmf_chunk.data().slice(16);
+    return ANMFChunk { header, frame_data };
 }
 
 static ErrorOr<ImageData> decode_webp_set_image_data(Optional<RIFF::Chunk> alpha, Optional<RIFF::Chunk> image_data)
@@ -445,6 +409,11 @@ static ErrorOr<void> decode_webp_extended(WebPLoadingContext& context, ReadonlyB
         return Error::from_string_literal("WebPImageDecoderPlugin: ICCP chunk is after image data");
     }
 
+    if (context.iccp_chunk.has_value() && !context.vp8x_header.has_icc)
+        return Error::from_string_literal("WebPImageDecoderPlugin: ICCP chunk present, but VP8X header claims no ICC profile");
+    if (!context.iccp_chunk.has_value() && context.vp8x_header.has_icc)
+        return Error::from_string_literal("WebPImageDecoderPlugin: VP8X header claims ICC profile, but no ICCP chunk present");
+
     context.state = WebPLoadingContext::State::ChunksDecoded;
     return {};
 }
@@ -515,6 +484,8 @@ static ErrorOr<void> decode_webp_animation_frame_chunks(WebPLoadingContext& cont
     if (context.state >= WebPLoadingContext::State::AnimationFrameChunksDecoded)
         return {};
 
+    VERIFY(context.state == WebPLoadingContext::State::ChunksDecoded);
+
     context.animation_header_chunk_data = TRY(decode_webp_chunk_ANIM(context.animation_header_chunk.value()));
 
     Vector<ANMFChunk> decoded_chunks;
@@ -543,11 +514,17 @@ static ErrorOr<ImageData> decode_webp_animation_frame_image_data(ANMFChunk const
     return decode_webp_set_image_data(move(alpha), move(image_data));
 }
 
-static ErrorOr<NonnullRefPtr<Bitmap>> decode_webp_image_data(ImageData const& image_data)
+static ErrorOr<NonnullRefPtr<Bitmap>> decode_webp_image_data(WebPLoadingContext& context, ImageData const& image_data)
 {
     if (image_data.image_data_chunk.id() == "VP8L"sv) {
         VERIFY(!image_data.alpha_chunk.has_value());
         auto vp8l_header = TRY(decode_webp_chunk_VP8L_header(image_data.image_data_chunk.data()));
+
+        // Check that the VP8X header alpha flag matches the VP8L header alpha flag.
+        // FIXME: For animated images, if VP8X has alpha then at least one frame should have alpha. But we currently don't check this for animations.
+        if (context.first_chunk->id() == "VP8X" && !context.animation_frame_chunks_data.has_value() && context.vp8x_header.has_alpha != vp8l_header.is_alpha_used)
+            return Error::from_string_literal("WebPImageDecoderPlugin: VP8X header alpha flag doesn't match VP8L header");
+
         return decode_webp_chunk_VP8L_contents(vp8l_header);
     }
 
@@ -561,7 +538,7 @@ static ErrorOr<NonnullRefPtr<Bitmap>> decode_webp_image_data(ImageData const& im
     return bitmap;
 }
 
-// https://developers.google.com/speed/webp/docs/riff_container#assembling_the_canvas_from_frames
+// https://developers.google.com/speed/webp/docs/riff_container#canvas_assembly_from_frames
 static ErrorOr<ImageFrameDescriptor> decode_webp_animation_frame(WebPLoadingContext& context, size_t frame_index)
 {
     if (frame_index >= context.animation_frame_chunks_data->size())
@@ -570,7 +547,15 @@ static ErrorOr<ImageFrameDescriptor> decode_webp_animation_frame(WebPLoadingCont
     VERIFY(context.first_chunk->id() == "VP8X"sv);
     VERIFY(context.vp8x_header.has_animation);
 
-    Color clear_color = Color::from_argb(context.animation_header_chunk_data->background_color);
+    // The spec says
+    // "canvas ← new image of size VP8X.canvasWidth x VP8X.canvasHeight with
+    //     background color ANIM.background_color."
+    // But:
+    // * libwebp always fills with transparent black (#00000000)
+    // * some images (e.g. images written by Aseprite) set the background color to fully opaque white
+    // These images then end up with a nice transparent background in libwebp-based decoders (i.e. basically everywhere)
+    // but show a silly opaque border in ours. So don't use context.animation_header_chunk_data->background_color here.
+    Color clear_color(Color::Transparent);
 
     size_t start_frame = context.current_frame + 1;
     dbgln_if(WEBP_DEBUG, "start_frame {} context.current_frame {}", start_frame, context.current_frame);
@@ -578,7 +563,8 @@ static ErrorOr<ImageFrameDescriptor> decode_webp_animation_frame(WebPLoadingCont
         start_frame = 0;
         auto format = context.vp8x_header.has_alpha ? BitmapFormat::BGRA8888 : BitmapFormat::BGRx8888;
         context.bitmap = TRY(Bitmap::create(format, { context.vp8x_header.width, context.vp8x_header.height }));
-        context.bitmap->fill(clear_color);
+        if (clear_color != Color(Color::Transparent)) // Bitmaps start out transparent, so only fill if not transparent.
+            context.bitmap->fill(clear_color);
     } else if (frame_index < context.current_frame) {
         start_frame = 0;
     }
@@ -588,28 +574,29 @@ static ErrorOr<ImageFrameDescriptor> decode_webp_animation_frame(WebPLoadingCont
     for (size_t i = start_frame; i <= frame_index; ++i) {
         dbgln_if(WEBP_DEBUG, "drawing frame {} to produce frame {}", i, frame_index);
 
-        auto const& frame_description = context.animation_frame_chunks_data.value()[i];
+        auto const& frame = context.animation_frame_chunks_data.value()[i];
+        auto const& frame_description = frame.header;
 
         if (i > 0) {
-            auto const& previous_frame = context.animation_frame_chunks_data.value()[i - 1];
-            if (previous_frame.disposal_method == ANMFChunk::DisposalMethod::DisposeToBackgroundColor)
+            auto const& previous_frame = context.animation_frame_chunks_data.value()[i - 1].header;
+            if (previous_frame.disposal_method == ANMFChunkHeader::DisposalMethod::DisposeToBackgroundColor)
                 painter.clear_rect({ previous_frame.frame_x, previous_frame.frame_y, previous_frame.frame_width, previous_frame.frame_height }, clear_color);
         }
 
-        auto frame_image_data = TRY(decode_webp_animation_frame_image_data(frame_description));
-        auto frame_bitmap = TRY(decode_webp_image_data(frame_image_data));
+        auto frame_image_data = TRY(decode_webp_animation_frame_image_data(frame));
+        auto frame_bitmap = TRY(decode_webp_image_data(context, frame_image_data));
         if (static_cast<u32>(frame_bitmap->width()) != frame_description.frame_width || static_cast<u32>(frame_bitmap->height()) != frame_description.frame_height)
             return Error::from_string_literal("WebPImageDecoderPlugin: decoded frame bitmap size doesn't match frame description size");
 
         // FIXME: "Alpha-blending SHOULD be done in linear color space..."
-        bool apply_alpha = frame_description.blending_method == ANMFChunk::BlendingMethod::UseAlphaBlending;
+        bool apply_alpha = frame_description.blending_method == ANMFChunkHeader::BlendingMethod::UseAlphaBlending;
         painter.blit({ frame_description.frame_x, frame_description.frame_y }, *frame_bitmap, { {}, frame_bitmap->size() }, /*opacity=*/1.0, apply_alpha);
 
         context.current_frame = i;
         context.state = WebPLoadingContext::State::BitmapDecoded;
     }
 
-    return ImageFrameDescriptor { context.bitmap, static_cast<int>(context.animation_frame_chunks_data.value()[frame_index].frame_duration_in_milliseconds) };
+    return ImageFrameDescriptor { context.bitmap, static_cast<int>(context.animation_frame_chunks_data.value()[frame_index].header.frame_duration_in_milliseconds) };
 }
 
 WebPImageDecoderPlugin::WebPImageDecoderPlugin(ReadonlyBytes data, OwnPtr<WebPLoadingContext> context)
@@ -663,6 +650,11 @@ size_t WebPImageDecoderPlugin::loop_count()
     if (!is_animated())
         return 0;
 
+    if (m_context->state < WebPLoadingContext::State::ChunksDecoded) {
+        if (set_error(decode_webp_chunks(*m_context)))
+            return 0;
+    }
+
     if (m_context->state < WebPLoadingContext::State::AnimationFrameChunksDecoded) {
         if (set_error(decode_webp_animation_frame_chunks(*m_context)))
             return 0;
@@ -709,7 +701,7 @@ ErrorOr<ImageFrameDescriptor> WebPImageDecoderPlugin::frame(size_t index, Option
         }
 
         if (m_context->state < WebPLoadingContext::State::BitmapDecoded) {
-            auto bitmap = TRY(decode_webp_image_data(m_context->image_data.value()));
+            auto bitmap = TRY(decode_webp_image_data(*m_context, m_context->image_data.value()));
 
             // Check that size in VP8X chunk matches dimensions in VP8 or VP8L chunk if both are present.
             if (m_context->first_chunk->id() == "VP8X") {

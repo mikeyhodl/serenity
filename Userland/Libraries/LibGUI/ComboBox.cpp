@@ -124,7 +124,7 @@ ComboBox::ComboBox()
     m_list_view->set_activates_on_selection(true);
     m_list_view->on_selection_change = [this] {
         VERIFY(model());
-        const auto& index = m_list_view->selection().first();
+        auto const& index = m_list_view->selection().first();
         if (m_updating_model)
             selection_updated(index);
     };
@@ -292,7 +292,12 @@ ByteString ComboBox::text() const
 
 void ComboBox::set_text(ByteString const& text, AllowCallback allow_callback)
 {
-    m_editor->set_text(text, allow_callback);
+    m_editor->set_text(text);
+    if (!on_change || allow_callback == AllowCallback::No)
+        return;
+    auto matches = model()->matches(text.view(), GUI::Model::MatchesFlag::FirstMatchOnly);
+    if (!matches.is_empty())
+        on_change(text, matches.first());
 }
 
 void ComboBox::set_only_allow_values_from_model(bool b)

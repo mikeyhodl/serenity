@@ -5,12 +5,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibURL/Origin.h>
+#include <LibWeb/Bindings/HTMLIFrameElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/HTMLIFrameElement.h>
 #include <LibWeb/HTML/Navigable.h>
-#include <LibWeb/HTML/Origin.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/Layout/FrameBox.h>
 
@@ -36,9 +37,9 @@ JS::GCPtr<Layout::Node> HTMLIFrameElement::create_layout_node(NonnullRefPtr<CSS:
     return heap().allocate_without_realm<Layout::FrameBox>(document(), *this, move(style));
 }
 
-void HTMLIFrameElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+void HTMLIFrameElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value)
 {
-    HTMLElement::attribute_changed(name, value);
+    HTMLElement::attribute_changed(name, old_value, value);
 
     // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:process-the-iframe-attributes-2
     // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:process-the-iframe-attributes-3
@@ -57,16 +58,26 @@ void HTMLIFrameElement::inserted()
 {
     HTMLElement::inserted();
 
-    // When an iframe element element is inserted into a document whose browsing context is non-null, the user agent must run these steps:
-    if (in_a_document_tree() && document().browsing_context()) {
-        // 1. Create a new child navigable for element.
-        MUST(create_new_child_navigable());
+    // The iframe HTML element insertion steps, given insertedNode, are:
+    // 1. If insertedNode's shadow-including root's browsing context is null, then return.
+    if (!is<DOM::Document>(shadow_including_root()))
+        return;
 
-        // FIXME: 2. If element has a sandbox attribute, then parse the sandboxing directive given the attribute's value and element's iframe sandboxing flag set.
+    DOM::Document& document = verify_cast<DOM::Document>(shadow_including_root());
 
-        // 3. Process the iframe attributes for element, with initialInsertion set to true.
+    // NOTE: The check for "not fully active" is to prevent a crash on the dom/nodes/node-appendchild-crash.html WPT test.
+    if (!document.browsing_context() || !document.is_fully_active())
+        return;
+
+    // 2. Create a new child navigable for insertedNode.
+    MUST(create_new_child_navigable(JS::create_heap_function(realm().heap(), [this] {
+        // FIXME: 3. If insertedNode has a sandbox attribute, then parse the sandboxing directive given the attribute's
+        //           value and insertedNode's iframe sandboxing flag set.
+
+        // 4. Process the iframe attributes for insertedNode, with initialInsertion set to true.
         process_the_iframe_attributes(true);
-    }
+        set_content_navigable_initialized();
+    })));
 }
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
@@ -125,8 +136,8 @@ void HTMLIFrameElement::process_the_iframe_attributes(bool initial_insertion)
         return;
     }
 
-    // FIXME: 4. Let referrerPolicy be the current state of element's referrerpolicy content attribute.
-    auto referrer_policy = ReferrerPolicy::ReferrerPolicy::EmptyString;
+    // 4. Let referrerPolicy be the current state of element's referrerpolicy content attribute.
+    auto referrer_policy = ReferrerPolicy::from_string(get_attribute_value(HTML::AttributeNames::referrerpolicy)).value_or(ReferrerPolicy::ReferrerPolicy::EmptyString);
 
     // 5. Set element's current navigation was lazy loaded boolean to false.
     set_current_navigation_was_lazy_loaded(false);
@@ -160,20 +171,6 @@ void HTMLIFrameElement::removed_from(DOM::Node* node)
 
     // When an iframe element is removed from a document, the user agent must destroy the nested navigable of the element.
     destroy_the_child_navigable();
-}
-
-// https://html.spec.whatwg.org/multipage/rendering.html#attributes-for-embedded-content-and-images
-void HTMLIFrameElement::apply_presentational_hints(CSS::StyleProperties& style) const
-{
-    for_each_attribute([&](auto& name, auto& value) {
-        if (name == HTML::AttributeNames::width) {
-            if (auto parsed_value = parse_dimension_value(value))
-                style.set_property(CSS::PropertyID::Width, parsed_value.release_nonnull());
-        } else if (name == HTML::AttributeNames::height) {
-            if (auto parsed_value = parse_dimension_value(value))
-                style.set_property(CSS::PropertyID::Height, parsed_value.release_nonnull());
-        }
-    });
 }
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#iframe-load-event-steps

@@ -16,12 +16,13 @@ class ConsoleObject final : public Object {
 
 public:
     virtual void initialize(Realm&) override;
-    virtual ~ConsoleObject() override = default;
+    virtual ~ConsoleObject() override;
 
     Console& console() { return *m_console; }
 
 private:
     explicit ConsoleObject(Realm&);
+    virtual void visit_edges(Visitor&) override;
 
     JS_DECLARE_NATIVE_FUNCTION(assert_);
     JS_DECLARE_NATIVE_FUNCTION(clear);
@@ -31,6 +32,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(log);
     JS_DECLARE_NATIVE_FUNCTION(trace);
     JS_DECLARE_NATIVE_FUNCTION(warn);
+    JS_DECLARE_NATIVE_FUNCTION(table);
     JS_DECLARE_NATIVE_FUNCTION(dir);
     JS_DECLARE_NATIVE_FUNCTION(count);
     JS_DECLARE_NATIVE_FUNCTION(count_reset);
@@ -41,7 +43,7 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(time_log);
     JS_DECLARE_NATIVE_FUNCTION(time_end);
 
-    NonnullOwnPtr<Console> m_console;
+    GCPtr<Console> m_console;
 };
 
 }

@@ -32,7 +32,7 @@ public:
         };
         Type type {};
         JS::GCPtr<Layout::Node const> node {};
-        Vector<Gfx::DrawGlyphOrEmoji> glyph_run {};
+        RefPtr<Gfx::GlyphRun> glyph_run {};
         size_t offset_in_node { 0 };
         size_t length_in_node { 0 };
         CSSPixels width { 0.0f };
@@ -57,6 +57,7 @@ public:
 
 private:
     Optional<Item> next_without_lookahead();
+    Gfx::GlyphRun::TextType resolve_text_direction_from_context();
     void skip_to_next();
     void compute_next();
 
@@ -84,7 +85,7 @@ private:
         bool is_first_chunk {};
         bool is_last_chunk {};
         TextNode::ChunkIterator chunk_iterator;
-        Optional<TextNode::Chunk> next_chunk {};
+        Optional<Gfx::GlyphRun::TextType> last_known_direction {};
     };
 
     Optional<TextNodeContext> m_text_node_context;

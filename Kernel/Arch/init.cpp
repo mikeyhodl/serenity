@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Platform.h>
+#include <AK/SetOnce.h>
 #include <AK/Types.h>
 #include <Kernel/Arch/CPU.h>
 #include <Kernel/Arch/InterruptManagement.h>
@@ -18,7 +20,9 @@
 #include <Kernel/Bus/VirtIO/Device.h>
 #include <Kernel/Bus/VirtIO/Transport/PCIe/Detect.h>
 #include <Kernel/Devices/Audio/Management.h>
-#include <Kernel/Devices/DeviceManagement.h>
+#include <Kernel/Devices/Device.h>
+#include <Kernel/Devices/FUSEDevice.h>
+#include <Kernel/Devices/GPU/Console/BootDummyConsole.h>
 #include <Kernel/Devices/GPU/Console/BootFramebufferConsole.h>
 #include <Kernel/Devices/GPU/Management.h>
 #include <Kernel/Devices/Generic/DeviceControlDevice.h>
@@ -30,11 +34,12 @@
 #include <Kernel/Devices/Generic/SelfTTYDevice.h>
 #include <Kernel/Devices/Generic/ZeroDevice.h>
 #include <Kernel/Devices/HID/Management.h>
-#include <Kernel/Devices/KCOVDevice.h>
+#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
+#    include <Kernel/Devices/KCOVDevice.h>
+#endif
 #include <Kernel/Devices/PCISerialDevice.h>
 #include <Kernel/Devices/SerialDevice.h>
 #include <Kernel/Devices/Storage/StorageManagement.h>
-#include <Kernel/Devices/TTY/ConsoleManagement.h>
 #include <Kernel/Devices/TTY/PTYMultiplexer.h>
 #include <Kernel/Devices/TTY/VirtualConsole.h>
 #include <Kernel/FileSystem/SysFS/Registry.h>
@@ -42,6 +47,7 @@
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/Firmware/ACPI/Initialize.h>
 #include <Kernel/Firmware/ACPI/Parser.h>
+#include <Kernel/Firmware/DeviceTree/DeviceTree.h>
 #include <Kernel/Heap/kmalloc.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Library/Panic.h>
@@ -52,6 +58,7 @@
 #include <Kernel/Sections.h>
 #include <Kernel/Security/Random.h>
 #include <Kernel/Tasks/FinalizerTask.h>
+#include <Kernel/Tasks/HostnameContext.h>
 #include <Kernel/Tasks/Process.h>
 #include <Kernel/Tasks/Scheduler.h>
 #include <Kernel/Tasks/SyncTask.h>
@@ -63,11 +70,17 @@
 #    include <Kernel/Arch/x86_64/Hypervisor/VMWareBackdoor.h>
 #    include <Kernel/Arch/x86_64/Interrupts/APIC.h>
 #    include <Kernel/Arch/x86_64/Interrupts/PIC.h>
-#    include <Kernel/Devices/GPU/Console/VGATextModeConsole.h>
 #elif ARCH(AARCH64)
 #    include <Kernel/Arch/aarch64/RPi/Framebuffer.h>
 #    include <Kernel/Arch/aarch64/RPi/Mailbox.h>
 #    include <Kernel/Arch/aarch64/RPi/MiniUART.h>
+#elif ARCH(RISCV64)
+#    include <Kernel/Arch/riscv64/Delay.h>
+#endif
+
+#if ARCH(AARCH64) || ARCH(RISCV64)
+#    include <Kernel/Firmware/DeviceTree/Management.h>
+#    include <Kernel/Firmware/DeviceTree/PlatformInit.h>
 #endif
 
 // Defined in the linker script
@@ -80,22 +93,17 @@ extern ctor_func_t end_ctors[];
 extern uintptr_t __stack_chk_guard;
 READONLY_AFTER_INIT uintptr_t __stack_chk_guard __attribute__((used));
 
-#if ARCH(X86_64)
 extern "C" u8 start_of_safemem_text[];
 extern "C" u8 end_of_safemem_text[];
 extern "C" u8 start_of_safemem_atomic_text[];
 extern "C" u8 end_of_safemem_atomic_text[];
-#endif
 
 extern "C" USB::DriverInitFunction driver_init_table_start[];
 extern "C" USB::DriverInitFunction driver_init_table_end[];
 
 extern "C" u8 end_of_kernel_image[];
 
-multiboot_module_entry_t multiboot_copy_boot_modules_array[16];
-size_t multiboot_copy_boot_modules_count;
-
-READONLY_AFTER_INIT bool g_in_early_boot;
+READONLY_AFTER_INIT SetOnce g_not_in_early_boot;
 
 namespace Kernel {
 
@@ -130,114 +138,47 @@ ALWAYS_INLINE static Processor& bsp_processor()
 // Once multi-tasking is ready, we spawn a new thread that starts in the
 // init_stage2() function. Initialization continues there.
 
-extern "C" {
-READONLY_AFTER_INIT PhysicalAddress start_of_prekernel_image;
-READONLY_AFTER_INIT PhysicalAddress end_of_prekernel_image;
-READONLY_AFTER_INIT size_t physical_to_virtual_offset;
-READONLY_AFTER_INIT FlatPtr kernel_mapping_base;
-READONLY_AFTER_INIT FlatPtr kernel_load_base;
-READONLY_AFTER_INIT PhysicalAddress boot_pml4t;
-READONLY_AFTER_INIT PhysicalAddress boot_pdpt;
-READONLY_AFTER_INIT PhysicalAddress boot_pd0;
-READONLY_AFTER_INIT PhysicalAddress boot_pd_kernel;
-READONLY_AFTER_INIT Memory::PageTableEntry* boot_pd_kernel_pt1023;
-READONLY_AFTER_INIT StringView kernel_cmdline;
-READONLY_AFTER_INIT u32 multiboot_flags;
-READONLY_AFTER_INIT multiboot_memory_map_t* multiboot_memory_map;
-READONLY_AFTER_INIT size_t multiboot_memory_map_count;
-READONLY_AFTER_INIT multiboot_module_entry_t* multiboot_modules;
-READONLY_AFTER_INIT size_t multiboot_modules_count;
-READONLY_AFTER_INIT PhysicalAddress multiboot_framebuffer_addr;
-READONLY_AFTER_INIT u32 multiboot_framebuffer_pitch;
-READONLY_AFTER_INIT u32 multiboot_framebuffer_width;
-READONLY_AFTER_INIT u32 multiboot_framebuffer_height;
-READONLY_AFTER_INIT u8 multiboot_framebuffer_bpp;
-READONLY_AFTER_INIT u8 multiboot_framebuffer_type;
-}
-
 Atomic<Graphics::Console*> g_boot_console;
 
-#if ARCH(AARCH64)
-READONLY_AFTER_INIT static u8 s_command_line_buffer[512];
-#endif
+READONLY_AFTER_INIT static StringView s_kernel_cmdline;
 
-extern "C" [[noreturn]] UNMAP_AFTER_INIT void init([[maybe_unused]] BootInfo const& boot_info)
+READONLY_AFTER_INIT constinit BootInfo g_boot_info;
+
+extern "C" [[noreturn]] UNMAP_AFTER_INIT NO_SANITIZE_COVERAGE void init(BootInfo const& boot_info)
 {
-    g_in_early_boot = true;
-
 #if ARCH(X86_64)
-    start_of_prekernel_image = PhysicalAddress { boot_info.start_of_prekernel_image };
-    end_of_prekernel_image = PhysicalAddress { boot_info.end_of_prekernel_image };
-    physical_to_virtual_offset = boot_info.physical_to_virtual_offset;
-    kernel_mapping_base = boot_info.kernel_mapping_base;
-    kernel_load_base = boot_info.kernel_load_base;
-    gdt64ptr = boot_info.gdt64ptr;
-    code64_sel = boot_info.code64_sel;
-    boot_pml4t = PhysicalAddress { boot_info.boot_pml4t };
-    boot_pdpt = PhysicalAddress { boot_info.boot_pdpt };
-    boot_pd0 = PhysicalAddress { boot_info.boot_pd0 };
-    boot_pd_kernel = PhysicalAddress { boot_info.boot_pd_kernel };
-    boot_pd_kernel_pt1023 = (Memory::PageTableEntry*)boot_info.boot_pd_kernel_pt1023;
-    char const* cmdline = (char const*)boot_info.kernel_cmdline;
-    kernel_cmdline = StringView { cmdline, strlen(cmdline) };
-    multiboot_flags = boot_info.multiboot_flags;
-    multiboot_memory_map = (multiboot_memory_map_t*)boot_info.multiboot_memory_map;
-    multiboot_memory_map_count = boot_info.multiboot_memory_map_count;
-    multiboot_modules = (multiboot_module_entry_t*)boot_info.multiboot_modules;
-    multiboot_modules_count = boot_info.multiboot_modules_count;
-    multiboot_framebuffer_addr = PhysicalAddress { boot_info.multiboot_framebuffer_addr };
-    multiboot_framebuffer_pitch = boot_info.multiboot_framebuffer_pitch;
-    multiboot_framebuffer_width = boot_info.multiboot_framebuffer_width;
-    multiboot_framebuffer_height = boot_info.multiboot_framebuffer_height;
-    multiboot_framebuffer_bpp = boot_info.multiboot_framebuffer_bpp;
-    multiboot_framebuffer_type = boot_info.multiboot_framebuffer_type;
-#elif ARCH(AARCH64)
-    // FIXME: For the aarch64 platforms, we should get the information by parsing a device tree instead of using multiboot.
-    auto [ram_base, ram_size] = RPi::Mailbox::the().query_lower_arm_memory_range();
-    auto [vcmem_base, vcmem_size] = RPi::Mailbox::the().query_videocore_memory_range();
-    multiboot_memory_map_t mmap[] = {
-        {
-            sizeof(struct multiboot_mmap_entry) - sizeof(u32),
-            (u64)ram_base,
-            (u64)ram_size,
-            MULTIBOOT_MEMORY_AVAILABLE,
-        },
-        {
-            sizeof(struct multiboot_mmap_entry) - sizeof(u32),
-            (u64)vcmem_base,
-            (u64)vcmem_size,
-            MULTIBOOT_MEMORY_RESERVED,
-        },
-        // FIXME: VideoCore only reports the first 1GB of RAM, the rest only shows up in the device tree.
-    };
-    multiboot_memory_map = mmap;
-    multiboot_memory_map_count = 2;
+    g_boot_info = boot_info;
+    s_kernel_cmdline = boot_info.cmdline;
+#elif ARCH(AARCH64) || ARCH(RISCV64)
+    if (boot_info.boot_method == BootMethod::EFI) {
+        g_boot_info = boot_info;
+        s_kernel_cmdline = boot_info.cmdline;
+    } else {
+        if (!DeviceTree::verify_fdt())
+            // We are too early in the boot process to print anything, so just hang if the FDT is invalid.
+            Processor::halt();
 
-    multiboot_modules = nullptr;
-    multiboot_modules_count = 0;
-    // FIXME: Read the /chosen/bootargs property.
-    kernel_cmdline = RPi::Mailbox::the().query_kernel_command_line(s_command_line_buffer);
-#elif ARCH(RISCV64)
-    auto maybe_command_line = get_command_line_from_fdt();
-    if (maybe_command_line.is_error())
-        kernel_cmdline = "serial_debug"sv;
-    else
-        kernel_cmdline = maybe_command_line.value();
+        auto maybe_command_line = DeviceTree::get_command_line_from_fdt();
+        if (maybe_command_line.is_error())
+            s_kernel_cmdline = "serial_debug"sv;
+        else
+            s_kernel_cmdline = maybe_command_line.value();
+    }
 #endif
 
     setup_serial_debug();
 
     // We need to copy the command line before kmalloc is initialized,
     // as it may overwrite parts of multiboot!
-    CommandLine::early_initialize(kernel_cmdline);
-    if (multiboot_modules_count > 0) {
-        VERIFY(multiboot_modules);
-        memcpy(multiboot_copy_boot_modules_array, multiboot_modules, multiboot_modules_count * sizeof(multiboot_module_entry_t));
-    }
-    multiboot_copy_boot_modules_count = multiboot_modules_count;
+    CommandLine::early_initialize(s_kernel_cmdline);
 
     new (&bsp_processor()) Processor();
     bsp_processor().early_initialize(0);
+
+#if ARCH(RISCV64)
+    // We implicitly assume the boot hart is hart 0 above and below
+    VERIFY(boot_info.arch_specific.boot_hart_id == 0);
+#endif
 
     // Invoke the constructors needed for the kernel heap
     for (ctor_func_t* ctor = start_heap_ctors; ctor < end_heap_ctors; ctor++)
@@ -251,62 +192,68 @@ extern "C" [[noreturn]] UNMAP_AFTER_INIT void init([[maybe_unused]] BootInfo con
     CommandLine::initialize();
     Memory::MemoryManager::initialize(0);
 
-#if ARCH(AARCH64)
-    auto firmware_version = RPi::Mailbox::the().query_firmware_version();
-    dmesgln("RPi: Firmware version: {}", firmware_version);
-
-    RPi::Framebuffer::initialize();
+#if ARCH(AARCH64) || ARCH(RISCV64)
+    DeviceTree::map_flattened_devicetree();
+    DeviceTree::run_platform_init();
 #endif
 
     // NOTE: If the bootloader provided a framebuffer, then set up an initial console.
     // If the bootloader didn't provide a framebuffer, then set up an initial text console.
     // We do so we can see the output on the screen as soon as possible.
     if (!kernel_command_line().is_early_boot_console_disabled()) {
-        if ((multiboot_flags & MULTIBOOT_INFO_FRAMEBUFFER_INFO) && !multiboot_framebuffer_addr.is_null() && multiboot_framebuffer_type == MULTIBOOT_FRAMEBUFFER_TYPE_RGB) {
-            g_boot_console = &try_make_lock_ref_counted<Graphics::BootFramebufferConsole>(multiboot_framebuffer_addr, multiboot_framebuffer_width, multiboot_framebuffer_height, multiboot_framebuffer_pitch).value().leak_ref();
+        if (!g_boot_info.boot_framebuffer.paddr.is_null() && g_boot_info.boot_framebuffer.type == BootFramebufferType::BGRx8888) {
+            g_boot_console = &try_make_lock_ref_counted<Graphics::BootFramebufferConsole>(g_boot_info.boot_framebuffer.paddr, g_boot_info.boot_framebuffer.width, g_boot_info.boot_framebuffer.height, g_boot_info.boot_framebuffer.pitch).value().leak_ref();
         } else {
-#if ARCH(X86_64)
-            g_boot_console = &Graphics::VGATextModeConsole::initialize().leak_ref();
-#else
-            dbgln("No early framebuffer console available");
-#endif
+            dbgln("No early framebuffer console available, initializing dummy console");
+            g_boot_console = &try_make_lock_ref_counted<Graphics::BootDummyConsole>().value().leak_ref();
         }
     }
     dmesgln("Starting SerenityOS...");
 
-#if ARCH(X86_64)
+    dmesgln("Boot method: {}", boot_info.boot_method);
+
     MM.unmap_prekernel();
 
     // Ensure that the safemem sections are not empty. This could happen if the linker accidentally discards the sections.
     VERIFY(+start_of_safemem_text != +end_of_safemem_text);
     VERIFY(+start_of_safemem_atomic_text != +end_of_safemem_atomic_text);
-#endif
 
     // Invoke all static global constructors in the kernel.
     // Note that we want to do this as early as possible.
     for (ctor_func_t* ctor = start_ctors; ctor < end_ctors; ctor++)
         (*ctor)();
 
-    InterruptManagement::initialize();
-    ACPI::initialize();
+    for (auto* init_function = driver_init_table_start; init_function != driver_init_table_end; init_function++)
+        (*init_function)();
 
-#if ARCH(RISCV64)
-    MUST(unflatten_fdt());
+#if ARCH(AARCH64) || ARCH(RISCV64)
+    MUST(DeviceTree::unflatten_fdt());
 
     if (kernel_command_line().contains("dump_fdt"sv))
-        dump_fdt();
+        DeviceTree::dump_fdt();
+
+    DeviceTree::Management::initialize();
 #endif
+
+#if ARCH(RISCV64)
+    init_delay_loop();
+#endif
+
+    InterruptManagement::initialize();
+    ACPI::initialize();
 
     // Initialize TimeManagement before using randomness!
     TimeManagement::initialize(0);
 
-    DeviceManagement::initialize();
     SysFSComponentRegistry::initialize();
-    DeviceManagement::the().attach_null_device(*NullDevice::must_initialize());
-    DeviceManagement::the().attach_console_device(*ConsoleDevice::must_create());
-    DeviceManagement::the().attach_device_control_device(*DeviceControlDevice::must_create());
+
+    Device::initialize_base_devices();
 
     __stack_chk_guard = get_fast_random<uintptr_t>();
+
+    // NOTE: Initialize the empty VFS root context just before we need to create
+    // kernel processes.
+    VFSRootContext::initialize_empty_ramfs_root_context_for_kernel_processes();
 
     Process::initialize();
 
@@ -387,8 +334,6 @@ void init_stage2(void*)
         PCISerialDevice::detect();
     }
 
-    VirtualFileSystem::initialize();
-
 #if ARCH(X86_64)
     if (!is_serial_debug_enabled())
         (void)SerialDevice::must_create(0).leak_ref();
@@ -396,7 +341,9 @@ void init_stage2(void*)
     (void)SerialDevice::must_create(2).leak_ref();
     (void)SerialDevice::must_create(3).leak_ref();
 #elif ARCH(AARCH64)
-    (void)MUST(RPi::MiniUART::create()).leak_ref();
+    // FIXME: Make MiniUART a DeviceTree::Driver.
+    if (DeviceTree::get().is_compatible_with("raspberrypi,3-model-b"sv) || DeviceTree::get().is_compatible_with("raspberrypi,4-model-b"sv))
+        (void)MUST(RPi::MiniUART::create()).leak_ref();
 #endif
 
     (void)PCSpeakerDevice::must_create().leak_ref();
@@ -407,16 +354,14 @@ void init_stage2(void*)
     MUST(HIDManagement::initialize());
 
     GraphicsManagement::the().initialize();
-    ConsoleManagement::the().initialize();
+    VirtualConsole::initialize_consoles();
 
     SyncTask::spawn();
     FinalizerTask::spawn();
 
     auto boot_profiling = kernel_command_line().is_boot_profiling_enabled();
 
-    if (!PCI::Access::is_disabled()) {
-        USB::USBManagement::initialize();
-    }
+    USB::USBManagement::initialize();
     SysFSFirmwareDirectory::initialize();
 
     if (!PCI::Access::is_disabled()) {
@@ -431,35 +376,41 @@ void init_stage2(void*)
     (void)MemoryDevice::must_create().leak_ref();
     (void)ZeroDevice::must_create().leak_ref();
     (void)FullDevice::must_create().leak_ref();
+    (void)FUSEDevice::must_create().leak_ref();
     (void)RandomDevice::must_create().leak_ref();
     (void)SelfTTYDevice::must_create().leak_ref();
     PTYMultiplexer::initialize();
 
     AudioManagement::the().initialize();
 
-    // Initialize all USB Drivers
-    for (auto* init_function = driver_init_table_start; init_function != driver_init_table_end; init_function++)
-        (*init_function)();
-
-    StorageManagement::the().initialize(kernel_command_line().is_force_pio(), kernel_command_line().is_nvme_polling_enabled());
+    StorageManagement::the().initialize(kernel_command_line().is_nvme_polling_enabled());
     for (int i = 0; i < 5; ++i) {
         if (StorageManagement::the().determine_boot_device(kernel_command_line().root_device()))
             break;
         dbgln_if(STORAGE_DEVICE_DEBUG, "Boot device {} not found, sleeping 2 seconds", kernel_command_line().root_device());
         (void)Thread::current()->sleep(Duration::from_seconds(2));
     }
-    if (VirtualFileSystem::the().mount_root(StorageManagement::the().root_filesystem()).is_error()) {
-        PANIC("VirtualFileSystem::mount_root failed");
+
+    auto first_process_vfs_context_or_error = StorageManagement::the().create_first_vfs_root_context();
+    if (first_process_vfs_context_or_error.is_error()) {
+        PANIC("StorageManagement::create_first_vfs_root_context failed");
     }
 
+    auto first_process_vfs_context = first_process_vfs_context_or_error.release_value();
+
     // Switch out of early boot mode.
-    g_in_early_boot = false;
+    g_not_in_early_boot.set();
 
     // NOTE: Everything marked READONLY_AFTER_INIT becomes non-writable after this point.
     MM.protect_readonly_after_init_memory();
 
     // NOTE: Everything in the .ksyms section becomes read-only after this point.
     MM.protect_ksyms_after_init();
+
+    auto hostname_context_or_error = HostnameContext::create_initial();
+    if (hostname_context_or_error.is_error())
+        PANIC("init_stage2: Error creating initial hostname context: {}", hostname_context_or_error.error());
+    auto hostname_context = hostname_context_or_error.release_value();
 
     // NOTE: Everything marked UNMAP_AFTER_INIT becomes inaccessible after this point.
     MM.unmap_text_after_init();
@@ -469,7 +420,8 @@ void init_stage2(void*)
 
     dmesgln("Running first user process: {}", userspace_init);
     dmesgln("Init (first) process args: {}", init_args);
-    auto init_or_error = Process::create_user_process(userspace_init, UserID(0), GroupID(0), move(init_args), {}, tty0);
+
+    auto init_or_error = Process::create_user_process(userspace_init, UserID(0), GroupID(0), move(init_args), {}, move(first_process_vfs_context), move(hostname_context), tty0);
     if (init_or_error.is_error())
         PANIC("init_stage2: Error spawning init process: {}", init_or_error.error());
 
@@ -499,7 +451,7 @@ UNMAP_AFTER_INIT void setup_serial_debug()
     // serial_debug will output all the dbgln() data to COM1 at
     // 8-N-1 57600 baud. this is particularly useful for debugging the boot
     // process on live hardware.
-    if (kernel_cmdline.contains("serial_debug"sv)) {
+    if (s_kernel_cmdline.contains("serial_debug"sv)) {
         set_serial_debug_enabled(true);
     }
 }

@@ -8,17 +8,19 @@
 #include <AK/QuickSort.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/FunctionObject.h>
+#include <LibURL/Origin.h>
+#include <LibWeb/Bindings/WebSocketPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/EventDispatcher.h>
 #include <LibWeb/DOM/IDLEventListener.h>
+#include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/FileAPI/Blob.h>
 #include <LibWeb/HTML/CloseEvent.h>
 #include <LibWeb/HTML/EventHandler.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/MessageEvent.h>
-#include <LibWeb/HTML/Origin.h>
-#include <LibWeb/HTML/Window.h>
+#include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
 #include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 #include <LibWeb/WebIDL/Buffers.h>
@@ -44,12 +46,11 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<WebSocket>> WebSocket::construct_impl(JS::R
     auto base_url = relevant_settings_object.api_base_url();
 
     // 2. Let urlRecord be the result of applying the URL parser to url with baseURL.
-    // FIXME: This should call an implementation of https://url.spec.whatwg.org/#concept-url-parser, currently it calls https://url.spec.whatwg.org/#concept-basic-url-parser
-    auto url_record = base_url.complete_url(url);
+    auto url_record = DOMURL::parse(url, base_url);
 
     // 3. If urlRecord is failure, then throw a "SyntaxError" DOMException.
     if (!url_record.is_valid())
-        return WebIDL::SyntaxError::create(realm, "Invalid URL"_fly_string);
+        return WebIDL::SyntaxError::create(realm, "Invalid URL"_string);
 
     // 4. If urlRecord’s scheme is "http", then set urlRecord’s scheme to "ws".
     if (url_record.scheme() == "http"sv)
@@ -60,11 +61,11 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<WebSocket>> WebSocket::construct_impl(JS::R
 
     // 6. If urlRecord’s scheme is not "ws" or "wss", then throw a "SyntaxError" DOMException.
     if (!url_record.scheme().is_one_of("ws"sv, "wss"sv))
-        return WebIDL::SyntaxError::create(realm, "Invalid protocol"_fly_string);
+        return WebIDL::SyntaxError::create(realm, "Invalid protocol"_string);
 
     // 7. If urlRecord’s fragment is non-null, then throw a "SyntaxError" DOMException.
     if (url_record.fragment().has_value())
-        return WebIDL::SyntaxError::create(realm, "Presence of URL fragment is invalid"_fly_string);
+        return WebIDL::SyntaxError::create(realm, "Presence of URL fragment is invalid"_string);
 
     Vector<String> protocols_sequence;
     // 8. If protocols is a string, set protocols to a sequence consisting of just that string.
@@ -85,10 +86,10 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<WebSocket>> WebSocket::construct_impl(JS::R
         // separator characters as defined in [RFC2616] and MUST all be unique strings.
         auto protocol = sorted_protocols[i];
         if (i < sorted_protocols.size() - 1 && protocol == sorted_protocols[i + 1])
-            return WebIDL::SyntaxError::create(realm, "Found a duplicate protocol name in the specified list"_fly_string);
+            return WebIDL::SyntaxError::create(realm, "Found a duplicate protocol name in the specified list"_string);
         for (auto code_point : protocol.code_points()) {
             if (code_point < '\x21' || code_point > '\x7E')
-                return WebIDL::SyntaxError::create(realm, "Found invalid character in subprotocol name"_fly_string);
+                return WebIDL::SyntaxError::create(realm, "Found invalid character in subprotocol name"_string);
         }
     }
 
@@ -122,8 +123,9 @@ ErrorOr<void> WebSocket::establish_web_socket_connection(URL::URL& url_record, V
 {
     // FIXME: Integrate properly with FETCH as per https://fetch.spec.whatwg.org/#websocket-opening-handshake
 
-    auto& window = verify_cast<HTML::Window>(client.global_object());
-    auto origin_string = window.associated_document().origin().serialize();
+    auto* window_or_worker = dynamic_cast<HTML::WindowOrWorkerGlobalScopeMixin*>(&client.global_object());
+    VERIFY(window_or_worker);
+    auto origin_string = MUST(window_or_worker->origin()).to_byte_string();
 
     Vector<ByteString> protcol_byte_strings;
     for (auto const& protocol : protocols)
@@ -189,13 +191,13 @@ WebIDL::ExceptionOr<void> WebSocket::close(Optional<u16> code, Optional<String> 
 {
     // 1. If code is present, but is neither an integer equal to 1000 nor an integer in the range 3000 to 4999, inclusive, throw an "InvalidAccessError" DOMException.
     if (code.has_value() && *code != 1000 && (*code < 3000 || *code > 4099))
-        return WebIDL::InvalidAccessError::create(realm(), "The close error code is invalid"_fly_string);
+        return WebIDL::InvalidAccessError::create(realm(), "The close error code is invalid"_string);
     // 2. If reason is present, then run these substeps:
     if (reason.has_value()) {
         // 1. Let reasonBytes be the result of encoding reason.
         // 2. If reasonBytes is longer than 123 bytes, then throw a "SyntaxError" DOMException.
         if (reason->bytes().size() > 123)
-            return WebIDL::SyntaxError::create(realm(), "The close reason is longer than 123 bytes"_fly_string);
+            return WebIDL::SyntaxError::create(realm(), "The close reason is longer than 123 bytes"_string);
     }
     // 3. Run the first matching steps from the following list:
     auto state = ready_state();
@@ -216,7 +218,7 @@ WebIDL::ExceptionOr<void> WebSocket::send(Variant<JS::Handle<WebIDL::BufferSourc
 {
     auto state = ready_state();
     if (state == WebSocket::ReadyState::Connecting)
-        return WebIDL::InvalidStateError::create(realm(), "Websocket is still CONNECTING"_fly_string);
+        return WebIDL::InvalidStateError::create(realm(), "Websocket is still CONNECTING"_string);
     if (state == WebSocket::ReadyState::Open) {
         TRY_OR_THROW_OOM(vm(),
             data.visit(
@@ -232,7 +234,7 @@ WebIDL::ExceptionOr<void> WebSocket::send(Variant<JS::Handle<WebIDL::BufferSourc
                     return {};
                 },
                 [this](JS::Handle<FileAPI::Blob> const& blob) -> ErrorOr<void> {
-                    auto byte_buffer = TRY(ByteBuffer::copy(blob->bytes()));
+                    auto byte_buffer = TRY(ByteBuffer::copy(blob->raw_bytes()));
                     m_websocket->send(byte_buffer, false);
                     return {};
                 }));
@@ -285,7 +287,11 @@ void WebSocket::on_message(ByteBuffer message, bool is_text)
 
     if (m_binary_type == "blob") {
         // type indicates that the data is Binary and binaryType is "blob"
-        TODO();
+        HTML::MessageEventInit event_init;
+        event_init.data = FileAPI::Blob::create(realm(), message, "text/plain;charset=utf-8"_string);
+        event_init.origin = url().release_value_but_fixme_should_propagate_errors();
+        dispatch_event(HTML::MessageEvent::create(realm(), HTML::EventNames::message, event_init));
+        return;
     } else if (m_binary_type == "arraybuffer") {
         // type indicates that the data is Binary and binaryType is "arraybuffer"
         HTML::MessageEventInit event_init;

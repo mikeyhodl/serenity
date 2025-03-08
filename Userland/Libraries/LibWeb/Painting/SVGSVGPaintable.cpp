@@ -9,6 +9,8 @@
 
 namespace Web::Painting {
 
+JS_DEFINE_ALLOCATOR(SVGSVGPaintable);
+
 JS::NonnullGCPtr<SVGSVGPaintable> SVGSVGPaintable::create(Layout::SVGSVGBox const& layout_box)
 {
     return layout_box.heap().allocate_without_realm<SVGSVGPaintable>(layout_box);
@@ -29,10 +31,10 @@ void SVGSVGPaintable::before_children_paint(PaintContext& context, PaintPhase ph
     PaintableBox::before_children_paint(context, phase);
     if (phase != PaintPhase::Foreground)
         return;
-    context.recording_painter().save();
+    context.display_list_recorder().save();
     auto clip_rect = absolute_rect();
     clip_rect.translate_by(enclosing_scroll_frame_offset().value_or({}));
-    context.recording_painter().add_clip_rect(context.enclosing_device_rect(clip_rect).to_type<int>());
+    context.display_list_recorder().add_clip_rect(context.enclosing_device_rect(clip_rect).to_type<int>());
 }
 
 void SVGSVGPaintable::after_children_paint(PaintContext& context, PaintPhase phase) const
@@ -40,7 +42,7 @@ void SVGSVGPaintable::after_children_paint(PaintContext& context, PaintPhase pha
     PaintableBox::after_children_paint(context, phase);
     if (phase != PaintPhase::Foreground)
         return;
-    context.recording_painter().restore();
+    context.display_list_recorder().restore();
 }
 
 }

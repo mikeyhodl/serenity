@@ -8,6 +8,7 @@
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/Fetch/BodyInit.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
+#include <LibWeb/Fetch/Infrastructure/IncrementalReadLoopReadRequest.h>
 #include <LibWeb/Fetch/Infrastructure/Task.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/Streams/AbstractOperations.h>
@@ -62,45 +63,74 @@ JS::NonnullGCPtr<Body> Body::clone(JS::Realm& realm)
 }
 
 // https://fetch.spec.whatwg.org/#body-fully-read
-WebIDL::ExceptionOr<void> Body::fully_read(JS::Realm& realm, Web::Fetch::Infrastructure::Body::ProcessBodyCallback process_body, Web::Fetch::Infrastructure::Body::ProcessBodyErrorCallback process_body_error, TaskDestination task_destination) const
+void Body::fully_read(JS::Realm& realm, Web::Fetch::Infrastructure::Body::ProcessBodyCallback process_body, Web::Fetch::Infrastructure::Body::ProcessBodyErrorCallback process_body_error, TaskDestination task_destination) const
 {
-    auto& vm = realm.vm();
-
     // FIXME: 1. If taskDestination is null, then set taskDestination to the result of starting a new parallel queue.
     // FIXME: Handle 'parallel queue' task destination
     VERIFY(!task_destination.has<Empty>());
     auto task_destination_object = task_destination.get<JS::NonnullGCPtr<JS::Object>>();
 
     // 2. Let successSteps given a byte sequence bytes be to queue a fetch task to run processBody given bytes, with taskDestination.
-    auto success_steps = [process_body = move(process_body), task_destination_object = JS::make_handle(task_destination_object)](ByteBuffer const& bytes) mutable -> ErrorOr<void> {
+    auto success_steps = [&realm, process_body, task_destination_object = task_destination_object](ReadonlyBytes bytes) -> ErrorOr<void> {
         // Make a copy of the bytes, as the source of the bytes may disappear between the time the task is queued and executed.
         auto bytes_copy = TRY(ByteBuffer::copy(bytes));
-        queue_fetch_task(*task_destination_object, [process_body = move(process_body), bytes_copy = move(bytes_copy)]() {
-            process_body(move(bytes_copy));
-        });
+        queue_fetch_task(*task_destination_object, JS::create_heap_function(realm.heap(), [process_body, bytes_copy = move(bytes_copy)]() mutable {
+            process_body->function()(move(bytes_copy));
+        }));
         return {};
     };
 
     // 3. Let errorSteps optionally given an exception exception be to queue a fetch task to run processBodyError given exception, with taskDestination.
-    auto error_steps = [process_body_error = move(process_body_error), task_destination_object = JS::make_handle(task_destination_object)](JS::GCPtr<WebIDL::DOMException> exception) mutable {
-        queue_fetch_task(*task_destination_object, [process_body_error = move(process_body_error), exception = JS::make_handle(exception)]() {
-            process_body_error(*exception);
-        });
+    auto error_steps = [&realm, process_body_error, task_destination_object](JS::GCPtr<WebIDL::DOMException> exception) {
+        queue_fetch_task(*task_destination_object, JS::create_heap_function(realm.heap(), [process_body_error, exception]() {
+            process_body_error->function()(exception);
+        }));
     };
 
     // 4. Let reader be the result of getting a reader for body’s stream. If that threw an exception, then run errorSteps with that exception and return.
     // 5. Read all bytes from reader, given successSteps and errorSteps.
-    // FIXME: Implement the streams spec - this is completely made up for now :^)
-    if (auto const* byte_buffer = m_source.get_pointer<ByteBuffer>()) {
-        TRY_OR_THROW_OOM(vm, success_steps(*byte_buffer));
-    } else if (auto const* blob_handle = m_source.get_pointer<JS::Handle<FileAPI::Blob>>()) {
-        auto byte_buffer = TRY_OR_THROW_OOM(vm, ByteBuffer::copy((*blob_handle)->bytes()));
-        TRY_OR_THROW_OOM(vm, success_steps(move(byte_buffer)));
-    } else {
-        // Empty, Blob, FormData
-        error_steps(WebIDL::DOMException::create(realm, "DOMException"_fly_string, "Reading from Blob, FormData or null source is not yet implemented"_fly_string));
-    }
-    return {};
+    // FIXME: Use streams for these steps.
+    m_source.visit(
+        [&](ByteBuffer const& byte_buffer) {
+            if (auto result = success_steps(byte_buffer); result.is_error())
+                error_steps(WebIDL::UnknownError::create(realm, "Out-of-memory"_string));
+        },
+        [&](JS::Handle<FileAPI::Blob> const& blob) {
+            if (auto result = success_steps(blob->raw_bytes()); result.is_error())
+                error_steps(WebIDL::UnknownError::create(realm, "Out-of-memory"_string));
+        },
+        [&](Empty) {
+            error_steps(WebIDL::DOMException::create(realm, "DOMException"_fly_string, "Reading from Blob, FormData or null source is not yet implemented"_string));
+        });
+}
+
+// https://fetch.spec.whatwg.org/#body-incrementally-read
+void Body::incrementally_read(ProcessBodyChunkCallback process_body_chunk, ProcessEndOfBodyCallback process_end_of_body, ProcessBodyErrorCallback process_body_error, TaskDestination task_destination)
+{
+    HTML::TemporaryExecutionContext const execution_context { Bindings::host_defined_environment_settings_object(m_stream->realm()), HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
+
+    VERIFY(task_destination.has<JS::NonnullGCPtr<JS::Object>>());
+    // FIXME: 1. If taskDestination is null, then set taskDestination to the result of starting a new parallel queue.
+    // FIXME: Handle 'parallel queue' task destination
+
+    // 2. Let reader be the result of getting a reader for body’s stream.
+    // NOTE: This operation will not throw an exception.
+    auto reader = MUST(Streams::acquire_readable_stream_default_reader(m_stream));
+
+    // 3. Perform the incrementally-read loop given reader, taskDestination, processBodyChunk, processEndOfBody, and processBodyError.
+    incrementally_read_loop(reader, task_destination.get<JS::NonnullGCPtr<JS::Object>>(), process_body_chunk, process_end_of_body, process_body_error);
+}
+
+// https://fetch.spec.whatwg.org/#incrementally-read-loop
+void Body::incrementally_read_loop(Streams::ReadableStreamDefaultReader& reader, JS::NonnullGCPtr<JS::Object> task_destination, ProcessBodyChunkCallback process_body_chunk, ProcessEndOfBodyCallback process_end_of_body, ProcessBodyErrorCallback process_body_error)
+
+{
+    auto& realm = reader.realm();
+    // 1. Let readRequest be the following read request:
+    auto read_request = realm.heap().allocate<IncrementalReadLoopReadRequest>(realm, *this, reader, task_destination, process_body_chunk, process_end_of_body, process_body_error);
+
+    // 2. Read a chunk from reader given readRequest.
+    reader.read_a_chunk(read_request);
 }
 
 // https://fetch.spec.whatwg.org/#byte-sequence-as-a-body

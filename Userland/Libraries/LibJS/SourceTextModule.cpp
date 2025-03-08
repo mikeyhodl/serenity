@@ -107,7 +107,7 @@ SourceTextModule::SourceTextModule(Realm& realm, StringView filename, Script::Ho
     RefPtr<ExportStatement const> default_export)
     : CyclicModule(realm, filename, has_top_level_await, move(requested_modules), host_defined)
     , m_ecmascript_code(move(body))
-    , m_execution_context(ExecutionContext::create(realm.heap()))
+    , m_execution_context(ExecutionContext::create())
     , m_import_entries(move(import_entries))
     , m_local_export_entries(move(local_export_entries))
     , m_indirect_export_entries(move(indirect_export_entries))
@@ -115,6 +115,8 @@ SourceTextModule::SourceTextModule(Realm& realm, StringView filename, Script::Ho
     , m_default_export(move(default_export))
 {
 }
+
+SourceTextModule::~SourceTextModule() = default;
 
 void SourceTextModule::visit_edges(Cell::Visitor& visitor)
 {
@@ -215,7 +217,7 @@ Result<NonnullGCPtr<SourceTextModule>, Vector<ParserError>> SourceTextModule::pa
                     else {
                         // a. NOTE: This is a re-export of a single name.
                         // b. Append the ExportEntry Record { [[ModuleRequest]]: ie.[[ModuleRequest]], [[ImportName]]: ie.[[ImportName]], [[LocalName]]: null, [[ExportName]]: ee.[[ExportName]] } to indirectExportEntries.
-                        indirect_export_entries.empend(ExportEntry::indirect_export_entry(import_entry.module_request(), import_entry.import_name, export_entry.export_name));
+                        indirect_export_entries.empend(ExportEntry::indirect_export_entry(import_entry.module_request(), export_entry.export_name, import_entry.import_name));
                     }
                 }
             }
@@ -498,7 +500,8 @@ ThrowCompletionOr<void> SourceTextModule::initialize_environment(VM& vm)
                 DeprecatedFlyString function_name = function_declaration.name();
                 if (function_name == ExportStatement::local_name_for_default)
                     function_name = "default"sv;
-                auto function = ECMAScriptFunctionObject::create(realm(), function_name, function_declaration.source_text(), function_declaration.body(), function_declaration.parameters(), function_declaration.function_length(), function_declaration.local_variables_names(), environment, private_environment, function_declaration.kind(), function_declaration.is_strict_mode(), function_declaration.might_need_arguments_object(), function_declaration.contains_direct_call_to_eval());
+                auto function = ECMAScriptFunctionObject::create(realm(), function_name, function_declaration.source_text(), function_declaration.body(), function_declaration.parameters(), function_declaration.function_length(), function_declaration.local_variables_names(), environment, private_environment, function_declaration.kind(), function_declaration.is_strict_mode(),
+                    function_declaration.parsing_insights());
 
                 // 2. Perform ! env.InitializeBinding(dn, fo, normal).
                 MUST(environment->initialize_binding(vm, name, function, Environment::InitializeBindingHint::Normal));
@@ -673,7 +676,7 @@ ThrowCompletionOr<void> SourceTextModule::execute_module(VM& vm, GCPtr<PromiseCa
     dbgln_if(JS_MODULE_DEBUG, "[JS MODULE] SourceTextModule::execute_module({}, PromiseCapability @ {})", filename(), capability.ptr());
 
     // 1. Let moduleContext be a new ECMAScript code execution context.
-    auto module_context = ExecutionContext::create(vm.heap());
+    auto module_context = ExecutionContext::create();
 
     // Note: This is not in the spec but we require it.
     module_context->is_strict_mode = true;
@@ -711,18 +714,18 @@ ThrowCompletionOr<void> SourceTextModule::execute_module(VM& vm, GCPtr<PromiseCa
         // c. Let result be the result of evaluating module.[[ECMAScriptCode]].
         Completion result;
 
-        auto maybe_executable = Bytecode::compile(vm, m_ecmascript_code, {}, FunctionKind::Normal, "ShadowRealmEval"sv);
+        auto maybe_executable = Bytecode::compile(vm, m_ecmascript_code, FunctionKind::Normal, "ShadowRealmEval"sv);
         if (maybe_executable.is_error())
             result = maybe_executable.release_error();
         else {
             auto executable = maybe_executable.release_value();
 
-            auto value_and_frame = vm.bytecode_interpreter().run_and_return_frame(*executable, nullptr);
-            if (value_and_frame.value.is_error()) {
-                result = value_and_frame.value.release_error();
+            auto result_and_return_register = vm.bytecode_interpreter().run_executable(*executable, {});
+            if (result_and_return_register.value.is_error()) {
+                result = result_and_return_register.value.release_error();
             } else {
                 // Resulting value is in the accumulator.
-                result = value_and_frame.frame->registers()[0].value_or(js_undefined());
+                result = result_and_return_register.return_register_value.value_or(js_undefined());
             }
         }
 
@@ -757,16 +760,21 @@ ThrowCompletionOr<void> SourceTextModule::execute_module(VM& vm, GCPtr<PromiseCa
         //         the top-level module code.
         // FIXME: Improve this situation, so we can match the spec better.
 
-        auto module_wrapper_function = ECMAScriptFunctionObject::create(
-            realm(), "module code with top-level await", StringView {}, this->m_ecmascript_code,
-            {}, 0, {}, environment(), nullptr, FunctionKind::Async, true, false, false);
-        module_wrapper_function->set_is_module_wrapper(true);
-
-        // AD-HOC: We push/pop the moduleContext around the call to ensure that the async execution context
+        // AD-HOC: We push/pop the moduleContext around the function construction to ensure that the async execution context
         //         captures the module execution context.
         vm.push_execution_context(*module_context);
-        auto result = call(vm, Value { module_wrapper_function }, js_undefined(), ReadonlySpan<Value> {});
+
+        FunctionParsingInsights parsing_insights;
+        parsing_insights.uses_this_from_environment = true;
+        parsing_insights.uses_this = true;
+        auto module_wrapper_function = ECMAScriptFunctionObject::create(
+            realm(), "module code with top-level await", StringView {}, this->m_ecmascript_code,
+            {}, 0, {}, environment(), nullptr, FunctionKind::Async, true, parsing_insights);
+        module_wrapper_function->set_is_module_wrapper(true);
+
         vm.pop_execution_context();
+
+        auto result = call(vm, Value { module_wrapper_function }, js_undefined(), ReadonlySpan<Value> {});
 
         // AD-HOC: This is basically analogous to what AsyncBlockStart would do.
         if (result.is_throw_completion()) {

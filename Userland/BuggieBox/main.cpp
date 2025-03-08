@@ -7,7 +7,7 @@
 
 #include <AK/LexicalPath.h>
 #include <LibMain/Main.h>
-#include <Userland/Shell/Shell.h>
+#include <LibShell/Shell.h>
 
 #define ENUMERATE_UTILITIES(E, ALIAS) \
     ALIAS(b2sum, checksum)            \
@@ -21,6 +21,7 @@
     E(file)                           \
     E(find)                           \
     E(id)                             \
+    E(init)                           \
     E(less)                           \
     E(ln)                             \
     E(ls)                             \

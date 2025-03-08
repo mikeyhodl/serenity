@@ -9,6 +9,7 @@
 #include <AK/String.h>
 #include <LibCore/EventReceiver.h>
 #include <LibGfx/Bitmap.h>
+#include <LibURL/URL.h>
 
 namespace GUI {
 
@@ -43,6 +44,13 @@ public:
         m_icon = icon;
     }
 
+    URL::URL const& launch_url() const { return m_launch_url; }
+    void set_launch_url(URL::URL const& launch_url)
+    {
+        m_launch_url_dirty = true;
+        m_launch_url = launch_url;
+    }
+
     void show();
     bool update();
     void close();
@@ -55,11 +63,13 @@ private:
     void connection_closed();
 
     String m_title;
-    bool m_title_dirty;
+    bool m_title_dirty { false };
     String m_text;
-    bool m_text_dirty;
+    bool m_text_dirty { false };
     RefPtr<Gfx::Bitmap const> m_icon;
-    bool m_icon_dirty;
+    bool m_icon_dirty { false };
+    URL::URL m_launch_url;
+    bool m_launch_url_dirty { false };
 
     bool m_destroyed { false };
     bool m_shown { false };

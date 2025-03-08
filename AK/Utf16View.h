@@ -25,6 +25,8 @@ ErrorOr<Utf16Data> utf8_to_utf16(Utf8View const&);
 ErrorOr<Utf16Data> utf32_to_utf16(Utf32View const&);
 ErrorOr<void> code_point_to_utf16(Utf16Data&, u32);
 
+size_t utf16_code_unit_length_from_utf8(StringView);
+
 class Utf16View;
 
 class Utf16CodePointIterator {
@@ -74,8 +76,8 @@ public:
     template<size_t Size>
     Utf16View(char16_t const (&code_units)[Size])
         : m_code_units(
-            reinterpret_cast<u16 const*>(&code_units[0]),
-            code_units[Size - 1] == u'\0' ? Size - 1 : Size)
+              reinterpret_cast<u16 const*>(&code_units[0]),
+              code_units[Size - 1] == u'\0' ? Size - 1 : Size)
     {
     }
 

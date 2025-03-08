@@ -89,8 +89,9 @@ TerminalWidget::TerminalWidget(int ptm_fd, bool automatic_size_policy)
     : m_terminal(*this)
     , m_automatic_size_policy(automatic_size_policy)
 {
-    static_assert(sizeof(m_colors) == sizeof(xterm_colors));
-    memcpy(m_colors, xterm_colors, sizeof(m_colors));
+    VERIFY(m_colors.size() == xterm_colors.size());
+    for (size_t i = 0; i < xterm_colors.size(); i++)
+        m_colors[i] = Gfx::Color::from_rgb(xterm_colors[i]);
 
     set_override_cursor(Gfx::StandardCursor::IBeam);
     set_focus_policy(GUI::FocusPolicy::StrongFocus);
@@ -247,7 +248,7 @@ void TerminalWidget::keydown_event(GUI::KeyEvent& event)
         m_scrollbar->increase_slider_by(m_terminal.rows());
         return;
     }
-    if (event.key() == KeyCode::Key_Alt) {
+    if (event.key() == KeyCode::Key_LeftAlt) {
         m_alt_key_held = true;
         return;
     }
@@ -265,14 +266,14 @@ void TerminalWidget::keydown_event(GUI::KeyEvent& event)
 
     m_terminal.handle_key_press(event.key(), event.code_point(), event.modifiers());
 
-    if (event.key() != Key_Control && event.key() != Key_Alt && event.key() != Key_LeftShift && event.key() != Key_RightShift && event.key() != Key_Super)
+    if (event.key() != Key_LeftControl && event.key() != Key_LeftAlt && event.key() != Key_LeftShift && event.key() != Key_RightShift && event.key() != Key_LeftSuper)
         scroll_to_bottom();
 }
 
 void TerminalWidget::keyup_event(GUI::KeyEvent& event)
 {
     switch (event.key()) {
-    case KeyCode::Key_Alt:
+    case KeyCode::Key_LeftAlt:
         m_alt_key_held = false;
         return;
     default:
@@ -427,6 +428,10 @@ void TerminalWidget::paint_event(GUI::PaintEvent& event)
 
             if (code_point == ' ')
                 continue;
+
+            if (has_flag(attribute.flags, VT::Attribute::Flags::Concealed)) {
+                continue;
+            }
 
             auto character_rect = glyph_rect(visual_row, column);
 
@@ -884,7 +889,7 @@ void TerminalWidget::mousemove_event(GUI::MouseEvent& event)
             auto handlers = Desktop::Launcher::get_handlers_for_url(attribute.href);
             if (!handlers.is_empty()) {
                 auto url = URL::URL(attribute.href);
-                auto path = url.serialize_path();
+                auto path = URL::percent_decode(url.serialize_path());
 
                 auto app_file = Desktop::AppFile::get_for_app(LexicalPath::basename(handlers[0]));
                 auto app_name = app_file->is_valid() ? app_file->name() : LexicalPath::basename(handlers[0]);
@@ -1179,7 +1184,7 @@ void TerminalWidget::context_menu_event(GUI::ContextMenuEvent& event)
         }));
         m_context_menu_for_hyperlink->add_action(GUI::Action::create("Copy &Name", [&](auto&) {
             // file://courage/home/anon/something -> /home/anon/something
-            auto path = URL::URL(m_context_menu_href).serialize_path();
+            auto path = URL::percent_decode(URL::URL(m_context_menu_href).serialize_path());
             // /home/anon/something -> something
             auto name = LexicalPath::basename(path);
             GUI::Clipboard::the().set_plain_text(name);
@@ -1194,8 +1199,7 @@ void TerminalWidget::context_menu_event(GUI::ContextMenuEvent& event)
 
 void TerminalWidget::drag_enter_event(GUI::DragEvent& event)
 {
-    auto const& mime_types = event.mime_types();
-    if (mime_types.contains_slow("text/plain"sv) || mime_types.contains_slow("text/uri-list"sv))
+    if (event.mime_data().has_text() || event.mime_data().has_urls())
         event.accept();
 }
 
@@ -1209,10 +1213,13 @@ void TerminalWidget::drop_event(GUI::DropEvent& event)
             if (!first)
                 send_non_user_input(" "sv.bytes());
 
-            if (url.scheme() == "file")
-                send_non_user_input(url.serialize_path().bytes());
-            else
-                send_non_user_input(url.to_byte_string().bytes());
+            if (url.scheme() == "file") {
+                auto path = URL::percent_decode(url.serialize_path());
+                send_non_user_input(path.bytes());
+            } else {
+                auto url_string = url.to_byte_string();
+                send_non_user_input(url_string.bytes());
+            }
 
             first = false;
         }
